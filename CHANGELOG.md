@@ -3,6 +3,23 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-15 - Calendar: click a day to schedule
+
+- Click an empty part of any day cell to jump to the Composer with "Publish at" prefilled to
+  that date (09:00 local), carrying the calendar's brand filter. A subtle "+" appears on hover.
+  Clicks on an existing post chip still open that post's detail.
+- Day cells grow with content (min-height is a floor, not a cap), so days with several posts
+  get taller instead of cramped.
+
+## 2026-07-15 - Calendar: real month view + month navigation
+
+- Calendar/Queue now defaults to a **proper month grid**: weekday column headers (Sun-Sat),
+  the 1st aligned under its weekday, all days of the month plus muted leading/trailing days,
+  and today highlighted. (Was a rolling 28-day strip.)
+- Added period navigation: **‹ / Today / ›** (steps by month in Month view, by week in Week
+  view) + a month/year label. Week view preserved; the Home-embedded calendar stays compact
+  (Week). Local date keys used so posts land on the correct day (no UTC off-by-one).
+
 ## 2026-07-15 - B15 AI provider switcher (Claude / Codex)
 
 - **Provider abstraction** (`src/ai.js`): registry (`claude`, `codex`) + `runDraft(provider, ...)`,

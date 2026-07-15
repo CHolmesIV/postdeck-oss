@@ -8,7 +8,6 @@ media/
 .DS_Store
 config/accounts.seed.json
 state/
-logs/
 capture-inbox/*
 !capture-inbox/.gitkeep
 !capture-inbox/processed/
@@ -24,3 +23,6 @@ research-inbox/*
 !research-inbox/processed/
 research-inbox/processed/*
 !research-inbox/processed/.gitkeep
+
+# runtime logs
+logs/

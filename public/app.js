@@ -413,8 +413,10 @@ async function renderCalendar(view) {
 // at #/calendar and embedded (read: same live behavior, not a copy) at the
 // bottom of the Home cockpit (renderHome, B9). `initialBrand` lets the Home
 // brand filter scope the embedded calendar on first render.
-async function renderCalendarInto(view, { initialBrand = getStickyBrand() } = {}) {
+async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defaultMode = 'month' } = {}) {
   view.innerHTML = '';
+  let refDate = new Date();
+  refDate.setHours(0, 0, 0, 0);
 
   try {
     const ws = await api('/api/worker/status');
@@ -440,18 +442,33 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand() } = {}
     ),
   ]);
   const viewToggle = el('select', { id: 'cal-view' }, [
-    el('option', { value: 'week' }, 'Week'),
-    el('option', { value: 'month' }, 'Month'),
+    el('option', { value: 'week', selected: defaultMode === 'week' ? 'selected' : undefined }, 'Week'),
+    el('option', { value: 'month', selected: defaultMode === 'month' ? 'selected' : undefined }, 'Month'),
   ]);
+  // Period nav: prev / label / next / Today. Steps by month (month view) or
+  // week (week view). Lets CB move between months without hunting.
+  const prevBtn = el('button', { class: 'cal-nav-btn', title: 'Previous' }, '‹');
+  const nextBtn = el('button', { class: 'cal-nav-btn', title: 'Next' }, '›');
+  const todayBtn = el('button', { class: 'cal-nav-btn' }, 'Today');
+  const periodLabel = el('span', { class: 'cal-period-label' }, '');
   toolbar.append(
     el('span', {}, 'Brand:'), brandFilter,
     el('span', {}, 'Platform:'), platformFilter,
-    el('span', {}, 'View:'), viewToggle
+    el('span', {}, 'View:'), viewToggle,
+    prevBtn, todayBtn, nextBtn, periodLabel
   );
   view.appendChild(toolbar);
 
   const grid = el('div', { class: 'cal-grid', id: 'cal-grid' });
   view.appendChild(grid);
+
+  function updateLabel(mode) {
+    if (mode === 'month') {
+      periodLabel.textContent = refDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    } else {
+      periodLabel.textContent = 'Week of ' + refDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+  }
 
   async function reload() {
     const posts = await api('/api/posts');
@@ -461,8 +478,19 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand() } = {}
     const filtered = posts.filter(
       (p) => (!brand || String(p.brand_id) === brand) && (!platform || p.platform === platform)
     );
-    drawGrid(grid, filtered, mode);
+    updateLabel(mode);
+    drawGrid(grid, filtered, mode, refDate);
   }
+
+  function step(dir) {
+    const mode = viewToggle.value;
+    if (mode === 'month') refDate.setMonth(refDate.getMonth() + dir, 1);
+    else refDate.setDate(refDate.getDate() + dir * 7);
+    reload();
+  }
+  prevBtn.onclick = () => step(-1);
+  nextBtn.onclick = () => step(1);
+  todayBtn.onclick = () => { refDate = new Date(); refDate.setHours(0, 0, 0, 0); reload(); };
 
   brandFilter.onchange = () => { setStickyBrand(brandFilter.value); reload(); };
   platformFilter.onchange = reload;
@@ -867,7 +895,7 @@ async function renderHome(view) {
     buildWeekSection(weekHost, filteredPosts);
     buildPlatformChipsSection(platformHost, filteredPosts, homeBrand);
     buildMiniAnalyticsSection(analyticsHost, analyticsData, homeBrand);
-    await renderCalendarInto(calendarHost, { initialBrand: homeBrand });
+    await renderCalendarInto(calendarHost, { initialBrand: homeBrand, defaultMode: 'week' });
   }
 
   brandSelect.onchange = () => {
@@ -887,11 +915,27 @@ function rescheduleToDateKeepingTime(originalIso, newDateKey) {
   return dt.toISOString();
 }
 
-function drawGrid(grid, posts, mode) {
+// Jump to the composer with "Publish at" prefilled to the clicked day (09:00
+// local), carrying the calendar's current brand filter. See renderComposer.
+function composeOnDate(dateKey) {
+  sessionStorage.setItem('pd_composer_prefill_date', `${dateKey}T09:00`);
+  const brandSel = document.getElementById('cal-brand');
+  if (brandSel && brandSel.value) sessionStorage.setItem('pd_composer_prefill_brand', brandSel.value);
+  location.hash = '#/composer';
+}
+
+// Local YYYY-MM-DD key (avoid toISOString's UTC shift moving posts a day).
+function dateKeyLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function drawGrid(grid, posts, mode, refDate) {
   grid.innerHTML = '';
-  const days = mode === 'month' ? 28 : 7;
+  const ref = refDate ? new Date(refDate) : new Date();
+  ref.setHours(0, 0, 0, 0);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
+  const todayKey = dateKeyLocal(today);
 
   const byDay = {};
   for (const p of posts) {
@@ -914,22 +958,62 @@ function drawGrid(grid, posts, mode) {
     });
   }
 
-  for (let i = 0; i < days; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    const key = d.toISOString().slice(0, 10);
+  function dayCellFor(d, { muted = false } = {}) {
+    const key = dateKeyLocal(d);
     const dayPosts = byDay[key] || [];
-    const dayCell = el('div', { class: 'cal-day' }, [
-      el('div', { class: 'day-label' }, d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })),
+    const cell = el('div', { class: 'cal-day' + (muted ? ' cal-muted' : '') + (key === todayKey ? ' cal-today' : '') }, [
+      el('div', { class: 'day-label' }, mode === 'month'
+        ? String(d.getDate())
+        : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })),
       ...dayPosts.map((p) => postChip(p)),
     ]);
-    makeDropTarget(dayCell, key);
-    grid.appendChild(dayCell);
+    makeDropTarget(cell, key);
+    // Click an empty part of a day to schedule a new post on that date. Clicks
+    // on a chip fall through to the chip's own link (open post detail).
+    cell.classList.add('cal-clickable');
+    cell.title = 'Click to schedule a post on this day';
+    cell.addEventListener('click', (e) => {
+      if (e.target.closest('.chip')) return;
+      composeOnDate(key);
+    });
+    return cell;
+  }
+
+  if (mode === 'month') {
+    // Weekday header row, then a real month grid: leading blanks so the 1st
+    // lands under its weekday, all days of the month, trailing days to fill
+    // the last week. Cells from adjacent months are shown muted.
+    const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    WD.forEach((w) => grid.appendChild(el('div', { class: 'cal-weekday' }, w)));
+    const year = ref.getFullYear();
+    const month = ref.getMonth();
+    const first = new Date(year, month, 1);
+    const startOffset = first.getDay(); // 0 = Sun
+    const gridStart = new Date(year, month, 1 - startOffset);
+    // 6 weeks (42 cells) covers every month layout; trim the last row if all-trailing.
+    const cells = [];
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + i);
+      cells.push(d);
+    }
+    // Drop a trailing 6th row if it's entirely in the next month.
+    const rows = cells[35].getMonth() === month || cells.slice(35).some((d) => d.getMonth() === month) ? 42 : 35;
+    for (let i = 0; i < rows; i++) {
+      const d = cells[i];
+      grid.appendChild(dayCellFor(d, { muted: d.getMonth() !== month }));
+    }
+  } else {
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(ref);
+      d.setDate(ref.getDate() + i);
+      grid.appendChild(dayCellFor(d));
+    }
   }
 
   if (byDay.unscheduled?.length) {
     grid.appendChild(
-      el('div', { class: 'cal-day' }, [
+      el('div', { class: 'cal-day cal-unscheduled' }, [
         el('div', { class: 'day-label' }, 'Unscheduled'),
         ...byDay.unscheduled.map((p) => postChip(p)),
       ])
@@ -1337,6 +1421,11 @@ async function renderComposer(view) {
   view.innerHTML = '';
   view.appendChild(el('h1', {}, 'Composer'));
 
+  // One-off "Publish at" prefill when arriving from a calendar day click
+  // (composeOnDate). Consumed once; applied to publishAtInput in loadForBrand.
+  let prefillDate = sessionStorage.getItem('pd_composer_prefill_date');
+  sessionStorage.removeItem('pd_composer_prefill_date');
+
   const brandSelect = el('select', {}, [
     el('option', { value: '' }, 'Select brand…'),
     ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
@@ -1689,6 +1778,7 @@ async function renderComposer(view) {
     body.appendChild(composerBox);
 
     const publishAtInput = el('input', { type: 'datetime-local' });
+    if (prefillDate) { publishAtInput.value = prefillDate; prefillDate = null; } // from a calendar day click, applied once
     body.appendChild(el('div', { class: 'card' }, [el('div', { class: 'field-row' }, [el('label', {}, 'Publish at'), publishAtInput])]));
 
     const saveRow = el('div', { class: 'toolbar' });

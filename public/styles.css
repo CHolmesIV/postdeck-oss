@@ -1118,3 +1118,36 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   .fab, .chat-toggle-btn, .chat-drawer, .chat-typing-dot,
   .action-center-btn, .action-center-popover { animation: none !important; }
 }
+
+/* Calendar month grid (weekday headers, today, adjacent-month, nav) */
+.cal-weekday {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 0 4px;
+}
+.cal-day.cal-today { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold), var(--sh-1); }
+.cal-day.cal-today .day-label { color: var(--gold-2); font-weight: 700; }
+.cal-day.cal-muted { opacity: 0.45; }
+.cal-day.cal-unscheduled { grid-column: 1 / -1; min-height: auto; }
+.cal-nav-btn { padding: 6px 11px; font-size: 13px; line-height: 1; }
+.cal-period-label { font-weight: 700; margin-left: 4px; letter-spacing: 0.01em; }
+
+/* Day cells are clickable to schedule a post on that date */
+.cal-day.cal-clickable { cursor: pointer; position: relative; }
+.cal-day.cal-clickable:hover { border-color: var(--gold-dim); }
+.cal-day.cal-clickable::after {
+  content: '+';
+  position: absolute;
+  top: 6px; right: 8px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--gold);
+  opacity: 0;
+  transition: opacity var(--t-fast);
+  pointer-events: none;
+}
+.cal-day.cal-clickable:hover::after { opacity: 0.8; }

@@ -15,7 +15,7 @@ history in [`CHANGELOG.md`](./CHANGELOG.md).
 ## What it does
 
 - Multi-brand from day one. Brands are rows, not code. One dashboard runs all of them.
-- Compose and schedule on a calendar/queue, with per-platform variants and character counters.
+- Compose and schedule on a real month/week calendar (click a day to schedule), with per-platform variants and character counters.
 - Draft with AI through your own CLI, in your voice, with a hard no-em-dash rule, always behind a human approve gate. Switch between Claude and Codex, or compare both.
 - Image handoff to Codex, per-platform sizing preview, and auto-resize.
 - Assisted-manual mode for platforms an API should not automate (Reddit).

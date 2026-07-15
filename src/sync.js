@@ -23,7 +23,7 @@ let lastSyncAt = 0;
 
 function syncEnabled() {
   const v = process.env.POSTDECK_SYNC_ENABLED;
-  // Opt-in: off unless explicitly enabled (public default; set POSTDECK_SYNC_ENABLED=1).
+  // Default ON per spec ("default the target ON with those values").
   if (v === undefined || v === null || v === '') return false;
   return !['0', 'false'].includes(String(v).toLowerCase());
 }
