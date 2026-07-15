@@ -1,4 +1,4 @@
-// Manual research ingestion (B8 - SPEC.md "Research + inspiration ingestion").
+// Manual research ingestion (B8 — SPEC.md "Research + inspiration ingestion").
 // CB drops in Google Trends CSV exports, Reddit findings, best-practice notes
 // (tagged to brand/pillar); the copy assistant and recommender read these back
 // as grounding. Mirrors src/capture.js for the drop-and-forget inbox flow, but
@@ -268,5 +268,5 @@ export {
 // CLI entrypoint: `node src/research.js`
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   const created = importResearchInbox();
-  console.log(`[research] done - ${created.length} note(s) imported`);
+  console.log(`[research] done — ${created.length} note(s) imported`);
 }

@@ -1,7 +1,7 @@
 // "Draft with AI": shells out to the `claude` CLI (cheap model) to draft
 // per-platform copy from an idea + brand voice + tone profile, then runs the
 // mechanical hard-rules scrub (src/scrub.js) before the text ever reaches the
-// composer. Never auto-approves - see SPEC.md "Draft with AI".
+// composer. Never auto-approves — see SPEC.md "Draft with AI".
 
 import { execFile } from 'node:child_process';
 import { scrubDrafts } from './scrub.js';
@@ -10,7 +10,7 @@ import { runDraft as aiRunDraft } from './ai.js';
 // Overridable for tests so we can point at a binary that doesn't exist
 // without touching the real PATH / ANTHROPIC key. Read lazily (per call, not at
 // import time) so tests/agents that set these env vars after import still take
-// effect - matches copy_assist.js / extract.js and avoids the import-order trap.
+// effect — matches copy_assist.js / extract.js and avoids the import-order trap.
 const getClaudeBin = () => process.env.POSTDECK_CLAUDE_BIN || 'claude';
 const getModel = () => process.env.POSTDECK_DRAFT_MODEL || 'claude-haiku-4-5-20251001';
 const getMaxBudgetUsd = () => process.env.POSTDECK_DRAFT_BUDGET || '0.05';
@@ -46,7 +46,7 @@ function buildPrompt({ idea_text, brand, toneProfile, platforms }) {
     `Write one draft per platform below, respecting each platform's character limit:`,
     limitsLines,
     ``,
-    `Respond with STRICT JSON ONLY, no markdown fences, no commentary - an object`,
+    `Respond with STRICT JSON ONLY, no markdown fences, no commentary — an object`,
     `mapping each platform name to its draft text, e.g.:`,
     `{"twitter": "...", "linkedin": "..."}`,
     `Platforms to draft for: ${platforms.join(', ')}`,
@@ -77,7 +77,7 @@ function parseClaudeCliOutput(stdout) {
 }
 
 // Retained for back-compat / existing direct tests of the legacy claude-only
-// shell (no longer on the runtime path - draftWithAi now routes through
+// shell (no longer on the runtime path — draftWithAi now routes through
 // src/ai.js's provider registry, see below).
 function runClaudeCli(prompt) {
   return new Promise((resolve, reject) => {

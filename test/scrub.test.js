@@ -6,13 +6,13 @@ import assert from 'node:assert/strict';
 import { scrubText, scrubDrafts, scrubEmDashes, scrubBannedWords } from '../src/scrub.js';
 
 test('scrubEmDashes replaces spaced em dash with comma', () => {
-  const { text, changed } = scrubEmDashes('Great work - really.');
+  const { text, changed } = scrubEmDashes('Great work — really.');
   assert.equal(text, 'Great work, really.');
   assert.equal(changed, true);
 });
 
 test('scrubEmDashes replaces unspaced em dash with " - "', () => {
-  const { text, changed } = scrubEmDashes('word-word');
+  const { text, changed } = scrubEmDashes('word—word');
   assert.equal(text, 'word - word');
   assert.equal(changed, true);
 });
@@ -35,7 +35,7 @@ test('scrubBannedWords removes whole-word matches case-insensitively', () => {
 });
 
 test('scrubText applies no_em_dash rule', () => {
-  const { text, applied } = scrubText('CB said - do it.', { no_em_dash: true });
+  const { text, applied } = scrubText('CB said — do it.', { no_em_dash: true });
   assert.equal(text, 'CB said, do it.');
   assert.deepEqual(applied, ['no_em_dash']);
 });
@@ -62,8 +62,8 @@ test('scrubText handles empty/non-string input safely', () => {
 test('scrubDrafts scrubs every platform and dedupes applied rules', () => {
   const { drafts, scrub_applied } = scrubDrafts(
     {
-      twitter: 'Ship it - now.',
-      linkedin: 'Leverage synergy - now.',
+      twitter: 'Ship it — now.',
+      linkedin: 'Leverage synergy — now.',
     },
     { no_em_dash: true, banned_words: ['synergy'] }
   );

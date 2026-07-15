@@ -1,11 +1,11 @@
-// Unit tests for src/resize.js (B14 "Auto-resize to platform specs" -
+// Unit tests for src/resize.js (B14 "Auto-resize to platform specs" —
 // SPEC.md B14 §1). Exercises the real macOS `sips` binary when it's
 // available (this repo's target runtime is CB's Mac); when it's not, the
 // suite still verifies the `resize_unavailable` contract by pointing
 // POSTDECK_SIPS_BIN at a binary that can't possibly exist.
 //
 // A tiny valid PNG is synthesized in-process (no fixture file, no new npm
-// dep) via zlib - see makeTestPng() below - so the suite never depends on a
+// dep) via zlib — see makeTestPng() below — so the suite never depends on a
 // checked-in binary asset.
 //
 // Run with: node --test test/resize.test.js
@@ -95,7 +95,7 @@ const { sipsAvailable, resizeToDims, resizeForPlatforms } = await import('../src
 let realSipsAvailable = false;
 test('sipsAvailable() reflects this machine (probe once, informational)', async () => {
   realSipsAvailable = await sipsAvailable({ fresh: true });
-  // No assertion either way - this just records the environment for the
+  // No assertion either way — this just records the environment for the
   // conditional tests below and always passes.
   assert.equal(typeof realSipsAvailable, 'boolean');
 });
@@ -134,7 +134,7 @@ test('resizeForPlatforms produces one file per platform and skips platforms with
     assert.ok(r.width > 0 && r.height > 0);
     assert.ok(fs.existsSync(path.join(mediaDir, path.basename(r.path))));
   }
-  // tiktok has no `image` spec in platform-specs.json (video-only) - must be
+  // tiktok has no `image` spec in platform-specs.json (video-only) — must be
   // skipped, never thrown.
   assert.ok(skipped.some((s) => s.platform === 'tiktok'));
 });

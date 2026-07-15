@@ -1,13 +1,13 @@
-// Content-type recommender (B8 - SPEC.md "Content-type picker + recommender").
-// Pure/heuristic - no AI call. Ranks content_type by the brand's own metrics
+// Content-type recommender (B8 — SPEC.md "Content-type picker + recommender").
+// Pure/heuristic — no AI call. Ranks content_type by the brand's own metrics
 // when they exist (basis: 'own_metrics'), else falls back to small,
 // hand-encoded platform best-practice defaults (basis: 'best_practice').
-// content_type in {static, carousel, image, text, video} - see db.js v4
+// content_type in {static, carousel, image, text, video} — see db.js v4
 // migration (posts.content_type).
 
 const CONTENT_TYPES = ['static', 'carousel', 'image', 'text', 'video'];
 
-// Best-practice fallback rankings per platform - CB's own judgment call
+// Best-practice fallback rankings per platform — CB's own judgment call
 // encoded from platform-specs.json notes (SPEC.md B8 feature 2). Order is
 // best-first; anything omitted is appended afterward in CONTENT_TYPES order.
 const BEST_PRACTICE_DEFAULTS = {
@@ -43,7 +43,7 @@ const BEST_PRACTICE_DEFAULTS = {
 
 const DEFAULT_FALLBACK = {
   order: ['image', 'carousel', 'video', 'text', 'static'],
-  reason: 'No platform-specific best-practice data - generic default ordering.',
+  reason: 'No platform-specific best-practice data — generic default ordering.',
 };
 
 function isoDaysAgo(days) {

@@ -1,4 +1,4 @@
-// Unit tests for buildAnalytics()/build30dSummary() (B7 - SPEC.md "Analytics
+// Unit tests for buildAnalytics()/build30dSummary() (B7 — SPEC.md "Analytics
 // portal"). Uses an in-memory SQLite DB seeded with a metrics fixture.
 // Run with: node --test test/analytics.test.js
 
@@ -45,7 +45,7 @@ function seedFixture(db) {
   });
 
   // Post B: published 10 days ago, metrics from 10 days ago (outside 7d
-  // window, inside 30d) - used to test window scoping + WoW delta.
+  // window, inside 30d) — used to test window scoping + WoW delta.
   const postB = insertPost.run({
     brand_id: brand, platform: 'twitter', copy: 'Post B',
     publish_at: tenDaysAgo, status: 'published', now: tenDaysAgo,
@@ -55,7 +55,7 @@ function seedFixture(db) {
     follows: 0, dms: 0, leads: 1, call_booked: 0,
   });
 
-  // Post C: published >48h ago, NO metrics rows - should show up in metrics_due.
+  // Post C: published >48h ago, NO metrics rows — should show up in metrics_due.
   const postC = insertPost.run({
     brand_id: brand, platform: 'facebook', copy: 'Post C (needs metrics)',
     publish_at: fiftyHoursAgo, status: 'published', now: fiftyHoursAgo,

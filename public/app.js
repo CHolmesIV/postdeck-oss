@@ -1497,6 +1497,7 @@ async function renderComposer(view) {
     // auto-posts via Blotato; the worker skips it accordingly (SPEC.md B11).
     function accountRow(a) {
       const cb = el('input', { type: 'checkbox' });
+      cb.checked = selectedAccounts.has(a.id); // reflect persisted selection across re-renders
       cb.addEventListener('change', () => {
         if (cb.checked) selectedAccounts.add(a.id);
         else selectedAccounts.delete(a.id);
@@ -1547,8 +1548,48 @@ async function renderComposer(view) {
 
     const accountsBox = el('div', { class: 'card' }, [
       el('h2', {}, 'Distribute to (accounts, auto-filtered by brand)'),
-      ...accounts.map(accountRow),
     ]);
+    if (accounts.length === 0) {
+      accountsBox.appendChild(
+        el('div', { style: 'color:var(--muted);font-size:13px;margin-bottom:8px;' },
+          'No accounts yet for this brand. Add a platform below to draft for it (copy & paste by default; attach a live connection later).')
+      );
+    } else {
+      accounts.map(accountRow).forEach((r) => accountsBox.appendChild(r));
+    }
+
+    // ---- Add a platform for this brand (esp. brands seeded without a
+    // Blotato connection). Creates a manual copy-&-paste account so drafting
+    // is never blocked; the operator can flip it live later.
+    const existingPlatforms = new Set(accounts.map((a) => a.platform));
+    const addablePlatforms = ['linkedin', 'facebook', 'twitter', 'instagram', 'reddit', 'tiktok', 'youtube', 'threads', 'blog']
+      .filter((p) => !existingPlatforms.has(p));
+    if (addablePlatforms.length) {
+      const addSelect = el('select', {}, [
+        el('option', { value: '' }, '+ add platform...'),
+        ...addablePlatforms.map((p) => el('option', { value: p }, p)),
+      ]);
+      const addBtn = el('button', { class: 'btn-secondary', type: 'button' }, 'Add');
+      const addMsg = el('span', { style: 'margin-left:8px;color:var(--muted);font-size:12px;' });
+      addBtn.onclick = async () => {
+        const platform = addSelect.value;
+        if (!platform) return;
+        addBtn.disabled = true;
+        addMsg.textContent = 'Adding...';
+        try {
+          const created = await api('/api/accounts', { method: 'POST', body: { brand_id: brandId, platform } });
+          state.accounts.push(created);
+          selectedAccounts.add(created.id); // pre-select the freshly added platform
+          await loadForBrand(brandId); // re-render so the new account row + tabs appear
+        } catch (err) {
+          addMsg.textContent = `Could not add: ${err.message}`;
+          addBtn.disabled = false;
+        }
+      };
+      accountsBox.appendChild(
+        el('div', { class: 'field-row', style: 'margin-top:8px;' }, [addSelect, addBtn, addMsg])
+      );
+    }
     body.appendChild(accountsBox);
 
     // ---- Content-type picker + recommender (B8) ----

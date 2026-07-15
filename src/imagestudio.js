@@ -42,7 +42,7 @@ function safeMediaName(originalName, uniquer) {
  * `image-requests/generated/processed/req-<id>/`.
  *
  * A manifest whose request_id has no matching image_requests row is
- * skipped (logged, left in place - nothing moved, nothing archived).
+ * skipped (logged, left in place — nothing moved, nothing archived).
  * Safe to call repeatedly; a missing/empty generated dir is a no-op.
  * Returns the list of updated request ids.
  */
@@ -84,7 +84,7 @@ function importGeneratedImages(db = getDb()) {
     const requestId = manifest.request_id;
     const row = db.prepare('SELECT * FROM image_requests WHERE id = ?').get(requestId);
     if (!row) {
-      console.error(`[imagestudio] ${subdirName}: no image_requests row for request_id ${requestId} - leaving in place`);
+      console.error(`[imagestudio] ${subdirName}: no image_requests row for request_id ${requestId} — leaving in place`);
       continue;
     }
 
@@ -135,5 +135,5 @@ export { importGeneratedImages, getGeneratedDir, getProcessedDir, getMediaDir };
 // CLI entrypoint: `node src/imagestudio.js`
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   const updated = importGeneratedImages();
-  console.log(`[imagestudio] done - ${updated.length} request(s) imported`);
+  console.log(`[imagestudio] done — ${updated.length} request(s) imported`);
 }

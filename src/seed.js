@@ -1,7 +1,7 @@
 // Seeds brands + accounts from config/accounts.seed.json (real, gitignored),
 // and creates the three tone_profiles (business/personal/casual) per brand.
 //
-// Voice docs are NOT read here - only their paths are stored as placeholder notes,
+// Voice docs are NOT read here — only their paths are stored as placeholder notes,
 // per SPEC.md ("Draft with AI" loads them at generation time later).
 
 import fs from 'node:fs';
@@ -14,13 +14,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const SEED_PATH = path.join(ROOT, 'config', 'accounts.seed.json');
 // B13: PrimeWright's drafted profile copy (LinkedIn/Facebook/Reddit), written
-// against config/profile-specs.json. Optional - guarded, idempotent (upsert),
+// against config/profile-specs.json. Optional — guarded, idempotent (upsert),
 // and only applied if the brand from its brand_slug already exists.
 const PROFILE_SEED_PATH = path.join(ROOT, 'config', 'profile-seed.primewright.json');
 
-// Voice doc reference per brand slug - placeholder text pointing at the real doc.
+// Voice doc reference per brand slug — placeholder text pointing at the real doc.
 const VOICE_DOC_PATHS = {
-  cholmesiv: 'docs/brand-voice-reference.md',
+  cholmesiv: 'docs/voice-reference.example.md',
   dihy: 'brands/dihy/dihy-social-content-system.md',
 };
 
@@ -58,7 +58,7 @@ export function seed() {
     INSERT INTO accounts (brand_id, platform, blotato_account_id, target_fields, active, created_at, updated_at)
     VALUES (@brand_id, @platform, @blotato_account_id, @target_fields, 1, @now, @now)
   `);
-  // blotato_account_id can be NULL (e.g. a reddit row - assisted-manual,
+  // blotato_account_id can be NULL (e.g. a reddit row — assisted-manual,
   // never connected in Blotato per SPEC.md). "= ?" never matches NULL in
   // SQLite, so use IS for that comparison; IS accepts bound params fine.
   const findAccountById = db.prepare(`
@@ -98,7 +98,7 @@ export function seed() {
 
       for (const acct of brandSeed.accounts || []) {
         // Tolerate accounts with no Blotato connection yet (IG/TikTok not
-        // connected; reddit never will be - it's assisted-manual). Their
+        // connected; reddit never will be — it's assisted-manual). Their
         // blotato_account_id stays NULL rather than the string "null".
         const acctId = acct.blotato_account_id == null ? null : String(acct.blotato_account_id);
         const existing = findAccount(brand.id, acct.platform, acctId);

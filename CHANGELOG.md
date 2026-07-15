@@ -3,6 +3,19 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-15 - Composer: add a platform to any brand (fix account dead-end)
+
+- Brands seeded without a Blotato connection (PrimeWright, Lunula, IVision) dead-ended in the
+  Composer: nothing to distribute to, so drafting was blocked. Added `POST /api/accounts` and a
+  "+ add platform" control in the Composer's Distribute-to box. New accounts default to
+  **manual** (assisted copy & paste, no live connection); a live Blotato connection can be
+  attached later. Guards: 400 on missing brand/platform, 404 on unknown brand, 409 on a dupe
+  platform for the same brand.
+- Fixed account checkboxes not reflecting the persisted selection after a re-render (they
+  looked unchecked though the account was selected) - the "won't let me select it sometimes"
+  bug. Checkbox now mirrors `selectedAccounts`.
+- Tests: +5 (`test/server.accounts-create.test.js`). Suite now 190.
+
 ## 2026-07-15 - Calendar: click a day to schedule
 
 - Click an empty part of any day cell to jump to the Composer with "Publish at" prefilled to

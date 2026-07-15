@@ -13,9 +13,9 @@ import { STATE_FILE } from './export.js';
 
 const execFileAsync = promisify(execFile);
 
-const DEFAULT_HOST = '';
+const DEFAULT_HOST = 'your-vps-host.example.com';
 const DEFAULT_USER = 'root';
-const DEFAULT_REMOTE_PATH = '/path/to/state/social.json';
+const DEFAULT_REMOTE_PATH = '/opt/agentic-os/state/social.json';
 const DEFAULT_KEY = path.join(os.homedir(), '.ssh', 'id_ed25519');
 
 const RATE_LIMIT_MS = 15 * 60 * 1000;
@@ -24,12 +24,12 @@ let lastSyncAt = 0;
 function syncEnabled() {
   const v = process.env.POSTDECK_SYNC_ENABLED;
   // Default ON per spec ("default the target ON with those values").
-  if (v === undefined || v === null || v === '') return false;
+  if (v === undefined || v === null || v === '') return true;
   return !['0', 'false'].includes(String(v).toLowerCase());
 }
 
 function getSyncConfig() {
-  const target = process.env.POSTDECK_SYNC_TARGET; // e.g. root@host:/path/to/state/social.json
+  const target = process.env.POSTDECK_SYNC_TARGET; // e.g. root@host:/opt/agentic-os/state/social.json
   let user = process.env.POSTDECK_SYNC_USER || DEFAULT_USER;
   let host = process.env.POSTDECK_SYNC_HOST || DEFAULT_HOST;
   let remotePath = process.env.POSTDECK_SYNC_PATH || DEFAULT_REMOTE_PATH;
@@ -53,13 +53,13 @@ function getSyncConfig() {
  */
 async function syncSocialState({ force = false } = {}) {
   if (!syncEnabled()) {
-    console.log('[sync] POSTDECK_SYNC_ENABLED=0 - skipping');
+    console.log('[sync] POSTDECK_SYNC_ENABLED=0 — skipping');
     return { ok: false, skipped: true, reason: 'disabled' };
   }
 
   const { user, host, remotePath, key } = getSyncConfig();
   if (!host || !remotePath) {
-    console.log('[sync] no sync target configured - skipping');
+    console.log('[sync] no sync target configured — skipping');
     return { ok: false, skipped: true, reason: 'unconfigured' };
   }
 
@@ -69,12 +69,12 @@ async function syncSocialState({ force = false } = {}) {
   }
 
   if (!fs.existsSync(STATE_FILE)) {
-    console.log(`[sync] ${STATE_FILE} does not exist - skipping (run export first)`);
+    console.log(`[sync] ${STATE_FILE} does not exist — skipping (run export first)`);
     return { ok: false, skipped: true, reason: 'no_state_file' };
   }
 
   if (!fs.existsSync(key)) {
-    console.log(`[sync] ssh key ${key} not found - skipping`);
+    console.log(`[sync] ssh key ${key} not found — skipping`);
     return { ok: false, skipped: true, reason: 'no_key' };
   }
 

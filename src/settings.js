@@ -55,7 +55,7 @@ function toMinutes(hhmm) {
 /**
  * Whether an ISO publish_at timestamp falls inside the configured local
  * quiet-hours window. Handles windows that wrap midnight (e.g. 22:00-07:00).
- * This is a soft-warning check only (see SPEC.md B6) - never a hard block.
+ * This is a soft-warning check only (see SPEC.md B6) — never a hard block.
  */
 function isWithinQuietHours(publishAtIso, quietStart = DEFAULTS.quiet_start, quietEnd = DEFAULTS.quiet_end) {
   if (!publishAtIso) return false;

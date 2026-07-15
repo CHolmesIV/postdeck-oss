@@ -3,7 +3,7 @@
 //
 // Safety: BLOTATO_DRY_RUN defaults ON (treat unset as on). Only an explicit
 // '0' or 'false' disables it. In dry-run, blotato.js's real network functions
-// are never called - the worker logs what it would submit and marks the post
+// are never called — the worker logs what it would submit and marks the post
 // 'submitted_dry' instead of 'submitted'. This is a hard requirement for this
 // build session: no real create/schedule/media-upload calls are allowed.
 
@@ -173,7 +173,7 @@ async function handoffOne(db, post) {
 /**
  * B11: an account/platform is "assisted-manual" if `accounts.manual=1` OR
  * its platform is `blotato:false` in platform-specs (Reddit today, more
- * later - generalizes the old hardcoded `platform != 'reddit'` skip). The
+ * later — generalizes the old hardcoded `platform != 'reddit'` skip). The
  * worker must NEVER hand these off to Blotato; they stay in their current
  * status until the dashboard's "Post now"/"Mark posted" flow does it by
  * hand (see POST /api/posts/:id/mark-posted).
@@ -203,7 +203,7 @@ async function runHandoffPhase(db) {
 }
 
 /**
- * "Submit now" - run HANDOFF logic immediately for one post, ignoring the
+ * "Submit now" — run HANDOFF logic immediately for one post, ignoring the
  * handoff window. Used by POST /api/posts/:id/submit.
  */
 async function submitNow(postId) {
@@ -213,7 +213,7 @@ async function submitNow(postId) {
   if (isAssistedManual(db, post)) {
     return {
       ok: false,
-      error: `${post.platform} is assisted-manual (not supported by Blotato / manual account) - use the "Mark posted" flow instead`,
+      error: `${post.platform} is assisted-manual (not supported by Blotato / manual account) — use the "Mark posted" flow instead`,
     };
   }
   if (!['scheduled_local', 'approved'].includes(post.status)) {
@@ -249,7 +249,7 @@ async function verifyOne(db, post) {
       return;
     }
 
-    // Still pending - bump verify_attempts, and give up after the window/attempt cap.
+    // Still pending — bump verify_attempts, and give up after the window/attempt cap.
     const attempts = (post.verify_attempts || 0) + 1;
     const publishAtMs = post.publish_at ? Date.parse(post.publish_at) : Date.now();
     const withinWindow = Date.now() - publishAtMs <= VERIFY_WINDOW_MS;
@@ -308,7 +308,7 @@ let lastExportAtMs = 0;
 /**
  * Export social-state.json + rsync it to the VPS. Runs on every
  * state-changing cycle, and forced (regardless of change) at least once an
- * hour - see SPEC.md worker item 3.
+ * hour — see SPEC.md worker item 3.
  */
 async function runExportPhase(db, { changed }) {
   const now = Date.now();
@@ -369,12 +369,12 @@ let intervalHandle = null;
 
 function startWorker() {
   if (!workerEnabled()) {
-    console.log('[worker] POSTDECK_WORKER disabled - not starting');
+    console.log('[worker] POSTDECK_WORKER disabled — not starting');
     return null;
   }
   if (intervalHandle) return intervalHandle;
   console.log(
-    `[worker] starting - every ${FIVE_MINUTES_MS / 60000}min, dryRun=${isDryRun()}`
+    `[worker] starting — every ${FIVE_MINUTES_MS / 60000}min, dryRun=${isDryRun()}`
   );
   // Kick one cycle off shortly after boot, then every 5 minutes.
   runCycle();

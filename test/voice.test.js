@@ -1,5 +1,5 @@
-// Unit tests for src/voice.js (B12 - SPEC.md "Settings & personalization").
-// In-memory DB via POSTDECK_DB_PATH=':memory:'. No CLI/model calls involved -
+// Unit tests for src/voice.js (B12 — SPEC.md "Settings & personalization").
+// In-memory DB via POSTDECK_DB_PATH=':memory:'. No CLI/model calls involved —
 // this module is pure DB read/write + merge logic.
 //
 // Run with: node --test test/voice.test.js

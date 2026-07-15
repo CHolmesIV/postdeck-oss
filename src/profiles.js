@@ -1,8 +1,8 @@
-// Brand profiles (B13 - SPEC.md "Brand profiles (source of truth + generate)").
+// Brand profiles (B13 — SPEC.md "Brand profiles (source of truth + generate)").
 // Canonical store of each brand's per-platform profile fields (heading,
 // subheading, bio, platform-standard fields) so CB knows which profiles are
 // stale and need updating. generateProfile() drafts each field in his voice
-// for copy-paste - nothing here auto-posts; a human always copies the field
+// for copy-paste — nothing here auto-posts; a human always copies the field
 // into the actual platform. Same `claude -p` shell as draft.js/copy_assist.js
 // (lazy env overrides, --output-format json envelope, 60s timeout, 503-flagged
 // error contract) and the same mechanical scrub.js pass on every returned
@@ -177,7 +177,7 @@ function buildGeneratePrompt({ brand, spec, voice, hardRules }) {
     `You are writing platform profile copy for the brand "${brand?.name ?? '(unknown brand)'}".`,
     `Website: ${brand?.name ? '(see brand context)' : '(unknown)'}`,
     ``,
-    `Voice (CB's own voice - write in it, first-person-plural or brand voice as natural for this field):`,
+    `Voice (CB's own voice — write in it, first-person-plural or brand voice as natural for this field):`,
     voice || '(no voice guidance provided)',
     ``,
     `Hard rules (must also follow exactly, mechanically re-enforced after your output): ${JSON.stringify(hardRules || {})}`,
@@ -187,7 +187,7 @@ function buildGeneratePrompt({ brand, spec, voice, hardRules }) {
     `Write copy for each of these fields, respecting its character limit:`,
     fieldLines,
     ``,
-    `Respond with STRICT JSON ONLY, no markdown fences, no commentary - an object keyed`,
+    `Respond with STRICT JSON ONLY, no markdown fences, no commentary — an object keyed`,
     `exactly by each field's key above (use empty string "" for any optional field you`,
     `have no useful content for; never fabricate specifics you cannot justify):`,
     `{${spec.fields.map((f) => `"${f.key}": "..."`).join(', ')}}`,
@@ -211,7 +211,7 @@ function scrubFields(raw, hardRules) {
  * call, grounded in resolveVoice's global+brand voice and the platform's
  * field spec/SEO notes. Scrubs every returned string, then upserts the
  * profile row with status 'draft' and last_generated_at set. Human
- * copy-pastes the fields into the actual platform - nothing here publishes.
+ * copy-pastes the fields into the actual platform — nothing here publishes.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {{brand_id: number, platform: string}} params
@@ -277,7 +277,7 @@ async function generateProfile(db = getDb(), { brand_id, platform } = {}) {
 
 /**
  * Seed profiles from a profile-seed JSON file (shape: { brand_slug, profiles:
- * [{platform, fields}] }), resolving the brand by slug. Idempotent - each
+ * [{platform, fields}] }), resolving the brand by slug. Idempotent — each
  * platform profile is upserted with status 'draft'. Returns the count of
  * profile rows written (inserted or updated).
  *

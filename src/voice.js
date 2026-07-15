@@ -1,4 +1,4 @@
-// Voice/rules resolver (B12 - SPEC.md "Settings & personalization").
+// Voice/rules resolver (B12 — SPEC.md "Settings & personalization").
 // Inheritance model: one global voice ("CB") + global hard rules, inherited
 // by every brand; per-brand tone_profiles hold only light tweaks on top.
 // resolveVoice() is the single source consumed by draft.js/copy_assist.js/
@@ -62,7 +62,7 @@ function getGlobalHardRules(db = getDb()) {
 
 function setGlobalHardRules(db = getDb(), rules = {}) {
   // The API layer may hand us a JSON string (the settings PATCH sends it as a
-  // string) or an already-parsed object. Normalize before merging - spreading a
+  // string) or an already-parsed object. Normalize before merging — spreading a
   // raw string would explode it into character-indexed keys.
   let obj = rules;
   if (typeof rules === 'string') {
@@ -84,7 +84,7 @@ function dedupeArray(arr) {
 /**
  * Union-merge global hard_rules with a tone's hard_rules. Booleans OR'd,
  * arrays concatenated + deduped. no_em_dash defaults ON and stays truthy
- * whenever either side sets it - this is CB's flagship global rule and must
+ * whenever either side sets it — this is CB's flagship global rule and must
  * never be silently dropped by an empty/missing tone override.
  */
 function mergeHardRules(globalRules = {}, toneRules = {}) {
@@ -104,7 +104,7 @@ function mergeHardRules(globalRules = {}, toneRules = {}) {
  * Resolve the effective voice + hard_rules for a (brand_id, tone) pair.
  * `voice` = global voice + tone's voice_rules (both optional, joined with a
  * blank line). `hardRules` = global hard rules merged with the tone's.
- * Tolerates a missing/unfound tone profile - falls back to global-only.
+ * Tolerates a missing/unfound tone profile — falls back to global-only.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {{brand_id?: number|null, tone?: string|null}} params
@@ -140,7 +140,7 @@ function resolveVoice(db = getDb(), { brand_id = null, tone = null } = {}) {
  * (or null) by merging in the global voice/hard rules. Used at every
  * generation call site so draftWithAi/copyAssist's existing
  * `toneProfile.voice_rules` / `toneProfile.hard_rules` reads (and scrub.js,
- * which consumes hard_rules) always see the merged, global-inclusive set -
+ * which consumes hard_rules) always see the merged, global-inclusive set —
  * without changing draft.js/copy_assist.js's function signatures.
  *
  * @param {import('better-sqlite3').Database} db
@@ -184,7 +184,7 @@ function seedGlobalVoiceIfMissing(db = getDb(), opts = {}) {
   if (existingVoice === undefined || existingVoice === null) {
     let seeded = '';
     try {
-      // Guarded: a missing file (or any fs error) never throws - seeding is
+      // Guarded: a missing file (or any fs error) never throws — seeding is
       // best-effort and must never break server boot or tests.
       const here = path.dirname(fileURLToPath(import.meta.url));
       const refPath = opts.voiceRefPath || path.resolve(here, '..', 'docs', 'charles-voice-reference.md');

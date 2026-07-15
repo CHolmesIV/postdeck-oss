@@ -1,7 +1,7 @@
-// AI provider abstraction (B15 - SPEC.md "AI provider switcher"). A small
+// AI provider abstraction (B15 — SPEC.md "AI provider switcher"). A small
 // registry keyed by provider name so a new provider (future) is a config
 // entry, not a rewrite. Both current providers shell out to a subscription
-// CLI already logged in on this machine - NEVER an API key.
+// CLI already logged in on this machine — NEVER an API key.
 //
 // runDraft(provider, {prompt, model?, budget?}) -> Promise<string> resolving
 // to the model's raw text response (unwrapped from whatever CLI-specific
@@ -11,19 +11,19 @@
 // claude: `claude -p <prompt> --model <m> --max-budget-usd <b>
 //   --output-format json`; envelope is `{"result": "<raw text>"}`.
 //   Subscription login via `claude` / `/login`.
-// codex: `codex exec --json <prompt>` - headless, prints a JSONL event
+// codex: `codex exec --json <prompt>` — headless, prints a JSONL event
 //   stream to stdout. We take the LAST `agent_message` event's `.text`
 //   (tolerant of both a bare `{"type":"agent_message","text":...}` shape and
 //   a `{"type":"item.completed","item":{"type":"agent_message","text":...}}`
-//   shape, and of non-JSON lines interleaved in the stream - skipped).
+//   shape, and of non-JSON lines interleaved in the stream — skipped).
 //   ASSUMPTION (undocumented at build time, no `codex` CLI available to
 //   introspect against): no read-only/sandbox flag is passed. `codex exec`
 //   without a flag still requires a prompt-only response for our use (pure
 //   text drafting, no file edits requested), but this is UNVERIFIED against
-//   a real login - see SPEC.md B15 honesty note. If a real `codex --help`
+//   a real login — see SPEC.md B15 honesty note. If a real `codex --help`
 //   later reveals a `--sandbox read-only` (or similar) flag, add it to
 //   codex.buildArgs below; keep the parser as-is.
-//   Reuses the saved Codex CLI login (ChatGPT/subscription) - no API key.
+//   Reuses the saved Codex CLI login (ChatGPT/subscription) — no API key.
 
 import { execFile } from 'node:child_process';
 
@@ -35,7 +35,7 @@ function make503(message) {
 
 /**
  * Unwrap a `claude -p ... --output-format json` envelope and return the raw
- * text the model produced (still just text - the caller decides whether/how
+ * text the model produced (still just text — the caller decides whether/how
  * to JSON.parse it for its own purposes). Throws (non-503) if the envelope
  * itself isn't valid JSON, and a 503-flagged error if the CLI reports it
  * isn't logged in.
@@ -49,7 +49,7 @@ function parseClaudeEnvelope(stdout) {
   }
   const resultText = typeof outer.result === 'string' ? outer.result : stdout;
   if (/not logged in/i.test(resultText) || /\/login/i.test(resultText)) {
-    throw make503('AI drafting unavailable: claude CLI is not logged in - run `claude` then `/login`.');
+    throw make503('AI drafting unavailable: claude CLI is not logged in — run `claude` then `/login`.');
   }
   return resultText;
 }
@@ -57,7 +57,7 @@ function parseClaudeEnvelope(stdout) {
 /**
  * Parse a `codex exec --json` JSONL event stream and return the text of the
  * LAST agent_message event (concatenated if the last message spans more
- * than one event of that type in a row - in practice codex emits one final
+ * than one event of that type in a row — in practice codex emits one final
  * message, but we don't assume that). Non-JSON lines are skipped rather than
  * failing the whole parse (headless CLIs sometimes interleave banners/log
  * lines with the JSON events).
@@ -96,14 +96,14 @@ function parseCodexStream(stdout) {
 
   if (lastText == null) {
     if (sawErrorEvent) {
-      throw make503('AI drafting unavailable: codex CLI reported an error - run `codex login` and retry.');
+      throw make503('AI drafting unavailable: codex CLI reported an error — run `codex login` and retry.');
     }
     throw make503(
       'AI drafting unavailable: codex CLI returned no agent message (not logged in? run `codex login`).'
     );
   }
   if (/not logged in/i.test(lastText) || /codex login/i.test(lastText)) {
-    throw make503('AI drafting unavailable: codex CLI is not logged in - run `codex login`.');
+    throw make503('AI drafting unavailable: codex CLI is not logged in — run `codex login`.');
   }
   return lastText;
 }
@@ -131,7 +131,7 @@ const PROVIDERS = {
     defaultBin: 'codex',
     // Headless, JSON event stream, pure text response. See file-header note:
     // no sandbox/read-only flag added (unverified against a real codex
-    // login) - model/budget are claude-specific and intentionally unused.
+    // login) — model/budget are claude-specific and intentionally unused.
     buildArgs(prompt) {
       return ['exec', '--json', prompt];
     },
@@ -183,7 +183,7 @@ async function runDraft(providerName, { prompt, model, budget } = {}) {
     throw make503(
       `AI drafting unavailable: could not run ${providerName} CLI (${
         err.code === 'ENOENT' ? 'not found on PATH' : err.message
-      }) - ${fix}.`
+      }) — ${fix}.`
     );
   }
 

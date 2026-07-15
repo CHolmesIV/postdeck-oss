@@ -29,7 +29,7 @@ function parseFile(raw) {
 /**
  * Scan the inbox dir for *.md/*.txt files, insert one `ideas` row per file
  * (status 'idea', source 'capture'), then move the file to processed/.
- * Returns the list of created idea rows. Safe to call repeatedly - the
+ * Returns the list of created idea rows. Safe to call repeatedly — the
  * inbox and processed dirs are created if missing, and an empty/missing
  * inbox is a no-op.
  */
@@ -91,5 +91,5 @@ export { importCapturedIdeas, getInboxDir, getProcessedDir };
 // CLI entrypoint: `node src/capture.js`
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   const created = importCapturedIdeas();
-  console.log(`[capture] done - ${created.length} idea(s) imported`);
+  console.log(`[capture] done — ${created.length} idea(s) imported`);
 }

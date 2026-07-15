@@ -2,7 +2,7 @@
 // the real API shape (media upload, create-post with root-level
 // scheduledTime, status polling). BLOTATO_DRY_RUN is forced to '0' here so
 // the real code path in src/blotato.js + src/worker.js is exercised against
-// this LOCAL mock only - never the real Blotato API.
+// this LOCAL mock only — never the real Blotato API.
 //
 // Run with: node --test test/blotato.mock.test.js
 
@@ -81,7 +81,7 @@ test('worker HANDOFF then VERIFY against a mock Blotato server', async (t) => {
     server.close();
   });
 
-  // Import AFTER env vars are set - modules read env at call-time here (not
+  // Import AFTER env vars are set — modules read env at call-time here (not
   // at import time) so this ordering isn't strictly required, but keep it
   // for clarity and to avoid any accidental module-level caching surprises.
   const { getDb, nowIso } = await import('../src/db.js');
@@ -137,7 +137,7 @@ test('worker HANDOFF then VERIFY against a mock Blotato server', async (t) => {
   assert.equal(row.public_url, 'https://twitter.com/x/status/999');
 });
 
-test('worker HANDOFF skips reddit posts - never submitted to Blotato', async (t) => {
+test('worker HANDOFF skips reddit posts — never submitted to Blotato', async (t) => {
   const server = await startMockServer();
   const { address, port } = server.address();
   process.env.BLOTATO_API_BASE = `http://${address}:${port}`;
@@ -160,7 +160,7 @@ test('worker HANDOFF skips reddit posts - never submitted to Blotato', async (t)
     .prepare(`INSERT INTO brands (name, slug, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)`)
     .run('Reddit Test Brand', `reddit-brand-${Math.random()}`, now, now);
 
-  // Reddit account: no Blotato connection (blotato_account_id NULL) - see
+  // Reddit account: no Blotato connection (blotato_account_id NULL) — see
   // SPEC.md "Platform lineup" (assisted-manual, not a Blotato target).
   const account = db
     .prepare(
@@ -184,7 +184,7 @@ test('worker HANDOFF skips reddit posts - never submitted to Blotato', async (t)
   assert.equal(postsCallCount, 0, 'Blotato /v2/posts must never be called for a reddit post');
 
   const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);
-  assert.equal(row.status, 'scheduled_local', 'reddit post stays scheduled_local - worker never touches it');
+  assert.equal(row.status, 'scheduled_local', 'reddit post stays scheduled_local — worker never touches it');
 
   const submitResult = await worker.submitNow(postId);
   assert.equal(submitResult.ok, false, '"submit now" must also refuse reddit posts');

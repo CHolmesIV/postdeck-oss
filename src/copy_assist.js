@@ -1,9 +1,9 @@
-// Copy assistant (B8 - SPEC.md "Copy assistant"). Extends Draft-with-AI from
+// Copy assistant (B8 — SPEC.md "Copy assistant"). Extends Draft-with-AI from
 // one blob to pickable pieces: headlines, alt_text, hashtags, or all three.
 // Same `claude -p` shell as draft.js (env overrides, --output-format json
 // envelope, 60s timeout, 503 when the CLI is unavailable) and the same
 // mechanical scrub.js pass on every returned string. Never auto-fills a
-// composer field - the human picks a variant and Approves (SPEC.md).
+// composer field — the human picks a variant and Approves (SPEC.md).
 
 import { execFile } from 'node:child_process';
 import { scrubText } from './scrub.js';
@@ -36,7 +36,7 @@ function brandVoiceBlock({ brand, toneProfile, grounding }) {
   ];
   if (grounding) {
     lines.push(
-      `Grounding (research notes / this brand's own top-performing posts - use to inform choices, do not quote verbatim unless natural): ${grounding}`
+      `Grounding (research notes / this brand's own top-performing posts — use to inform choices, do not quote verbatim unless natural): ${grounding}`
     );
   }
   return lines.join('\n');
@@ -63,7 +63,7 @@ function altTextPrompt(ctx) {
     `Image file name (you cannot see the actual image): ${filename}`,
     ``,
     `Write ONE concise, accessible alt-text description for the image attached to this post.`,
-    `NOTE: you cannot see the image itself - infer a plausible, generic-but-useful description`,
+    `NOTE: you cannot see the image itself — infer a plausible, generic-but-useful description`,
     `from the file name and copy context only. Do not invent specific visual details you can't`,
     `justify from that context (no fabricated people, brands, or text-in-image claims).`,
     `Respond with STRICT JSON ONLY, no markdown fences, no commentary:`,
@@ -91,7 +91,7 @@ function hashtagsPrompt(ctx) {
     `Suggest hashtags per platform, respecting each platform's best-practice count:`,
     countLines || '(no platforms specified)',
     ``,
-    `Respond with STRICT JSON ONLY, no markdown fences, no commentary - an object mapping`,
+    `Respond with STRICT JSON ONLY, no markdown fences, no commentary — an object mapping`,
     `each platform to an array of hashtag strings (each starting with #):`,
     `{"hashtags": {"instagram": ["#a", "#b"]}}`,
     `Platforms: ${platforms.join(', ') || '(none)'}`,
@@ -120,14 +120,14 @@ function allPrompt(ctx) {
     `Produce THREE things in one response:`,
     `1. headlines: 3-5 distinct hook/headline variants for this content (short, punchy).`,
     `2. alt_text: ONE concise, accessible alt-text description for the attached image`,
-    `   (file name: ${filename}). NOTE: you cannot see the image itself - infer a`,
+    `   (file name: ${filename}). NOTE: you cannot see the image itself — infer a`,
     `   plausible, generic-but-useful description from the file name and copy context`,
     `   only. Do not invent specific visual details you can't justify from that context.`,
     `3. hashtags: per-platform hashtag suggestions, respecting each platform's`,
     `   best-practice count:`,
     countLines || '   (no platforms specified)',
     ``,
-    `Respond with STRICT JSON ONLY, no markdown fences, no commentary - a single object`,
+    `Respond with STRICT JSON ONLY, no markdown fences, no commentary — a single object`,
     `combining all three shapes:`,
     `{"headlines": ["...", "..."], "alt_text": "...", "hashtags": {"instagram": ["#a"]}}`,
     `Platforms: ${platforms.join(', ') || '(none)'}`,
@@ -178,7 +178,7 @@ function parseClaudeCliOutput(stdout) {
 }
 
 // Retained for back-compat / existing direct tests of the legacy claude-only
-// shell (no longer on the runtime path - copyAssist now routes through
+// shell (no longer on the runtime path — copyAssist now routes through
 // src/ai.js's provider registry, see below).
 function runClaudeCli(prompt) {
   return new Promise((resolve, reject) => {

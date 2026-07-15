@@ -1,8 +1,8 @@
-// Unit tests for src/redistribute.js (B11 - SPEC.md "Assisted-manual upgrade
+// Unit tests for src/redistribute.js (B11 — SPEC.md "Assisted-manual upgrade
 // + blog redistribution"). extractFromUrl's network call is stubbed via
 // monkey-patched global.fetch (test/extract.test.js's pattern).
 //
-// The drafting CLI is stubbed via POSTDECK_CLAUDE_BIN - but draft.js (unlike
+// The drafting CLI is stubbed via POSTDECK_CLAUDE_BIN — but draft.js (unlike
 // copy_assist.js/extract.js) reads that env var into a MODULE-LEVEL const at
 // import time, so it must be set before src/redistribute.js (which imports
 // draft.js) is ever imported. To still vary the canned response per test, the
@@ -12,7 +12,7 @@
 // current process.env at call time, not at import time). Missing/absent
 // response file => the stub exits non-zero, exercising the 503 contract.
 //
-// In-memory DB via POSTDECK_DB_PATH=':memory:'. Hermetic - no real network or
+// In-memory DB via POSTDECK_DB_PATH=':memory:'. Hermetic — no real network or
 // CLI/model calls.
 //
 // Run with: node --test test/redistribute.test.js
@@ -190,7 +190,7 @@ test('redistributeFromUrl: AI drafting 503 still creates drafts (empty copy) + i
     assert.equal(result.ai_unavailable, true);
     assert.equal(result.drafts.length, 2);
     assert.ok(result.drafts.every((d) => d.status === 'draft' && d.copy === ''));
-    assert.equal(result.image_requests.length, 1, 'image brief is pure/no AI - should still be created');
+    assert.equal(result.image_requests.length, 1, 'image brief is pure/no AI — should still be created');
   } finally {
     restoreFetch();
   }

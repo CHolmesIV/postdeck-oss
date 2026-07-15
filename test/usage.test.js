@@ -1,12 +1,12 @@
 // Unit tests for buildUsageStats()/recordUsage()/usageSummaryForExport() (B8
-// - SPEC.md "Ops-stats tab"). Uses an in-memory SQLite DB seeded with a
+// — SPEC.md "Ops-stats tab"). Uses an in-memory SQLite DB seeded with a
 // posts/usage_events fixture, following test/analytics.test.js's pattern.
 //
 // NOTE: getDb() is a module-level singleton, so (like analytics.test.js) all
 // tests in this file share one growing in-memory DB. Global aggregates
 // (posts_by_status, published_all_time, usage_counts, ...) are asserted as
 // *deltas* against a baseline snapshot taken before each test seeds its own
-// fixture, rather than as absolute counts - this keeps tests order-independent
+// fixture, rather than as absolute counts — this keeps tests order-independent
 // and immune to accumulation across tests.
 // Run with: node --test test/usage.test.js
 

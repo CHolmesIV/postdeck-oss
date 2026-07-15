@@ -1,7 +1,7 @@
-// Unit tests for src/inspiration.js (B8 - SPEC.md "Research + inspiration
+// Unit tests for src/inspiration.js (B8 — SPEC.md "Research + inspiration
 // ingestion"). Uses an in-memory SQLite DB, following test/analytics.test.js's
 // pattern. suggestProfiles is tested against the 503 contract (CLI missing)
-// and a stub `claude` binary that echoes a canned JSON envelope - never a
+// and a stub `claude` binary that echoes a canned JSON envelope — never a
 // real network call or CLI.
 //
 // Run with: node --test test/inspiration.test.js
@@ -173,7 +173,7 @@ test('suggestProfiles happy path: parses a stub CLI JSON envelope into { suggest
   const prevBin = process.env.POSTDECK_CLAUDE_BIN;
   // suggestProfiles execFile's whatever binary POSTDECK_CLAUDE_BIN points at
   // with its fixed arg list (-p <prompt> --model ... --output-format json)
-  // and just reads stdout - so a stub script with a shebang stands in fine
+  // and just reads stdout — so a stub script with a shebang stands in fine
   // for the real `claude` CLI here, no network/CLI involved.
   process.env.POSTDECK_CLAUDE_BIN = stubPath;
   try {

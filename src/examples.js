@@ -1,8 +1,8 @@
-// Example posts (B11 - SPEC.md "Assisted-manual upgrade + blog
+// Example posts (B11 — SPEC.md "Assisted-manual upgrade + blog
 // redistribution"). CB pastes an example post (text) or drops a screenshot;
 // these ground the copy assistant/agent as "match the style/format of these
 // example posts." Screenshots are converted to text EXACTLY ONCE (via
-// src/extract.js's extractFromImage) and the result is cached on the row -
+// src/extract.js's extractFromImage) and the result is cached on the row —
 // never re-read the image on subsequent reads.
 
 import { nowIso } from './db.js';
@@ -65,7 +65,7 @@ function listExamples(db, opts = {}) {
  * an `image_path` was, run extractFromImage ONCE and store the returned text
  * (image_path is kept for reference, never re-read). If extraction 503s, the
  * row is still created with `text: null` and a note in `extraction_error` so
- * the caller/UI can retry - the whole create does not throw.
+ * the caller/UI can retry — the whole create does not throw.
  */
 async function createExample(
   db,

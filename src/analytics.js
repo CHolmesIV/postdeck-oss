@@ -1,4 +1,4 @@
-// Analytics rollups (B7) - fed by the `metrics` table (manual entry, see
+// Analytics rollups (B7) — fed by the `metrics` table (manual entry, see
 // SPEC.md "Analytics portal"). Pure functions of the DB; server.js exposes
 // GET /api/analytics, and export.js pulls a 30-day summary per brand into
 // social-state.json for the Agentic OS bridge.
@@ -94,7 +94,7 @@ function topPosts(db, { brandId, orderBy = 'impressions', limit = 10 } = {}) {
     .all(...params, limit);
 }
 
-/** Published posts older than `hours` with zero metrics rows - the "nudge"
+/** Published posts older than `hours` with zero metrics rows — the "nudge"
  * queue from SPEC.md's Analytics portal section. */
 function metricsDue(db, { hours = 48 } = {}) {
   const cutoff = isoDaysAgo(hours / 24);
@@ -176,7 +176,7 @@ function buildAnalytics(db = getDb()) {
   };
 }
 
-/** Compact 30-day summary for one brand - used by export.js's social-state. */
+/** Compact 30-day summary for one brand — used by export.js's social-state. */
 function build30dSummary(db, brandId) {
   const sinceIso = isoDaysAgo(30);
   const totals = rollupFor(db, { brandId, sinceIso });

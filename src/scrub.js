@@ -1,4 +1,4 @@
-// Mechanical hard-rules scrub - runs on every AI draft (and can be called
+// Mechanical hard-rules scrub — runs on every AI draft (and can be called
 // standalone) to enforce hard_rules from a tone_profile in plain JS, no LLM
 // round-trip. Deterministic, unit-testable.
 //
@@ -11,21 +11,21 @@ function escapeRegExp(str) {
 
 /**
  * Replace em/en dashes with a plain-ASCII equivalent.
- * "word - word" (spaced) -> "word, word"
- * "word-word" (unspaced)  -> "word - word"
+ * "word — word" (spaced) -> "word, word"
+ * "word—word" (unspaced)  -> "word - word"
  */
 function scrubEmDashes(text) {
   let changed = false;
   let out = text;
 
-  // Spaced dash: " - " or " – " -> ", "
-  if (/\s+[-–]\s+/.test(out)) {
-    out = out.replace(/\s+[-–]\s+/g, ', ');
+  // Spaced dash: " — " or " – " -> ", "
+  if (/\s+[—–]\s+/.test(out)) {
+    out = out.replace(/\s+[—–]\s+/g, ', ');
     changed = true;
   }
-  // Any remaining unspaced dash: "word-word" -> "word - word"
-  if (/[-–]/.test(out)) {
-    out = out.replace(/[-–]/g, ' - ');
+  // Any remaining unspaced dash: "word—word" -> "word - word"
+  if (/[—–]/.test(out)) {
+    out = out.replace(/[—–]/g, ' - ');
     changed = true;
   }
   return { text: out, changed };

@@ -1,13 +1,13 @@
 // Mechanical validation for per-platform required fields (B6 polish).
 // Currently covers TikTok, whose Blotato payload requires a fixed set of
 // "cosmetic" flags CB flagged as a gap in B3. Called from the PATCH
-// /api/posts/:id Approve gate in src/server.js - never silently drops data,
+// /api/posts/:id Approve gate in src/server.js — never silently drops data,
 // just refuses the status transition with a clear 422 message.
 
 import { getTiktokRequiredFields } from './platforms.js';
 
 // Required field NAMES now come from config/platform-specs.json (single
-// source of truth - see SPEC.md "Platform lineup"). This constant is kept
+// source of truth — see SPEC.md "Platform lineup"). This constant is kept
 // as a fallback only if the config file is ever missing/malformed.
 const FALLBACK_TIKTOK_REQUIRED_FIELDS = [
   'privacyLevel',
@@ -24,7 +24,7 @@ function tiktokRequiredFields() {
   return fromConfig.length ? fromConfig : FALLBACK_TIKTOK_REQUIRED_FIELDS;
 }
 
-// These must specifically be booleans (not just "truthy") - Blotato's API
+// These must specifically be booleans (not just "truthy") — Blotato's API
 // rejects strings like "true"/"false" for these flags.
 const TIKTOK_BOOLEAN_FIELDS = [
   'disabledComments',

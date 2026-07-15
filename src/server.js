@@ -1,4 +1,4 @@
-// Fastify API - localhost only (127.0.0.1).
+// Fastify API — localhost only (127.0.0.1).
 // B1: read-only skeleton. B2/B3 add the dashboard (public/) + write/lifecycle
 // endpoints (posts, ideas, media, metrics, AI drafting, blog preview).
 
@@ -72,7 +72,7 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 // Confine a client-supplied media path (e.g. "media/123-file.png") to MEDIA_DIR.
 // Returns the resolved absolute path, or null if it escapes MEDIA_DIR (absolute
 // path elsewhere, or ../ traversal). Endpoints that hand a caller-provided path
-// to sips/the vision model MUST use this - otherwise a request (e.g. from a
+// to sips/the vision model MUST use this — otherwise a request (e.g. from a
 // malicious page hitting localhost) could read arbitrary image files off disk.
 function resolveMediaPath(clientPath) {
   if (typeof clientPath !== 'string' || !clientPath) return null;
@@ -85,13 +85,13 @@ function resolveMediaPath(clientPath) {
 }
 
 const PORT = Number(process.env.PORT) || 4520;
-const HOST = '127.0.0.1'; // localhost only - never bind 0.0.0.0 (see SPEC.md)
+const HOST = '127.0.0.1'; // localhost only — never bind 0.0.0.0 (see SPEC.md)
 
 // draft -> approved -> canceled only, in this phase (no Blotato yet).
 const ALLOWED_POST_TRANSITIONS = {
   draft: ['approved', 'canceled'],
   approved: ['canceled'],
-  // scheduled_local is 'approved' + a publish_at (see merge logic below) - the
+  // scheduled_local is 'approved' + a publish_at (see merge logic below) — the
   // dashboard already offers Cancel for it (public/app.js renderPostDetail),
   // so it needs the same escape hatch.
   scheduled_local: ['canceled'],
@@ -179,7 +179,7 @@ function buildServer() {
     return parseJsonColumns(row, ['colors']);
   });
 
-  // Multipart logo upload - mirrors POST /api/media, but also stamps
+  // Multipart logo upload — mirrors POST /api/media, but also stamps
   // brands.logo_path so the image brief + Settings preview pick it up.
   app.post('/api/brands/:id/logo', async (req, reply) => {
     const existing = db.prepare('SELECT * FROM brands WHERE id = ?').get(req.params.id);
@@ -221,8 +221,53 @@ function buildServer() {
     return rows.map((r) => parseJsonColumns(r, ['target_fields']));
   });
 
+  // ---------- create an account for a brand ----------
+  // Brands seeded without a Blotato connection (PrimeWright, Lunula, IVision)
+  // otherwise dead-end in the composer: nothing to distribute to, so drafting
+  // is blocked. This lets any brand get a platform to draft for. Defaults to
+  // manual=1 (assisted copy & paste) with no blotato_account_id — a live
+  // Blotato connection can be attached later by editing the seed / target_fields.
+  app.post('/api/accounts', async (req, reply) => {
+    const b = req.body || {};
+    const brandId = b.brand_id;
+    const platform = (b.platform || '').trim().toLowerCase();
+    if (!brandId || !platform) {
+      reply.code(400);
+      return { error: 'brand_id and platform are required' };
+    }
+    const brand = db.prepare('SELECT id FROM brands WHERE id = ?').get(brandId);
+    if (!brand) {
+      reply.code(404);
+      return { error: 'brand_not_found' };
+    }
+    const dupe = db
+      .prepare('SELECT id FROM accounts WHERE brand_id = ? AND platform = ?')
+      .get(brandId, platform);
+    if (dupe) {
+      reply.code(409);
+      return { error: 'account_exists', id: dupe.id };
+    }
+    const now = nowIso();
+    const info = db
+      .prepare(
+        `INSERT INTO accounts (brand_id, platform, blotato_account_id, target_fields, active, manual, created_at, updated_at)
+         VALUES (@brand_id, @platform, @blotato_account_id, @target_fields, 1, @manual, @now, @now)`
+      )
+      .run({
+        brand_id: brandId,
+        platform,
+        blotato_account_id: b.blotato_account_id || null,
+        target_fields: JSON.stringify(b.target_fields || {}),
+        manual: b.manual === 0 || b.manual === false ? 0 : 1,
+        now,
+      });
+    const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(info.lastInsertRowid);
+    reply.code(201);
+    return parseJsonColumns(row, ['target_fields']);
+  });
+
   // ---------- B11: toggle assisted-manual per account ----------
-  // accounts.manual=1 means "assisted-manual" - the worker handoff must
+  // accounts.manual=1 means "assisted-manual" — the worker handoff must
   // never submit this account to Blotato (SPEC.md "Assisted-manual upgrade").
   // Tolerant of a minimal payload: only `manual` is required to change here.
   app.patch('/api/accounts/:id', async (req, reply) => {
@@ -386,13 +431,13 @@ function buildServer() {
 
     // ---- B6: drag-to-reschedule guard ----
     // Any change to publish_at (calendar drag included) is only allowed while
-    // the post is still local - draft/approved/scheduled_local.
+    // the post is still local — draft/approved/scheduled_local.
     if (b.publish_at !== undefined && b.publish_at !== existing.publish_at) {
       if (!RESCHEDULABLE_STATUSES.includes(existing.status)) {
         reply.code(409);
         return {
           error: 'not_reschedulable',
-          message: `Cannot change publish_at for a post in status '${existing.status}'. Only draft/approved/scheduled_local posts can be rescheduled locally - edit in Blotato's dashboard instead.`,
+          message: `Cannot change publish_at for a post in status '${existing.status}'. Only draft/approved/scheduled_local posts can be rescheduled locally — edit in Blotato's dashboard instead.`,
         };
       }
     }
@@ -493,7 +538,7 @@ function buildServer() {
   });
 
   // ---------- posts: reddit "Post now" manual flow ----------
-  // Reddit is assisted-manual (SPEC.md "Platform lineup") - the worker never
+  // Reddit is assisted-manual (SPEC.md "Platform lineup") — the worker never
   // submits it to Blotato. CB copies title/body, opens the subreddit, posts
   // by hand, then marks it posted with the resulting URL. This is the only
   // way a reddit post ever reaches 'published'.
@@ -545,7 +590,7 @@ ${bodyHtml}
 
   // ---------- tone profiles (read) ----------
   // Not in the original B1 read set, but the composer's "Draft with AI" needs
-  // to resolve a tone_profile_id from (brand_id, tone name) - added here as a
+  // to resolve a tone_profile_id from (brand_id, tone name) — added here as a
   // small, additive read endpoint rather than hardcoding ids in the client.
   app.get('/api/tone-profiles', async (req, reply) => {
     const { brand_id, name } = req.query;
@@ -689,7 +734,7 @@ ${bodyHtml}
       reply.code(503);
       return {
         error: 'resize_unavailable',
-        message: 'sips is not available on this machine - auto-resize needs macOS. Resize the image manually and attach it instead.',
+        message: 'sips is not available on this machine — auto-resize needs macOS. Resize the image manually and attach it instead.',
       };
     }
 
@@ -766,7 +811,7 @@ ${bodyHtml}
     }
   });
 
-  // B15: run the same draft through BOTH providers independently - one 503
+  // B15: run the same draft through BOTH providers independently — one 503
   // must never fail the other. Not gated behind the `draft_provider`
   // setting (it's an explicit "compare both" action from the composer).
   app.post('/api/draft/compare', async (req, reply) => {
@@ -829,7 +874,7 @@ ${bodyHtml}
     }
     const groundingTag = tag || pillar || null;
     let grounding = groundingTag ? groundingForBrand(db, { brand_id, tag: groundingTag }) : '';
-    // B11: also fold in any saved example posts for the target platform(s) -
+    // B11: also fold in any saved example posts for the target platform(s) —
     // additive to research grounding, graceful (empty string) if none exist.
     const targetPlatform = Array.isArray(platforms) && platforms.length ? platforms[0] : undefined;
     const exGrounding = examplesGrounding(db, { brand_id, platform: targetPlatform });
@@ -1041,7 +1086,7 @@ ${bodyHtml}
       return { error: 'brand not found' };
     }
     try {
-      // suggest-only convenience - never persists anything (SPEC.md B8 feature 6).
+      // suggest-only convenience — never persists anything (SPEC.md B8 feature 6).
       return await suggestProfiles({ brand: brand.name, niche, platforms });
     } catch (err) {
       reply.code(err.statusCode || 503);
@@ -1105,7 +1150,7 @@ ${bodyHtml}
     return row;
   });
 
-  // B14: "Regenerate / more variants" - appends another image-request round
+  // B14: "Regenerate / more variants" — appends another image-request round
   // for the same post/brand/platforms without CB re-typing the brief.
   app.post('/api/image-requests/:id/regenerate', async (req, reply) => {
     const b = req.body || {};
@@ -1135,7 +1180,7 @@ ${bodyHtml}
       reply.code(404);
       return { error: 'not_found' };
     }
-    // chosen_path must be one of this request's generated variants - don't let an
+    // chosen_path must be one of this request's generated variants — don't let an
     // arbitrary path get attached to a post.
     const variants = Array.isArray(existing.variants) ? existing.variants : [];
     if (!variants.some((v) => v.path === b.chosen_path || v.url === b.chosen_path)) {
@@ -1181,7 +1226,7 @@ ${bodyHtml}
   // ---------- B8: ops/usage stats ----------
   app.get('/api/usage', async () => buildUsageStats(db));
 
-  // ---------- B10: in-app chat agent (draft-and-prepare authority only -
+  // ---------- B10: in-app chat agent (draft-and-prepare authority only —
   // no approve/publish/submit/cancel/delete tools exist, see src/agent.js) ----------
   app.post('/api/agent', async (req, reply) => {
     const b = req.body || {};
@@ -1221,13 +1266,13 @@ ${bodyHtml}
   // ---------- settings (B6): quiet hours + handoff window ----------
   // B12: global_voice / global_hard_rules are also just settings keys, but
   // they live outside settings.js's fixed DEFAULTS whitelist (voice.js owns
-  // their read/write directly on the settings table) - merged in here so
+  // their read/write directly on the settings table) — merged in here so
   // GET/PATCH /api/settings round-trips them alongside quiet hours etc.
   app.get('/api/settings', async () => ({
     ...getAllSettings(db),
     global_voice: getGlobalVoice(db),
     global_hard_rules: getGlobalHardRules(db),
-    // B14: "Allow assistant to approve & publish" toggle - default OFF ('0').
+    // B14: "Allow assistant to approve & publish" toggle — default OFF ('0').
     // Lives outside settings.js's fixed DEFAULTS whitelist (same pattern as
     // global_voice/global_hard_rules above), read/written raw via voice.js's
     // getRawSetting/setRawSetting.
@@ -1303,7 +1348,7 @@ ${bodyHtml}
   });
 
   // ---------- B13: brand profiles (source of truth + generate) ----------
-  // Human copy-pastes every field into the actual platform - nothing here
+  // Human copy-pastes every field into the actual platform — nothing here
   // publishes/posts anything.
   app.get('/api/profiles', async (req) => {
     const { brand_id } = req.query;
@@ -1349,7 +1394,7 @@ ${bodyHtml}
     }
   });
 
-  // Soft quiet-hours check for the Approve confirm dialog - never a hard
+  // Soft quiet-hours check for the Approve confirm dialog — never a hard
   // block (see SPEC.md B6). UI can also compute this itself from /api/settings.
   app.get('/api/settings/quiet-hours-check', async (req) => {
     const { publish_at } = req.query;

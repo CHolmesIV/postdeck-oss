@@ -1,4 +1,4 @@
-// Unit tests for src/recommend.js (B8 - SPEC.md "Content-type picker +
+// Unit tests for src/recommend.js (B8 — SPEC.md "Content-type picker +
 // recommender"). Follows the analytics.test.js isolation pattern: in-memory
 // SQLite DB, POSTDECK_DB_PATH set before importing db.js.
 // Run with: node --test test/recommend.test.js
@@ -89,7 +89,7 @@ test('recommendContentType ignores metrics from other brands/platforms when scop
   const brandB = makeBrand(db, 'Brand B');
 
   insertPostWithMetrics(db, { brand_id: brandA, platform: 'instagram', content_type: 'video', comments: 50, shares: 50, saves: 50 });
-  // Brand B has no metrics at all - should fall back to best_practice, not see Brand A's data.
+  // Brand B has no metrics at all — should fall back to best_practice, not see Brand A's data.
   const rec = recommendContentType(db, { brand_id: brandB, platform: 'instagram' });
   assert.equal(rec.basis, 'best_practice');
 });

@@ -1,4 +1,4 @@
-// Unit tests for src/extract.js (B11 - SPEC.md "Assisted-manual upgrade +
+// Unit tests for src/extract.js (B11 — SPEC.md "Assisted-manual upgrade +
 // blog redistribution"). extractFromUrl is tested by monkey-patching global
 // fetch (no real network); extractFromImage's 503 contract is tested against
 // a nonexistent CLI binary, and its happy path via a stub bin echoing a

@@ -1,7 +1,7 @@
-// Unit tests for src/profiles.js (B13 - SPEC.md "Brand profiles (source of
+// Unit tests for src/profiles.js (B13 — SPEC.md "Brand profiles (source of
 // truth + generate)"). In-memory SQLite DB via POSTDECK_DB_PATH=':memory:'
 // (examples.test.js's pattern). Generation is stubbed via
-// POSTDECK_CLAUDE_BIN pointing at a temp-file stub CLI - no real network/CLI.
+// POSTDECK_CLAUDE_BIN pointing at a temp-file stub CLI — no real network/CLI.
 //
 // Run with: node --test test/profiles.test.js
 
@@ -174,7 +174,7 @@ test('generateProfile drafts fields, scrubs em-dashes, and upserts status draft 
 
   const { dir, binPath } = writeStubClaudeBin({
     name: 'Acme',
-    tagline: 'Widgets - done right.', // em dash should get scrubbed
+    tagline: 'Widgets — done right.', // em dash should get scrubbed
     about: 'We make widgets.',
     website: 'https://acme.test',
     industry: 'Manufacturing',
@@ -189,7 +189,7 @@ test('generateProfile drafts fields, scrubs em-dashes, and upserts status draft 
     assert.equal(row.status, 'draft');
     assert.ok(row.last_generated_at);
     assert.equal(row.fields.name, 'Acme');
-    assert.doesNotMatch(row.fields.tagline, /-/, 'em dash should be scrubbed by default global hard rule');
+    assert.doesNotMatch(row.fields.tagline, /—/, 'em dash should be scrubbed by default global hard rule');
   } finally {
     delete process.env.POSTDECK_CLAUDE_BIN;
     fs.rmSync(dir, { recursive: true, force: true });

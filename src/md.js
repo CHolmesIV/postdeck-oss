@@ -1,6 +1,6 @@
 // Hand-rolled, dependency-free markdown -> HTML for blog post preview.
 // Supports: headings (#..######), paragraphs, bold, italic, links, line breaks.
-// Not a full CommonMark implementation - just enough for a preview endpoint.
+// Not a full CommonMark implementation — just enough for a preview endpoint.
 
 function escapeHtml(str) {
   return str

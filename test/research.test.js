@@ -1,4 +1,4 @@
-// Unit tests for src/research.js (B8 - SPEC.md "Research + inspiration
+// Unit tests for src/research.js (B8 — SPEC.md "Research + inspiration
 // ingestion"). Uses an in-memory SQLite DB, following test/analytics.test.js's
 // pattern (module-level getDb() singleton shared across tests in this file).
 // The inbox importer test points POSTDECK_RESEARCH_DIR at a scratch tmp dir

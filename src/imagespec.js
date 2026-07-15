@@ -1,9 +1,9 @@
-// Codex image handoff - brief builder + request persistence (B8 "Image
-// workflow - sizing preview + Codex handoff", SPEC.md B8 feature 4). This
+// Codex image handoff — brief builder + request persistence (B8 "Image
+// workflow — sizing preview + Codex handoff", SPEC.md B8 feature 4). This
 // module is pure JSON/fs: it builds the outbound spec CB reviews before
 // clicking "Request image", inserts the `image_requests` row, and writes the
 // mirrored spec file `image-requests/req-<id>.json` that a Codex session
-// reads as its contract. No AI calls happen here - see docs/CODEX_IMAGE_HANDOFF.md
+// reads as its contract. No AI calls happen here — see docs/CODEX_IMAGE_HANDOFF.md
 // for the read/write contract Codex follows on the other end, and
 // src/imagestudio.js for the worker-side importer that reads back what Codex
 // produced.
@@ -22,7 +22,7 @@ const ROOT = path.resolve(__dirname, '..');
 const PNG_CONTENT_TYPES = new Set(['static', 'text', 'carousel']);
 
 // Used when a platform has no image spec at all (e.g. tiktok is video-only,
-// blog renders via its own template) - never throw, just flag it.
+// blog renders via its own template) — never throw, just flag it.
 const DEFAULT_DIMS_RAW = '1080x1350 (4:5)';
 
 function getImageReqDir() {
@@ -87,7 +87,7 @@ function pickImageDimsRaw(image, content_type) {
 /**
  * Pure function: builds the Codex image brief for a set of platforms given
  * the post's content_type, copy, and brand. Never throws on a missing/odd
- * platform spec - falls back to a sane default dims string plus a note
+ * platform spec — falls back to a sane default dims string plus a note
  * flagging it, so a bad/incomplete platform-specs.json entry never blocks
  * the request flow.
  */
@@ -104,7 +104,7 @@ function buildBrief({
   const recommended_format = PNG_CONTENT_TYPES.has(content_type) ? 'png' : 'jpg';
   // B14: CB picks how many variants Codex generates (default 1); per-variant
   // hints (size/orientation + type) let CB steer the mix without re-typing a
-  // brief from scratch. Never throws on a bad value - clamps to >= 1.
+  // brief from scratch. Never throws on a bad value — clamps to >= 1.
   const effectiveVariantCount = Math.max(1, Number.isFinite(Number(variant_count)) ? Math.floor(Number(variant_count)) : 1);
   const hintsList = Array.isArray(hints) ? hints : [];
 
@@ -121,12 +121,12 @@ function buildBrief({
     const notes = [];
     if (usedDefault) {
       notes.push(
-        `no image spec found for "${platform}" in platform-specs.json - using default ${DEFAULT_DIMS_RAW}; verify manually before generating.`
+        `no image spec found for "${platform}" in platform-specs.json — using default ${DEFAULT_DIMS_RAW}; verify manually before generating.`
       );
     }
     if (spec?.notes) notes.push(spec.notes);
     if (Array.isArray(spec?.image?._uncertain)) notes.push(...spec.image._uncertain);
-    notes.push('Keep key subjects/text inside the middle ~80% of the frame (safe zone) - platform UI chrome (captions, buttons, profile bars) crops the edges.');
+    notes.push('Keep key subjects/text inside the middle ~80% of the frame (safe zone) — platform UI chrome (captions, buttons, profile bars) crops the edges.');
 
     return {
       platform,
@@ -140,15 +140,15 @@ function buildBrief({
 
   const quality_notes = [
     recommended_format === 'png'
-      ? 'Text-heavy content_type - export lossless PNG to keep text/edges crisp (no JPEG compression artifacts on typography).'
-      : 'Photo/video-led content_type - JPG is fine; keep quality high (90+) to avoid banding.',
+      ? 'Text-heavy content_type — export lossless PNG to keep text/edges crisp (no JPEG compression artifacts on typography).'
+      : 'Photo/video-led content_type — JPG is fine; keep quality high (90+) to avoid banding.',
     `Generate ${effectiveVariantCount} variant${effectiveVariantCount === 1 ? '' : 's'} per request so CB has a real choice at pick time.`,
   ];
   if (logo_path) {
-    quality_notes.push(`Brand logo available at ${logo_path} - incorporate subtly (corner watermark or similar) if it suits this content_type.`);
+    quality_notes.push(`Brand logo available at ${logo_path} — incorporate subtly (corner watermark or similar) if it suits this content_type.`);
   }
   if (colors) {
-    quality_notes.push(`Brand colors: ${JSON.stringify(colors)} - use as accent/background where it fits.`);
+    quality_notes.push(`Brand colors: ${JSON.stringify(colors)} — use as accent/background where it fits.`);
   }
 
   return {
@@ -178,9 +178,9 @@ function createImageRequest(
   const now = nowIso();
   const platformsJson = JSON.stringify(platforms || []);
   // B14: variant_count/hints can arrive either already-embedded in `brief`
-  // (the normal path - buildBrief() puts them there) or as separate
+  // (the normal path — buildBrief() puts them there) or as separate
   // top-level args (a caller-supplied custom `brief` that skipped
-  // buildBrief) - fill gaps without clobbering what's already there.
+  // buildBrief) — fill gaps without clobbering what's already there.
   const effectiveBrief = { ...(brief || {}) };
   if (variant_count !== undefined && effectiveBrief.variant_count === undefined) {
     effectiveBrief.variant_count = variant_count;
@@ -215,7 +215,7 @@ function createImageRequest(
     instructions:
       `Generate ${requestedVariantCount} image variant${requestedVariantCount === 1 ? '' : 's'} at the exact dims/format specified per platform in \`brief.platforms[]\`. ` +
       'Respect `max_mb` and `safe_notes` (safe zones, brand notes). If `brief.hints[]` is present, use it to steer per-variant size/orientation/type (e.g. thumbnail vs feed post vs story). If `brief.logo_path`/`brief.colors` are set, incorporate the brand logo/colors where it fits. ' +
-      `Drop the output files plus a manifest.json into ${outputDir} - see docs/CODEX_IMAGE_HANDOFF.md for the exact manifest.json shape PostDeck expects back.`,
+      `Drop the output files plus a manifest.json into ${outputDir} — see docs/CODEX_IMAGE_HANDOFF.md for the exact manifest.json shape PostDeck expects back.`,
     output_dir: outputDir,
   };
   fs.writeFileSync(path.join(reqDir, `req-${id}.json`), JSON.stringify(specFile, null, 2));

@@ -1,7 +1,7 @@
-// Unit tests for src/examples.js (B11 - SPEC.md "Assisted-manual upgrade +
+// Unit tests for src/examples.js (B11 — SPEC.md "Assisted-manual upgrade +
 // blog redistribution"). In-memory SQLite DB via POSTDECK_DB_PATH=':memory:'
 // (research.test.js's pattern). Screenshot extraction is stubbed via
-// POSTDECK_CLAUDE_BIN pointing at a temp-file stub CLI - no real network/CLI.
+// POSTDECK_CLAUDE_BIN pointing at a temp-file stub CLI — no real network/CLI.
 //
 // Run with: node --test test/examples.test.js
 
@@ -134,7 +134,7 @@ test('createExample with source "screenshot" does not call the vision CLI when t
   const db = getDb();
   const brand = seedBrand(db, 'screenshot-preset');
 
-  // Point at a nonexistent binary - if createExample tried to call it, this
+  // Point at a nonexistent binary — if createExample tried to call it, this
   // would 503/throw. Since text is already provided, it must not be called.
   process.env.POSTDECK_CLAUDE_BIN = '/nonexistent/claude-binary-postdeck-test';
   try {

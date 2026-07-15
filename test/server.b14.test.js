@@ -195,7 +195,7 @@ test('agent approve_post refuses when agent_can_publish is off (default)', async
   assert.equal(settingsRes.json().agent_can_publish, '0');
 
   const result = await executeAction(db, { tool: 'approve_post', args: { id: postId } });
-  assert.match(result.summary, /off - arm it in Settings/);
+  assert.match(result.summary, /off — arm it in Settings/);
 
   const stillDraft = db.prepare('SELECT status FROM posts WHERE id = ?').get(postId);
   assert.equal(stillDraft.status, 'draft', 'post must stay draft when the agent is unarmed');
@@ -235,13 +235,13 @@ test('agent publish_now refuses when unarmed and honors dry-run (submitted_dry) 
   const app = buildServer();
   const db = getDb();
   // Earlier tests in this file may have left agent_can_publish armed (shared
-  // in-memory DB/connection across tests in one process) - start disarmed.
+  // in-memory DB/connection across tests in one process) — start disarmed.
   await app.inject({ method: 'PATCH', url: '/api/settings', payload: { agent_can_publish: '0' } });
   const brandId = seedBrand(db);
   const postId = seedPost(db, { brand_id: brandId, platform: 'facebook', status: 'approved' });
 
   const refused = await executeAction(db, { tool: 'publish_now', args: { id: postId } });
-  assert.match(refused.summary, /off - arm it in Settings/);
+  assert.match(refused.summary, /off — arm it in Settings/);
   const stillApproved = db.prepare('SELECT status FROM posts WHERE id = ?').get(postId);
   assert.equal(stillApproved.status, 'approved');
 
@@ -249,7 +249,7 @@ test('agent publish_now refuses when unarmed and honors dry-run (submitted_dry) 
   const published = await executeAction(db, { tool: 'publish_now', args: { id: postId } });
   assert.match(published.summary, /Submitted post/);
   const afterSubmit = db.prepare('SELECT status FROM posts WHERE id = ?').get(postId);
-  // BLOTATO_DRY_RUN=1 in this test env - never a real network call.
+  // BLOTATO_DRY_RUN=1 in this test env — never a real network call.
   assert.equal(afterSubmit.status, 'submitted_dry');
 
   await app.close();

@@ -1,4 +1,4 @@
-// Unit tests for src/copy_assist.js (B8 - SPEC.md "Copy assistant").
+// Unit tests for src/copy_assist.js (B8 — SPEC.md "Copy assistant").
 // Mocks the claude CLI the way test/blotato.mock.test.js mocks its
 // dependency: POSTDECK_CLAUDE_BIN points at a tiny stub script written to a
 // temp file that echoes a canned --output-format json envelope.
@@ -70,7 +70,7 @@ test('parseClaudeCliOutput strips markdown fences from the inner result', () => 
 
 test('copyAssist headlines mode: parses result and scrubs an em-dash', async () => {
   const { dir, binPath } = writeStubClaudeBin(
-    JSON.stringify({ headlines: ['Ship it - now, or never', 'Clean headline here'] })
+    JSON.stringify({ headlines: ['Ship it — now, or never', 'Clean headline here'] })
   );
   process.env.POSTDECK_CLAUDE_BIN = binPath;
   try {
@@ -81,7 +81,7 @@ test('copyAssist headlines mode: parses result and scrubs an em-dash', async () 
       toneProfile,
     });
     assert.equal(result.headlines.length, 2);
-    assert.ok(!/-/.test(result.headlines[0]), 'em-dash must be scrubbed from headline');
+    assert.ok(!/—/.test(result.headlines[0]), 'em-dash must be scrubbed from headline');
     assert.ok(scrub_applied.includes('no_em_dash'));
   } finally {
     delete process.env.POSTDECK_CLAUDE_BIN;
@@ -139,7 +139,7 @@ test('copyAssist hashtags mode: returns a per-platform hashtags object', async (
 test('copyAssist all mode: combines headlines, alt_text, and hashtags, scrubbing every string', async () => {
   const { dir, binPath } = writeStubClaudeBin(
     JSON.stringify({
-      headlines: ['Leverage synergy - win big', 'Second headline'],
+      headlines: ['Leverage synergy — win big', 'Second headline'],
       alt_text: 'A dashboard screenshot with charts.',
       hashtags: { instagram: ['#growth', '#ai'] },
     })
@@ -156,7 +156,7 @@ test('copyAssist all mode: combines headlines, alt_text, and hashtags, scrubbing
     });
     assert.equal(result.headlines.length, 2);
     assert.ok(!/synergy/i.test(result.headlines[0]), 'banned word must be scrubbed');
-    assert.ok(!/-/.test(result.headlines[0]), 'em-dash must be scrubbed');
+    assert.ok(!/—/.test(result.headlines[0]), 'em-dash must be scrubbed');
     assert.equal(typeof result.alt_text, 'string');
     assert.ok(Array.isArray(result.hashtags.instagram));
     assert.ok(scrub_applied.includes('no_em_dash'));

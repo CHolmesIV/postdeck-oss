@@ -1,11 +1,11 @@
-// Blog redistribution (B11 - SPEC.md "Assisted-manual upgrade + blog
+// Blog redistribution (B11 — SPEC.md "Assisted-manual upgrade + blog
 // redistribution"). CB drops a blog URL; this module fetches + strips it
 // (src/extract.js, no model call), drafts per-platform copy grounded in the
-// brand's voice + the article text (reusing draft.js/copy_assist.js - same
+// brand's voice + the article text (reusing draft.js/copy_assist.js — same
 // `claude -p` shell, same scrub.js pass), creates one DRAFT post per
 // platform, and optionally requests one image brief from imagespec.js.
 // Human Approve gate is untouched: every created post is hard-coded
-// status:'draft'. Never throws on an AI-unavailable (503) drafting failure -
+// status:'draft'. Never throws on an AI-unavailable (503) drafting failure —
 // returns whatever succeeded with ai_unavailable:true instead.
 
 import { nowIso } from './db.js';
@@ -29,12 +29,12 @@ function firstToneProfile(db, brand_id) {
  * brand has a tone profile; otherwise falls back to copy_assist's
  * 'headlines' mode plus a trimmed article excerpt as the body. Both paths
  * already run scrub.js. Throws (503-flagged) if the underlying CLI call
- * fails - caller decides what to do with a partial result.
+ * fails — caller decides what to do with a partial result.
  */
 async function draftPerPlatform({ db, title, markdown, brand, toneProfile, platforms }) {
   const ideaText = `${title ? `${title}\n\n` : ''}${markdown}`;
   // B12: always merge in the global voice + global hard rules, whether or not
-  // this brand has a tone profile - resolveVoice/withGlobalVoice is the
+  // this brand has a tone profile — resolveVoice/withGlobalVoice is the
   // single source every generation path uses (see src/voice.js).
   const effectiveTone = withGlobalVoice(db, { brand_id: brand?.id ?? null, toneProfile });
 
@@ -71,7 +71,7 @@ async function draftPerPlatform({ db, title, markdown, brand, toneProfile, platf
  * @param {{url: string, brand_id?: number|null, platforms: string[], make_images?: boolean}} params
  * @returns {Promise<{source: {title: string|null, url: string}, drafts: object[],
  *   image_requests: object[], ai_unavailable?: true}>}
- * @throws {Error} if extractFromUrl fails (fetch failure/non-OK response) - the
+ * @throws {Error} if extractFromUrl fails (fetch failure/non-OK response) — the
  *   caller (POST /api/redistribute) maps this to a 400 fetch_failed response.
  */
 async function redistributeFromUrl(db, { url, brand_id = null, platforms = [], make_images = true } = {}) {

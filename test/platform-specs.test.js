@@ -1,5 +1,5 @@
 // Tests for GET /api/platform-specs and the config-driven TikTok required
-// fields (B7 - SPEC.md "Platform lineup"). Run with: node --test test/platform-specs.test.js
+// fields (B7 — SPEC.md "Platform lineup"). Run with: node --test test/platform-specs.test.js
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

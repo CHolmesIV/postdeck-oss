@@ -1,5 +1,5 @@
 // Single source of truth for per-platform limits/specs (config/platform-specs.json).
-// See SPEC.md "Platform lineup" - refresh the JSON when platforms change their
+// See SPEC.md "Platform lineup" — refresh the JSON when platforms change their
 // rules; this module just loads/serves it (server) and the composer/drafting
 // agent consume it via GET /api/platform-specs instead of hardcoding limits.
 
@@ -35,7 +35,7 @@ function getTextLimit(platform) {
   return spec?.text?.max ?? null;
 }
 
-/** TikTok's required_fields array from the spec file - the mechanical list
+/** TikTok's required_fields array from the spec file — the mechanical list
  * used by validate.js instead of a hardcoded duplicate. */
 function getTiktokRequiredFields() {
   const spec = getPlatformSpec('tiktok');

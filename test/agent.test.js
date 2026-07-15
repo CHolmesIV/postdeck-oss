@@ -1,9 +1,9 @@
-// Unit tests for src/agent.js (B10 - SPEC.md "In-app chat agent").
+// Unit tests for src/agent.js (B10 — SPEC.md "In-app chat agent").
 // Mocks the claude CLI the way test/copy_assist.test.js does: POSTDECK_CLAUDE_BIN
 // points at a tiny stub script written to a temp file that echoes a canned
 // --output-format json envelope. DB is isolated via POSTDECK_DB_PATH pointing
 // at a temp sqlite file (not :memory:, so the stub's separate child process
-// invocations don't matter - only the parent process touches the DB anyway).
+// invocations don't matter — only the parent process touches the DB anyway).
 // Run with: node --test test/agent.test.js
 
 import test from 'node:test';
@@ -104,7 +104,7 @@ test('runAgent stops the loop within MAX_ROUNDS when actions keep coming back em
   }
 });
 
-test('there is no submit/cancel/delete tool - a fabricated "publish_post" action is skipped, not executed; approve_post/publish_now exist but refuse unarmed', async () => {
+test('there is no submit/cancel/delete tool — a fabricated "publish_post" action is skipped, not executed; approve_post/publish_now exist but refuse unarmed', async () => {
   const db = getDb();
   const brandId = seedBrand(db);
 
@@ -118,7 +118,7 @@ test('there is no submit/cancel/delete tool - a fabricated "publish_post" action
     .run(brandId, now, now);
   const postId = postInfo.lastInsertRowid;
 
-  // These tool names simply don't exist, ever - no gate, no arming switch.
+  // These tool names simply don't exist, ever — no gate, no arming switch.
   for (const badTool of ['publish_post', 'submit_post', 'cancel_post', 'delete_post']) {
     const result = await executeAction(db, { tool: badTool, args: { id: postId, status: 'approved' } });
     assert.ok(
@@ -128,11 +128,11 @@ test('there is no submit/cancel/delete tool - a fabricated "publish_post" action
   }
 
   // B14: approve_post/publish_now DO exist now, but stay inert unless CB has
-  // armed agent_can_publish in Settings (default '0' / unset here) - the
+  // armed agent_can_publish in Settings (default '0' / unset here) — the
   // refusal path, not an "unsupported tool" path.
   for (const gatedTool of ['approve_post', 'publish_now']) {
     const result = await executeAction(db, { tool: gatedTool, args: { id: postId } });
-    assert.match(result.summary, /off - arm it in Settings/, `${gatedTool} should refuse while unarmed`);
+    assert.match(result.summary, /off — arm it in Settings/, `${gatedTool} should refuse while unarmed`);
   }
 
   const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);

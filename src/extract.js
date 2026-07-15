@@ -1,4 +1,4 @@
-// Extraction helpers (B11 - SPEC.md "Assisted-manual upgrade + blog
+// Extraction helpers (B11 — SPEC.md "Assisted-manual upgrade + blog
 // redistribution"). Two independent extraction paths, deliberately routed to
 // different "costs":
 //   - extractFromUrl: pure fetch + string work, NO model call. Strips a page
@@ -62,7 +62,7 @@ function extractTitle(html) {
 /**
  * Convert a body-ish HTML fragment to markdown-ish plain text, line by line
  * (not one giant greedy regex over the whole blob):
- *  - h1-h3 -> "# " prefix (heading markers, all treated as one level here -
+ *  - h1-h3 -> "# " prefix (heading markers, all treated as one level here —
  *    good enough for a redistribution-drafting prompt, not a full renderer)
  *  - li -> "- " prefix
  *  - p/br/div -> newline breaks
@@ -149,7 +149,7 @@ function maxBudgetUsd() {
  * Build the vision-extraction prompt. Exported for testability.
  * The `claude -p` CLI reads an image referenced by an absolute file path
  * placed in the prompt text (same convention as Claude Code's own file
- * references) - so we put the path on its own line and instruct the model
+ * references) — so we put the path on its own line and instruct the model
  * to read/view that image file, then return strict JSON.
  */
 function buildImageExtractPrompt(imagePath) {
@@ -204,7 +204,7 @@ function runClaudeCli(prompt) {
 
 /**
  * ONE `claude -p` vision call that reads a screenshot and returns its text
- * content as markdown. Do NOT call this more than once per image - callers
+ * content as markdown. Do NOT call this more than once per image — callers
  * (src/examples.js) must cache the result.
  * @param {string} imagePath absolute path to the image file
  * @returns {Promise<{text: string}>}

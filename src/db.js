@@ -14,7 +14,7 @@ let dbInstance = null;
 
 // Each migration is applied once, in order, when user_version < its index+1.
 const MIGRATIONS = [
-  // v1 - initial schema
+  // v1 — initial schema
   `
   CREATE TABLE IF NOT EXISTS brands (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,19 +127,19 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_accounts_brand ON accounts(brand_id);
   CREATE INDEX IF NOT EXISTS idx_tone_profiles_brand ON tone_profiles(brand_id);
   `,
-  // v2 - B4 Blotato worker: retry/verify bookkeeping columns on posts.
+  // v2 — B4 Blotato worker: retry/verify bookkeeping columns on posts.
   // blotato_submission_id, public_url, error_message already exist from v1;
   // only retry_count and verify_attempts are new.
   `
   ALTER TABLE posts ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE posts ADD COLUMN verify_attempts INTEGER NOT NULL DEFAULT 0;
   `,
-  // v3 - B5 idea capture importer: track where an idea came from
+  // v3 — B5 idea capture importer: track where an idea came from
   // (manual dashboard entry vs. capture-inbox files vs. telegram-capture).
   `
   ALTER TABLE ideas ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
   `,
-  // v4 - B8 Content Studio: content_type on posts + new tables for image
+  // v4 — B8 Content Studio: content_type on posts + new tables for image
   // handoff, research/inspiration ingestion, and usage tracking.
   `
   ALTER TABLE posts ADD COLUMN content_type TEXT;
@@ -197,7 +197,7 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_image_requests_status ON image_requests(status);
   CREATE INDEX IF NOT EXISTS idx_research_brand ON research_notes(brand_id);
   `,
-  // v5 - B11 assisted-manual upgrade + blog redistribution: per-account
+  // v5 — B11 assisted-manual upgrade + blog redistribution: per-account
   // "assisted-manual" flag, and an `examples` table (pasted text or a
   // screenshot's cached extraction) used to ground the copy assistant/agent.
   `
@@ -216,7 +216,7 @@ const MIGRATIONS = [
 
   CREATE INDEX IF NOT EXISTS idx_examples_brand_platform ON examples(brand_id, platform);
   `,
-  // v6 - B13 Brand profiles: canonical store of each brand's per-platform
+  // v6 — B13 Brand profiles: canonical store of each brand's per-platform
   // profile fields (heading/bio/etc.), generated in CB's voice or edited by
   // hand, with a lightweight draft/current/stale status for staleness
   // tracking (see src/profiles.js).
@@ -236,7 +236,7 @@ const MIGRATIONS = [
 
   CREATE INDEX IF NOT EXISTS idx_profiles_brand ON profiles(brand_id);
   `,
-  // v7 - B14 branding: brand logo path, used by the Settings Branding
+  // v7 — B14 branding: brand logo path, used by the Settings Branding
   // section and folded into the image-request brief so Codex can brand the
   // generated asset (see src/imagespec.js buildBrief).
   `

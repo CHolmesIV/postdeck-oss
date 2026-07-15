@@ -1,4 +1,4 @@
-// Unit tests for src/ai.js (B15 - SPEC.md "AI provider switcher").
+// Unit tests for src/ai.js (B15 — SPEC.md "AI provider switcher").
 // Stubs both provider CLIs the way test/copy_assist.test.js mocks `claude`:
 // a tiny node script written to a temp file, pointed at via
 // POSTDECK_CLAUDE_BIN / POSTDECK_CODEX_BIN.

@@ -1,6 +1,6 @@
 // State export (B5). Builds a compact snapshot of the social schedule and
 // writes it to state/social-state.json. Consumed by the Agentic OS bridge
-// (rsync via src/sync.js) - see SPEC.md "Worker" item 3 and
+// (rsync via src/sync.js) — see SPEC.md "Worker" item 3 and
 // "Idea capture from the road". This file is also runnable directly:
 //   node src/export.js
 // which builds + writes the state once and prints the path.
@@ -38,7 +38,7 @@ function hookFromCopy(copy) {
 
 /**
  * Build the social-state object described in SPEC.md's worker/export section.
- * Pure function of the DB - no I/O side effects beyond the read queries.
+ * Pure function of the DB — no I/O side effects beyond the read queries.
  * @param {import('better-sqlite3').Database} [db]
  */
 function buildSocialState(db = getDb()) {

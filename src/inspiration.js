@@ -1,8 +1,8 @@
-// Like-minded profiles board (B8 - SPEC.md "Research + inspiration
+// Like-minded profiles board (B8 — SPEC.md "Research + inspiration
 // ingestion"). Manual add of creators/accounts worth studying, plus an
 // OPTIONAL AI convenience (`suggestProfiles`) that proposes candidates via
 // the same `claude -p` shell pattern as src/draft.js. Suggest-only: it never
-// writes to the DB or follows anyone - the caller decides whether to persist
+// writes to the DB or follows anyone — the caller decides whether to persist
 // a suggestion via createInspiration({ source: 'ai_suggested' }).
 
 import { execFile } from 'node:child_process';
@@ -141,9 +141,9 @@ function buildSuggestPrompt({ brand, niche, platforms = [] } = {}) {
     `Propose 3 to 6 real, currently active creators or accounts in this niche whose`,
     `content style, positioning, or audience is worth studying for inspiration.`,
     `This is a suggest-only research task: nothing is followed, messaged, or`,
-    `persisted automatically - a human reviews the list and decides.`,
+    `persisted automatically — a human reviews the list and decides.`,
     ``,
-    `Respond with STRICT JSON ONLY, no markdown fences, no commentary - an object`,
+    `Respond with STRICT JSON ONLY, no markdown fences, no commentary — an object`,
     `shaped like:`,
     `{"suggestions": [{"name": "...", "handle": "...", "platform": "...", "url": "...", "why_relevant": "..."}]}`,
   ].join('\n');

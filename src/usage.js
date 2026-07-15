@@ -1,4 +1,4 @@
-// Usage/ops-stats rollups (B8 - SPEC.md "Ops-stats tab"). Pure functions of
+// Usage/ops-stats rollups (B8 — SPEC.md "Ops-stats tab"). Pure functions of
 // the DB (except recordUsage, which appends one row). server.js exposes
 // GET /api/usage; export.js pulls a compact summary into social-state.json.
 

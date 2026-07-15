@@ -1,18 +1,18 @@
-// In-app chat agent (B10 feature 3 - SPEC.md "In-app chat agent"). Reuses the
+// In-app chat agent (B10 feature 3 — SPEC.md "In-app chat agent"). Reuses the
 // `claude -p` shell exactly like draft.js/copy_assist.js (lazy env overrides,
 // --output-format json envelope, 60s timeout, 503-flagged error contract).
 //
 // HARD SAFETY BOUNDARY: this module exposes NO cancel/delete tools, ever.
 // Every post the agent creates or edits via the draft-only tools stays
-// status:'draft'. B14 adds `approve_post`/`publish_now` - but BOTH are
+// status:'draft'. B14 adds `approve_post`/`publish_now` — but BOTH are
 // gated behind the `agent_can_publish` setting (default '0' = off, armed
 // only via an explicit Settings toggle). Unarmed, they refuse with a
 // message pointing at Settings; armed, they reuse the exact same
 // transition/validation/worker-submit code paths the human Approve/Submit
-// buttons use (TikTok field validation, BLOTATO_DRY_RUN) - the agent never
+// buttons use (TikTok field validation, BLOTATO_DRY_RUN) — the agent never
 // bypasses a safety check just because it has permission to publish. If the
 // model asks for an unsupported tool (e.g. it hallucinates "delete_post"),
-// executeAction() skips it with a summary explaining that's a human action -
+// executeAction() skips it with a summary explaining that's a human action —
 // it never falls through to a state-changing code path.
 //
 // Loop: bounded at 3 rounds. Each round the model gets the user message +
@@ -95,7 +95,7 @@ function parseAgentOutput(stdout) {
   return inner;
 }
 
-// ---------- tool catalog (read + draft-only - NO approve/publish/submit/cancel/delete) ----------
+// ---------- tool catalog (read + draft-only — NO approve/publish/submit/cancel/delete) ----------
 
 const TOOL_CATALOG = [
   { name: 'query_posts', args: '{brand_id?, status?, from?, to?}', description: 'List posts, optionally filtered.' },
@@ -107,7 +107,7 @@ const TOOL_CATALOG = [
   {
     name: 'create_draft_post',
     args: '{brand_id, platform, account_id?, copy?, content_type?, publish_at?}',
-    description: 'Create a new post. ALWAYS created as status "draft" - never published.',
+    description: 'Create a new post. ALWAYS created as status "draft" — never published.',
   },
   {
     name: 'update_draft_post',
@@ -118,7 +118,7 @@ const TOOL_CATALOG = [
   {
     name: 'draft_copy',
     args: '{idea_text, brand_id, tone_profile_id?, platforms}',
-    description: 'Draft copy for an idea (does not create a post - chain into create_draft_post to save it).',
+    description: 'Draft copy for an idea (does not create a post — chain into create_draft_post to save it).',
   },
   {
     name: 'suggest_content_type',
@@ -151,19 +151,19 @@ const TOOL_CATALOG = [
     name: 'generate_profile',
     args: '{brand_id, platform}',
     description:
-      'Draft a brand platform profile (LinkedIn/Facebook/Reddit bio, tagline, about, etc.) in CB\'s voice for copy-paste into the actual platform. Saved as status "draft" - never auto-posted/published anywhere.',
+      'Draft a brand platform profile (LinkedIn/Facebook/Reddit bio, tagline, about, etc.) in CB\'s voice for copy-paste into the actual platform. Saved as status "draft" — never auto-posted/published anywhere.',
   },
   {
     name: 'approve_post',
     args: '{id}',
     description:
-      'Approve a draft/scheduled post so it can publish. ONLY works when CB has armed "Allow assistant to approve & publish" in Settings (agent_can_publish=1) - otherwise refuses and tells you to arm it. Honors TikTok required-field validation, same as the human Approve button.',
+      'Approve a draft/scheduled post so it can publish. ONLY works when CB has armed "Allow assistant to approve & publish" in Settings (agent_can_publish=1) — otherwise refuses and tells you to arm it. Honors TikTok required-field validation, same as the human Approve button.',
   },
   {
     name: 'publish_now',
     args: '{id}',
     description:
-      'Immediately submit an approved/scheduled post to Blotato via the worker (respects BLOTATO_DRY_RUN - dry-run never makes a real post). ONLY works when agent_can_publish is armed in Settings; otherwise refuses.',
+      'Immediately submit an approved/scheduled post to Blotato via the worker (respects BLOTATO_DRY_RUN — dry-run never makes a real post). ONLY works when agent_can_publish is armed in Settings; otherwise refuses.',
   },
 ];
 
@@ -188,9 +188,9 @@ function buildAgentPrompt({ message, history = [], context = {}, priorResults = 
     `publish_at/content_type, request images, and answer questions from the`,
     `data. Publish authority (approve_post, publish_now) exists ONLY when CB`,
     `has armed "Allow assistant to approve & publish" in Settings (default`,
-    `OFF) - when unarmed, those tools refuse and you should tell the user`,
+    `OFF) — when unarmed, those tools refuse and you should tell the user`,
     `it's off and point at Settings (or the human Approve button) instead.`,
-    `You may NEVER cancel or delete anything, armed or not - there are no`,
+    `You may NEVER cancel or delete anything, armed or not — there are no`,
     `tools for those actions; if asked, explain it's a human-only action`,
     `instead of inventing a tool call.`,
     ``,
@@ -381,7 +381,7 @@ function toolUpdateDraftPost(db, { id, copy, publish_at, content_type } = {}) {
   if (existing.status !== 'draft') {
     return {
       post: parseJsonColumns(existing, ['media', 'platform_fields']),
-      summary: `Post #${id} is status '${existing.status}' - the agent can only edit drafts. Use the Approve/Cancel buttons for anything else.`,
+      summary: `Post #${id} is status '${existing.status}' — the agent can only edit drafts. Use the Approve/Cancel buttons for anything else.`,
       link: `#/post/${id}`,
     };
   }
@@ -430,7 +430,7 @@ async function toolDraftCopy(db, { idea_text, brand_id, tone_profile_id = null, 
         return { drafts: null, summary: 'Cannot draft copy: tone_profile not found.' };
       }
       // B12: merge global voice + global hard rules into the tone profile
-      // before drafting - resolveVoice/withGlobalVoice is the single source
+      // before drafting — resolveVoice/withGlobalVoice is the single source
       // every generation path (draft/copy-assist/redistribute/agent) uses.
       const effectiveTone = withGlobalVoice(db, { brand_id, toneProfile });
       const result = await draftWithAi({ idea_text, brand, toneProfile: effectiveTone, platforms });
@@ -466,14 +466,14 @@ function toolCreateResearchNote(db, { brand_id = null, source = 'manual', title,
 }
 
 /** DRAFT-ONLY: turns a blog URL into a batch of draft posts + an optional
- * image request. Never throws - a fetch/AI failure surfaces in `summary`. */
+ * image request. Never throws — a fetch/AI failure surfaces in `summary`. */
 async function toolRedistributeBlog(db, { url, brand_id = null, platforms = [], make_images = true } = {}) {
   if (!url) {
     return { drafts: null, summary: 'Cannot redistribute: url is required.' };
   }
   try {
     const result = await redistributeFromUrl(db, { url, brand_id, platforms, make_images });
-    const suffix = result.ai_unavailable ? ' (AI drafting was unavailable - copy left blank on some/all drafts)' : '';
+    const suffix = result.ai_unavailable ? ' (AI drafting was unavailable — copy left blank on some/all drafts)' : '';
     return {
       ...result,
       summary: `Created ${result.drafts.length} draft(s) from "${result.source.title || url}"${suffix}.`,
@@ -500,7 +500,7 @@ async function toolAddExample(db, { brand_id = null, platform = null, source = '
 }
 
 /** DRAFT-ONLY: drafts a brand's platform profile fields for copy-paste. Never
- * publishes/posts - a human copies each field into the actual platform. */
+ * publishes/posts — a human copies each field into the actual platform. */
 async function toolGenerateProfile(db, { brand_id, platform } = {}) {
   if (!brand_id || !platform) {
     return { profile: null, summary: 'Cannot generate profile: brand_id and platform are required.' };
@@ -526,7 +526,7 @@ function agentCanPublish(db) {
   return getRawSetting(db, 'agent_can_publish') === '1';
 }
 
-const PUBLISH_OFF_MESSAGE = 'Approving/publishing is off - arm it in Settings.';
+const PUBLISH_OFF_MESSAGE = 'Approving/publishing is off — arm it in Settings.';
 
 /** ARMED tool: moves a draft/scheduled_local post to approved (or
  * scheduled_local if it already carries a publish_at), reusing the same
@@ -543,7 +543,7 @@ function toolApprovePost(db, { id } = {}) {
   if (!APPROVE_SOURCE_STATUSES.includes(existing.status)) {
     return {
       post: parseJsonColumns(existing, ['media', 'platform_fields']),
-      summary: `Post #${id} is status '${existing.status}' - can only approve from draft/scheduled_local.`,
+      summary: `Post #${id} is status '${existing.status}' — can only approve from draft/scheduled_local.`,
       link: `#/post/${id}`,
     };
   }
@@ -573,7 +573,7 @@ function toolApprovePost(db, { id } = {}) {
 }
 
 /** ARMED tool: submits an approved/scheduled post to Blotato via the exact
- * same worker.submitNow() path the "Submit now" button uses - honors
+ * same worker.submitNow() path the "Submit now" button uses — honors
  * BLOTATO_DRY_RUN and the assisted-manual skip. Refuses outright when
  * agent_can_publish isn't '1'. */
 async function toolPublishNow(db, { id } = {}) {
@@ -596,9 +596,9 @@ async function toolPublishNow(db, { id } = {}) {
   return { post: result.post, summary: `Submitted post #${id} for publishing (${result.status}).`, link: `#/post/${id}` };
 }
 
-/** Execute one {tool, args} action. Never throws - a failed/unsupported tool
+/** Execute one {tool, args} action. Never throws — a failed/unsupported tool
  * just yields a summary describing why. Deliberately: there is no case for
- * approve/publish/submit/cancel/delete - anything not recognized falls to
+ * approve/publish/submit/cancel/delete — anything not recognized falls to
  * the default branch and is treated as unsupported. */
 async function executeAction(db, action = {}) {
   const tool = action?.tool;
@@ -660,7 +660,7 @@ async function executeAction(db, action = {}) {
       outcome = await toolPublishNow(db, args);
       break;
     default:
-      outcome = { summary: `Unsupported action "${tool}" - the agent has no such tool (no cancel/delete tools exist; that's a human action).` };
+      outcome = { summary: `Unsupported action "${tool}" — the agent has no such tool (no cancel/delete tools exist; that's a human action).` };
   }
   return { tool, args, summary: outcome.summary, link: outcome.link, data: outcome };
 }

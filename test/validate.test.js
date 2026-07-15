@@ -1,4 +1,4 @@
-// Unit tests for TikTok cosmetic-field validation (B6 polish - flagged gap
+// Unit tests for TikTok cosmetic-field validation (B6 polish — flagged gap
 // from B3). Run with: node --test test/validate.test.js
 
 import test from 'node:test';

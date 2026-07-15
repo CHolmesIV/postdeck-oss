@@ -6,7 +6,7 @@
 //
 // draft.js/server.js read POSTDECK_CLAUDE_BIN and POSTDECK_MEDIA_DIR into
 // module-level consts at IMPORT time (unlike copy_assist.js/extract.js,
-// which read per-call) - so both must be set before the top-level
+// which read per-call) — so both must be set before the top-level
 // `await import('../src/server.js')` below. The CLI stub is a small
 // dispatcher that re-reads a response file path from
 // POSTDECK_TEST_RESPONSE_FILE on every spawn (read fresh per child process,
@@ -298,7 +298,7 @@ test('worker handoff never submits an assisted-manual account (accounts.manual=1
   const db = getDb();
   const brandId = seedBrand(db);
   // instagram is blotato:true in platform-specs, but this account is
-  // individually flagged manual=1 - the worker must still skip it.
+  // individually flagged manual=1 — the worker must still skip it.
   const accountId = seedAccount(db, brandId, { platform: 'instagram', manual: true });
   const now = nowIso();
   const publishAt = new Date(Date.now() - 60 * 1000).toISOString(); // already due
@@ -315,5 +315,5 @@ test('worker handoff never submits an assisted-manual account (accounts.manual=1
   assert.equal(handoffCount, 0, 'manual account post must not be picked up by the handoff sweep');
 
   const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);
-  assert.equal(row.status, 'scheduled_local', 'manual account post stays scheduled_local - worker never touches it');
+  assert.equal(row.status, 'scheduled_local', 'manual account post stays scheduled_local — worker never touches it');
 });

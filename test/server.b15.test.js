@@ -4,7 +4,7 @@
 // /api/draft/compare running both providers independently. Mirrors
 // test/server.b14.test.js's isolation style (in-memory DB, worker/sync
 // disabled). Neither `claude` nor `codex` CLIs are assumed to be
-// logged-in/available in CI - assertions check response SHAPE (and,
+// logged-in/available in CI — assertions check response SHAPE (and,
 // where a stub is wired, its content), not that the real CLIs succeed.
 //
 // Run with: node --test test/server.b15.test.js
@@ -94,7 +94,7 @@ test('POST /api/draft accepts a provider and uses a stubbed claude CLI end-to-en
   const brandId = seedBrand(db);
   const toneId = seedToneProfile(db, brandId);
 
-  const { dir, binPath } = writeStubClaudeBin(JSON.stringify({ twitter: 'Hello world - check this out' }));
+  const { dir, binPath } = writeStubClaudeBin(JSON.stringify({ twitter: 'Hello world — check this out' }));
   process.env.POSTDECK_CLAUDE_BIN = binPath;
   try {
     const res = await app.inject({
@@ -111,7 +111,7 @@ test('POST /api/draft accepts a provider and uses a stubbed claude CLI end-to-en
     assert.equal(res.statusCode, 200);
     const body = res.json();
     assert.equal(typeof body.drafts.twitter, 'string');
-    assert.ok(!/-/.test(body.drafts.twitter), 'em-dash must be scrubbed');
+    assert.ok(!/—/.test(body.drafts.twitter), 'em-dash must be scrubbed');
   } finally {
     delete process.env.POSTDECK_CLAUDE_BIN;
     fs.rmSync(dir, { recursive: true, force: true });
@@ -157,7 +157,7 @@ test('POST /api/draft/compare returns a {claude, codex} shape, each independentl
   const brandId = seedBrand(db);
   const toneId = seedToneProfile(db, brandId);
 
-  // Neither CLI is assumed available/logged-in in CI - point both bins at
+  // Neither CLI is assumed available/logged-in in CI — point both bins at
   // nonexistent paths so this is deterministic, and assert the SHAPE: both
   // providers attempted independently, one failing must not affect the other.
   process.env.POSTDECK_CLAUDE_BIN = '/nonexistent/claude-binary-postdeck-test';

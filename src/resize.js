@@ -1,11 +1,11 @@
-// Auto-resize-to-platform (B14 "Image studio v2" feature 3 - SPEC.md B14 §1).
+// Auto-resize-to-platform (B14 "Image studio v2" feature 3 — SPEC.md B14 §1).
 // macOS `sips` only, no new npm deps. Given a chosen image + a set of target
 // platforms (or explicit {width,height} pairs), produces center-crop-to-fill
-// copies at each target's exact dims into media/ - the same file-naming
+// copies at each target's exact dims into media/ — the same file-naming
 // convention as POST /api/media (timestamp-prefixed).
 //
 // Degrades with a clear `resize_unavailable` error when `sips` isn't on PATH
-// (non-macOS) - src/server.js maps that to a 503 with a friendly message.
+// (non-macOS) — src/server.js maps that to a 503 with a friendly message.
 // POSTDECK_SIPS_BIN lets tests point at a fake/missing binary without
 // touching the real `sips` on the machine running the suite.
 
@@ -59,7 +59,7 @@ async function sipsAvailable({ fresh = false } = {}) {
 
 function makeUnavailableError() {
   const err = new Error(
-    `resize_unavailable: "${sipsBin()}" is not available on this machine. sips is macOS-only - auto-resize needs a Mac (or a working POSTDECK_SIPS_BIN override).`
+    `resize_unavailable: "${sipsBin()}" is not available on this machine. sips is macOS-only — auto-resize needs a Mac (or a working POSTDECK_SIPS_BIN override).`
   );
   err.code = 'resize_unavailable';
   return err;
@@ -131,7 +131,7 @@ async function resizeToDims(srcAbsPath, { width, height, outDir } = {}) {
     const resampleH = Math.max(h, Math.round(srcSize.height * scale));
     await runSips(['--resampleWidth', String(resampleW), '--resampleHeight', String(resampleH), outPath]);
   } else {
-    // Best-effort fallback if pixel probing failed for some reason - resample
+    // Best-effort fallback if pixel probing failed for some reason — resample
     // straight to target so we still end up at the right final size below.
     await runSips(['--resampleWidth', String(w), '--resampleHeight', String(h), outPath]);
   }
@@ -153,7 +153,7 @@ async function resizeToDims(srcAbsPath, { width, height, outDir } = {}) {
  * Given a source image + a list of platform names, produce one resized copy
  * per platform (dims parsed from config/platform-specs.json `image.*`, same
  * lookup approach as src/imagespec.js's buildBrief). A platform whose dims
- * can't be parsed (no image spec, e.g. tiktok/blog) is skipped and noted -
+ * can't be parsed (no image spec, e.g. tiktok/blog) is skipped and noted —
  * never throws for that reason alone.
  *
  * @returns {Promise<{results: Array<object>, skipped: Array<{platform:string, reason:string}>}>}

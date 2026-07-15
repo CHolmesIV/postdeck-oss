@@ -149,7 +149,7 @@ function combineDateTime(dateStr, timeStr) {
 function getBrand(db, slug) {
   const brand = db.prepare('SELECT * FROM brands WHERE slug = ?').get(slug);
   if (!brand) {
-    throw new Error(`Brand '${slug}' not found - run "node src/seed.js" first.`);
+    throw new Error(`Brand '${slug}' not found — run "node src/seed.js" first.`);
   }
   return brand;
 }

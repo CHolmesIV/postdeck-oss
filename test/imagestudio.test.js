@@ -58,7 +58,7 @@ test('buildBrief produces correct dims/format for instagram + tiktok', () => {
 
   const tt = brief.platforms.find((p) => p.platform === 'tiktok');
   assert.ok(tt, 'tiktok entry present');
-  // tiktok has no `image` spec (video-only) - must fall back, never throw.
+  // tiktok has no `image` spec (video-only) — must fall back, never throw.
   assert.ok(tt.dims.w > 0 && tt.dims.h > 0);
   assert.match(tt.safe_notes, /no image spec found/);
 });
@@ -158,7 +158,7 @@ test('importGeneratedImages skips a manifest with no matching image_requests row
 
   const updated = importGeneratedImages(db);
   assert.ok(!updated.includes(bogusId));
-  // Left in place - not archived, not deleted.
+  // Left in place — not archived, not deleted.
   assert.ok(fs.existsSync(subdir), 'orphan directory should be left untouched');
   assert.ok(fs.existsSync(path.join(subdir, 'orphan.png')));
 });
