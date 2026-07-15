@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to accounts.seed.json (gitignored) and fill with your real Blotato account IDs from GET /v2/users/me/accounts. Never commit real IDs.",
+  "brands": [
+    {
+      "name": "Personal Brand",
+      "slug": "personal",
+      "accounts": [
+        { "platform": "linkedin", "blotato_account_id": "00000", "target_fields": {} },
+        { "platform": "facebook", "blotato_account_id": "00000", "target_fields": {} }
+      ]
+    },
+    {
+      "name": "Business Brand",
+      "slug": "business",
+      "accounts": [
+        { "platform": "linkedin", "blotato_account_id": "00000", "target_fields": { "pageId": "00000000" } },
+        { "platform": "twitter", "blotato_account_id": "00000", "target_fields": {} }
+      ]
+    }
+  ]
+}

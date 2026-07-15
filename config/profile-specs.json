@@ -1,0 +1,53 @@
+{
+  "_meta": {
+    "researched": "2026-07-15",
+    "note": "Source of truth for the B13 profiles feature: standard fields per platform (order = display/generate order), char limits, and SEO guidance. Consumed by the generate prompt + the Profiles UI field list.",
+    "refresh": "Re-research every ~6 months or when a platform changes its page/profile layout. LinkedIn and Facebook both revise field limits periodically without much notice, so spot-check before treating a limit as hard."
+  },
+  "linkedin_company": {
+    "fields": [
+      { "key": "name", "label": "Page name", "char_limit": 100, "required": true },
+      { "key": "tagline", "label": "Tagline", "char_limit": 120, "required": true },
+      { "key": "about", "label": "About / Overview", "char_limit": 2000, "required": true },
+      { "key": "website", "label": "Website URL", "char_limit": null, "required": true },
+      { "key": "industry", "label": "Industry", "char_limit": null, "required": true },
+      { "key": "company_size", "label": "Company size", "char_limit": null, "required": false },
+      { "key": "specialties", "label": "Specialties", "char_limit": 256, "required": false },
+      { "key": "location", "label": "Headquarters location", "char_limit": null, "required": false }
+    ],
+    "seo_notes": "LinkedIn's search and Google both index the tagline and the first ~2-3 lines of About, so front-load the primary keyword phrase in the first 8-10 words of each (the tagline is what shows next to the logo in search and feed, so it has to work as a one-line pitch, not a slogan). Specialties is a structured keyword field, not prose: list the exact terms buyers search (product category, industry, use case) rather than adjectives. About should open with what the company does and for whom in plain language, then move into proof points and differentiation; avoid burying the value prop below a mission-statement paragraph, since most readers and the algorithm both weight the opening. LinkedIn penalizes keyword-stuffed taglines and about sections that read as ad copy over information-dense positioning; it also deprioritizes pages with no recent posting activity in follower/search ranking, so the profile fields matter but aren't the whole game."
+  },
+  "linkedin_personal": {
+    "fields": [
+      { "key": "name", "label": "Name", "char_limit": null, "required": true },
+      { "key": "headline", "label": "Headline", "char_limit": 220, "required": true },
+      { "key": "about", "label": "About", "char_limit": 2600, "required": true },
+      { "key": "current_position", "label": "Current position (title + company)", "char_limit": null, "required": true },
+      { "key": "location", "label": "Location", "char_limit": null, "required": false },
+      { "key": "featured_link", "label": "Featured link (website/product)", "char_limit": null, "required": false }
+    ],
+    "seo_notes": "Headline is the single most-indexed field on LinkedIn (shows in every search result, comment, and connection request); put the role + who-you-help + core keyword in the first ~100 characters since mobile truncates hard before the full 220. About should read first-person and lead with a hook line (not 'I am a...'), then what you do, who for, and proof, with the keyword phrase appearing naturally in the first two lines since that's the fold before 'see more'. Avoid stacking buzzwords or credential lists in place of a real sentence; LinkedIn's algorithm and human readers both favor specific, concrete claims over generic titles like 'passionate leader.' Founder profiles that post content regularly get more profile-view search weight than the fields alone; treat the fields as the resting pitch, not the whole strategy."
+  },
+  "facebook_page": {
+    "fields": [
+      { "key": "page_name", "label": "Page name", "char_limit": 75, "required": true },
+      { "key": "username", "label": "Username (@handle)", "char_limit": 50, "required": false },
+      { "key": "category", "label": "Category", "char_limit": null, "required": true },
+      { "key": "short_description", "label": "Short description (Page info / search snippet)", "char_limit": 255, "required": true },
+      { "key": "about_story", "label": "About / Our Story", "char_limit": null, "required": false },
+      { "key": "website", "label": "Website URL", "char_limit": null, "required": true },
+      { "key": "cta_button", "label": "CTA button (e.g. Learn More, Sign Up, Contact Us)", "char_limit": null, "required": false }
+    ],
+    "seo_notes": "The short description is what surfaces in Facebook search results and the Page's link previews, so it should read as a complete, keyword-natural sentence describing what the business does and for whom, not a slogan; this field gets indexed by Google too. Category drives which searches and Page-suggestion surfaces the Page appears in, so pick the most literal match available rather than the most flattering one. The About/Story section is long-form and rewards a real narrative (what problem you solve, why it exists, what makes it credible) over marketing copy; Facebook's own guidance and user behavior both penalize pages that read as ad units with no story or personality. Keep the CTA button aligned with the actual next step (a SaaS product should point to the app or a demo, not a generic 'Shop Now')."
+  },
+  "reddit": {
+    "fields": [
+      { "key": "display_name", "label": "Display name", "char_limit": 30, "required": true },
+      { "key": "bio", "label": "Bio / About (profile description)", "char_limit": 200, "required": true },
+      { "key": "social_links", "label": "Social links (profile link list, up to 5)", "char_limit": null, "required": false },
+      { "key": "avatar", "label": "Avatar / Snoo", "char_limit": null, "required": false },
+      { "key": "banner", "label": "Profile banner", "char_limit": null, "required": false }
+    ],
+    "seo_notes": "Reddit is the one platform where writing like a brand actively hurts you: the bio should read like a real person describing what they do and why they're on Reddit, not a company one-liner ('building X, here to talk shop and answer questions' beats 'Company X: the leading platform for Y'). Skip keyword stuffing entirely; Reddit's own users and mods flag anything that smells like SEO copy, and promotional-sounding profiles get accounts shadow-limited or posts removed under the 90/10 self-promotion norm most subreddits enforce. Social links should point to something useful (a blog post, a real project, GitHub) rather than a marketing homepage. The single highest-leverage move here isn't the profile text, it's account behavior: comment and contribute genuinely in relevant subs before ever posting anything with a company name attached, since karma and account age are the real gate, not the bio."
+  }
+}

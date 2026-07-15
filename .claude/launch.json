@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "postdeck",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["start"],
+      "port": 4520,
+      "env": {
+        "BLOTATO_DRY_RUN": "1",
+        "POSTDECK_WORKER": "0"
+      }
+    }
+  ]
+}

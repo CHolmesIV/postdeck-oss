@@ -1,0 +1,26 @@
+{
+  "name": "postdeck",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first multi-brand social scheduler (Blotato-backed). See SPEC.md.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node -e \"import('./src/db.js').then(m => m.getDb())\"",
+    "seed": "node src/seed.js",
+    "import:clusters": "node src/import.js clusters",
+    "import:posts": "node src/import.js posts",
+    "import:leads": "node src/import.js leads",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^8.3.1",
+    "@fastify/static": "^6.12.0",
+    "better-sqlite3": "^12.11.1",
+    "fastify": "^4.28.1"
+  }
+}

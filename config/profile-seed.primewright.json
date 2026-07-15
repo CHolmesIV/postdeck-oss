@@ -1,0 +1,54 @@
+{
+  "brand_slug": "primewright",
+  "_meta": {
+    "generated": "2026-07-15",
+    "note": "Seed content for B13 profiles rows (status 'draft'). Written against config/profile-specs.json field specs and CB's voice rules (no em-dashes, direct, operator, no fluff, no emojis on LinkedIn). Human copy-pastes into each platform; nothing here auto-posts."
+  },
+  "profiles": [
+    {
+      "platform": "linkedin_company",
+      "fields": {
+        "name": "PrimeWright",
+        "tagline": "Government-contract bidding, run like a ledger.",
+        "about": "PrimeWright is a bidding platform for small businesses that go after federal contracts. It pulls your SAM.gov solicitation pipeline into one place, runs AI-assisted bid analysis on fit and price-to-win, and tracks loss intelligence so every no-bid teaches you something.\n\nThe AI assists. A human decides. Every bid/no-bid, every price, every submission goes through a hard human gate before it leaves the building. No autopilot on federal money.\n\nBuilt for small and mid-size GovCon operators who are tired of chasing every SAM.gov notice and want discipline over noise: qualify faster, source smarter, and stop bidding jobs you were never going to win.\n\nFederal bid management, capture and proposal tracking, and price-to-win intelligence, in one ledger.",
+        "website": "https://primewright.com",
+        "industry": "Software Development",
+        "company_size": "1-10 employees",
+        "specialties": "Government contracting software, GovCon, SAM.gov bid tracking, federal bid management, capture management, proposal management, price-to-win, bid/no-bid analysis, small business federal contracts",
+        "location": "United States"
+      }
+    },
+    {
+      "platform": "facebook_page",
+      "fields": {
+        "page_name": "PrimeWright",
+        "username": "primewright",
+        "category": "Software Company",
+        "short_description": "Government-contract bidding software for small businesses. SAM.gov pipeline, AI-assisted bid analysis, human sign-off on every bid. Run your GovCon pipeline like a ledger.",
+        "about_story": "PrimeWright helps small and mid-size businesses bid on federal contracts without drowning in SAM.gov notices.\n\nIt tracks your solicitation pipeline, flags the opportunities worth chasing, and runs AI-assisted analysis on fit and price-to-win, but every decision, every bid, every dollar quoted still goes through a human before it's final. The AI assists. You decide.\n\nWe built PrimeWright because most small businesses lose federal bids to bad process, not bad work: missed solicitations, no price-to-win discipline, no memory of why the last three bids lost. PrimeWright fixes the process so your team can focus on the proposal.\n\nGovernment-contract bidding, run like a ledger.",
+        "website": "https://primewright.com",
+        "cta_button": "Learn More"
+      }
+    },
+    {
+      "platform": "reddit",
+      "fields": {
+        "display_name": "PrimeWright",
+        "bio": "Building PrimeWright, a pipeline and price-to-win tool for small businesses chasing federal contracts. Ex-bidder, tired of losing to bad process, not bad proposals. Here to talk GovCon, not pitch you.",
+        "social_links": [
+          { "label": "Website", "url": "https://primewright.com" }
+        ]
+      }
+    },
+    {
+      "platform": "twitter",
+      "fields": {
+        "display_name": "PrimeWright",
+        "handle": "@primewright",
+        "bio": "Government contract bidding, run like a ledger. SAM.gov pipeline, AI bid analysis, human sign-off. For small businesses chasing federal contracts.",
+        "location": "United States",
+        "website": "https://primewright.com"
+      }
+    }
+  ]
+}
