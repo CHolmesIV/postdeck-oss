@@ -1,26 +1,14 @@
 # PostDeck
 
-A local-first, multi-brand social media scheduler you run on your own machine. It is the
-system of record for your content: compose posts, draft copy with your own AI CLI (Claude or
-Codex, on your subscription, no extra API bill), pick the format that works per platform,
-schedule, and hand off to Blotato for publishing. Your data stays on your box, and nothing
+A local-first, multi-brand social media scheduler you run on your own machine. Compose posts,
+draft copy with your own AI CLI (Claude or Codex, on your subscription, no extra API bill),
+schedule on a real calendar, and hand off to Blotato. Your data stays on your box, and nothing
 goes out without you approving it.
 
-Built by Charles Holmes IV and shared as-is. Nothing proprietary here. If the layout or the
-way it works helps someone building the same kind of thing, good.
+Built by Charles Holmes IV and shared as-is. Nothing proprietary here.
 
-Full design is in [`SPEC.md`](./SPEC.md), current state in [`BUILD_STATUS.md`](./BUILD_STATUS.md),
+Full design is in [`SPEC.md`](./SPEC.md), state in [`BUILD_STATUS.md`](./BUILD_STATUS.md),
 history in [`CHANGELOG.md`](./CHANGELOG.md).
-
-## What it does
-
-- Multi-brand from day one. Brands are rows, not code. One dashboard runs all of them.
-- Compose and schedule on a real month/week calendar (click a day to schedule), with per-platform variants and character counters.
-- Draft with AI through your own CLI, in your voice, with a hard no-em-dash rule, always behind a human approve gate. Switch between Claude and Codex, or compare both.
-- Image handoff to Codex, per-platform sizing preview, and auto-resize.
-- Assisted-manual mode for platforms an API should not automate (Reddit).
-- Blog-to-social redistribution, a canonical brand-profile store, an in-app chat assistant, and analytics plus an ops view.
-- Runs on Node, Fastify, and SQLite. No build step, no external services beyond the posting layer.
 
 ## Delivery rule
 

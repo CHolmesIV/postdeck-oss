@@ -43,15 +43,16 @@ flipped.
 
 ## Pending / open loops
 
-- **AI features need the `claude` CLI logged in** (verified 2026-07-15 - NOT a PATH issue; the
-  service PATH already includes `/opt/homebrew/bin` where `claude` lives). Running the app's
-  exact `claude -p ...` invocation returns `"Not logged in · Please run /login"`, so the agent,
-  copy-assist, blog drafting, profile Generate, and screenshot-to-text all 503 gracefully. FIX:
-  run `claude` + `/login` in a terminal (uses CB's existing subscription, no extra API cost),
-  then confirm the launchd `com.postdeck` service can read those creds (file under `~/.claude`
-  is picked up automatically; if creds are keychain-scoped the non-interactive service may need
-  them made reachable). Test via the chat drawer once logged in. This is the master switch for
-  all AI features.
+- **Run PostDeck in your logged-in session, not as a background service** (resolved 2026-07-15).
+  Root cause of the AI-features 503: Claude Code stores its subscription login in the macOS
+  **Keychain**, which a **background launchd agent cannot reliably read** - so `claude -p`
+  returned "Not logged in" under the service. This is local-by-design (no API keys, no cloud),
+  so the fix is to run it in-session: the `com.postdeck` launchd agent was **removed**; launch
+  via `~/Desktop/PostDeck.command` / `PostDeck.app` (or `scripts/open-postdeck.command`, or
+  `npm start` in Terminal). In your GUI session `claude` (and `codex`) reach the Keychain, so
+  all AI features work on your subscription. If AI still shows unavailable, run `claude` +
+  `/login` (and `codex login`) once in Terminal, then relaunch. Trade-off: it runs while you
+  have it open, not 24/7 (fine - the point is local, on your machine).
 - **Facebook page/subaccount mapping**: live posting is now proven on X and LinkedIn, but
   Di-Hy Facebook still returns `Page / subaccount not found`. The top-level Facebook account
   is connected, but the Di-Hy page itself still needs to appear as a valid Blotato
