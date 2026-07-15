@@ -3,6 +3,26 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-15 - Composer redesign + two bug fixes (accounts, AI login)
+
+- **UX: collapsible, reordered sections.** The Composer was one long always-open
+  scroll. Each section is now a collapsible card (chevron header, open/closed state
+  persisted per-section in localStorage). Reordered so the primary output is reachable
+  without scrolling: Accounts -> Image -> Image request -> Draft with AI -> Platform
+  variants, with Content type + Schedule collapsed by default. Save draft / Request image
+  now live in a **sticky action bar** at the bottom.
+- **Bug: duplicate/malformed accounts.** Di-Hy showed two LinkedIns and two Facebooks -
+  duplicate rows whose `blotato_account_id` was actually a pageId (from an earlier
+  seed/parallel write). Added `DELETE /api/accounts/:id` and a per-row **remove (x)**
+  button, and cleaned the two junk rows.
+- **Bug: Draft with AI failed ("could not run claude CLI").** Root cause: the `claude`
+  CLI wasn't logged in. Added an **AI status pill** + one-click **"Log in to Claude"**
+  button (opens `claude auth login --claudeai` in Terminal - subscription, no API key) +
+  **Recheck**, backed by `GET /api/ai/status` (`claude auth status`) and
+  `POST /api/ai/login`. Also fixed a 3-second per-draft stdin hang (stdin now closed so
+  `claude -p` doesn't wait on input it never gets).
+- Tests: +6 (`test/ai-auth.test.js`, DELETE cases). Suite now 196.
+
 ## 2026-07-15 - Composer: add a platform to any brand (fix account dead-end)
 
 - Brands seeded without a Blotato connection (PrimeWright, Lunula, IVision) dead-ended in the

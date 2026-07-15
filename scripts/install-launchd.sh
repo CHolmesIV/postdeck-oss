@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Install (or remove, with --uninstall) a launchd agent that keeps PostDeck's
-# `node src/server.js` running whenever CB's Mac is up - RunAtLoad + KeepAlive.
+# `node src/server.js` running whenever CB's Mac is up — RunAtLoad + KeepAlive.
 # See SPEC.md B6 and README.md "launchd agent" section.
 #
 # Usage:
 #   scripts/install-launchd.sh            # install + bootstrap-load
 #   scripts/install-launchd.sh --uninstall  # unload + remove the plist
 #
-# Do NOT run this from an agent session without CB's go-ahead - it registers
+# Do NOT run this from an agent session without CB's go-ahead — it registers
 # a persistent background process. This script is written to be reviewed with
 # `bash -n scripts/install-launchd.sh` before ever being executed.
 

@@ -81,3 +81,21 @@ test('POST /api/accounts honors an explicit live (manual=0) account', async () =
   assert.equal(acct.blotato_account_id, '12345');
   assert.deepEqual(acct.target_fields, { pageId: '987' });
 });
+
+test('DELETE /api/accounts/:id removes an account', async () => {
+  const app = buildServer();
+  const db = getDb();
+  const brandId = seedBrand(db);
+  const created = (await app.inject({ method: 'POST', url: '/api/accounts', payload: { brand_id: brandId, platform: 'twitter' } })).json();
+  const del = await app.inject({ method: 'DELETE', url: `/api/accounts/${created.id}` });
+  assert.equal(del.statusCode, 200);
+  assert.equal(del.json().ok, true);
+  const list = (await app.inject({ method: 'GET', url: '/api/accounts' })).json();
+  assert.equal(list.find((a) => a.id === created.id), undefined);
+});
+
+test('DELETE /api/accounts/:id 404s for an unknown id', async () => {
+  const app = buildServer();
+  const del = await app.inject({ method: 'DELETE', url: '/api/accounts/999999' });
+  assert.equal(del.statusCode, 404);
+});

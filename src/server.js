@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { getDb, nowIso } from './db.js';
 import { draftWithAi, PLATFORM_LIMITS } from './draft.js';
+import { getAuthStatus, startLogin } from './ai.js';
 import { markdownToHtml, escapeHtml } from './md.js';
 import { startWorker, submitNow, getWorkerStatus } from './worker.js';
 import { buildSocialState } from './export.js';
@@ -290,6 +291,43 @@ function buildServer() {
     ).run(merged);
     const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
     return parseJsonColumns(row, ['target_fields']);
+  });
+
+  // ---------- delete an account ----------
+  // Lets the operator remove a wrong/duplicate account (e.g. a malformed
+  // duplicate where a pageId was written into blotato_account_id). Posts that
+  // referenced it keep their row (account_id -> NULL via the FK) so history
+  // isn't destroyed.
+  app.delete('/api/accounts/:id', async (req, reply) => {
+    const existing = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    db.prepare('DELETE FROM accounts WHERE id = ?').run(req.params.id);
+    reply.code(200);
+    return { ok: true, id: Number(req.params.id) };
+  });
+
+  // ---------- AI provider auth (status + in-app login) ----------
+  // Draft-with-AI shells out to the `claude` CLI on the operator's
+  // subscription (NO API key). If it isn't logged in, drafting 503s. These
+  // endpoints let the UI show a status pill and trigger login without the
+  // operator opening a terminal.
+  app.get('/api/ai/status', async () => {
+    const [claude, codex] = await Promise.all([getAuthStatus('claude'), getAuthStatus('codex')]);
+    return { claude, codex };
+  });
+
+  app.post('/api/ai/login', async (req, reply) => {
+    const provider = (req.body && req.body.provider) || req.query.provider || 'claude';
+    try {
+      const result = await startLogin(provider);
+      return result;
+    } catch (err) {
+      reply.code(err.statusCode || 500);
+      return { error: err.message, manualCommand: err.manualCommand };
+    }
   });
 
   // ---------- ideas ----------

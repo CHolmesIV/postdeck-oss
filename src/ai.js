@@ -25,7 +25,7 @@
 //   codex.buildArgs below; keep the parser as-is.
 //   Reuses the saved Codex CLI login (ChatGPT/subscription) — no API key.
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 
 function make503(message) {
   const err = new Error(message);
@@ -149,7 +149,14 @@ function runCli(providerName, args) {
     execFile(
       getBin(providerName),
       args,
-      { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 },
+      {
+        timeout: 60_000,
+        maxBuffer: 10 * 1024 * 1024,
+        // Close stdin (/dev/null) so `claude -p` doesn't sit for ~3s waiting
+        // on stdin it never receives ("no stdin data received in 3s" warning)
+        // when the prompt is passed as an argv arg. Removes per-draft latency.
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
       (err, stdout) => {
         if (err) {
           reject(Object.assign(new Error(err.message), { code: err.code }));
@@ -190,4 +197,96 @@ async function runDraft(providerName, { prompt, model, budget } = {}) {
   return provider.parse(stdout);
 }
 
-export { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream };
+/**
+ * Report whether a provider's CLI is installed and logged in, without
+ * spending any tokens. For claude we call `claude auth status` (fast,
+ * non-interactive, prints JSON `{loggedIn:boolean,...}`). For codex we only
+ * check that the binary resolves (no cheap status probe assumed). Never
+ * throws — returns a plain status object so the UI can render a pill.
+ *
+ * @returns {Promise<{provider:string, installed:boolean, loggedIn:boolean, detail?:string}>}
+ */
+function getAuthStatus(providerName) {
+  const provider = PROVIDERS[providerName];
+  if (!provider) return Promise.resolve({ provider: providerName, installed: false, loggedIn: false, detail: 'unknown provider' });
+  const bin = getBin(providerName);
+
+  if (providerName === 'claude') {
+    return new Promise((resolve) => {
+      execFile(bin, ['auth', 'status'], { timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] }, (err, stdout) => {
+        if (err && err.code === 'ENOENT') {
+          resolve({ provider: 'claude', installed: false, loggedIn: false, detail: 'claude CLI not found on PATH' });
+          return;
+        }
+        let loggedIn = false;
+        try {
+          const parsed = JSON.parse(String(stdout || '').trim());
+          loggedIn = parsed && parsed.loggedIn === true;
+        } catch {
+          // Older CLIs print human text; fall back to a loose check.
+          loggedIn = /logged in|authenticated/i.test(String(stdout || '')) && !/not logged in/i.test(String(stdout || ''));
+        }
+        resolve({ provider: 'claude', installed: true, loggedIn, detail: loggedIn ? 'logged in' : 'not logged in' });
+      });
+    });
+  }
+
+  // codex: only a presence check (no assumed status subcommand).
+  return new Promise((resolve) => {
+    execFile(bin, ['--version'], { timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }, (err) => {
+      if (err && err.code === 'ENOENT') {
+        resolve({ provider: 'codex', installed: false, loggedIn: false, detail: 'codex CLI not installed' });
+        return;
+      }
+      // Installed; we can't cheaply confirm login, so report unknown-but-present.
+      resolve({ provider: 'codex', installed: true, loggedIn: null, detail: 'installed (login unverified)' });
+    });
+  });
+}
+
+/**
+ * Launch the provider's interactive login in a NEW macOS Terminal window so
+ * the operator can complete the browser OAuth without typing anything. The
+ * subscription flow is `claude auth login --claudeai` (NO API key). Returns
+ * once the window has been asked to open; the caller then polls
+ * getAuthStatus() (a "Recheck" button in the UI).
+ *
+ * macOS only (uses `open -a Terminal`). Throws a plain Error elsewhere so the
+ * route can 400 with a "run it yourself" hint.
+ */
+async function startLogin(providerName, { platform = process.platform } = {}) {
+  const bin = getBin(providerName);
+  const loginCmd =
+    providerName === 'codex'
+      ? `${bin} login`
+      : `${bin} auth login --claudeai`;
+
+  if (platform !== 'darwin') {
+    const err = new Error(`In-app login is macOS-only. Run \`${loginCmd}\` in a terminal.`);
+    err.statusCode = 400;
+    err.manualCommand = loginCmd;
+    throw err;
+  }
+
+  return new Promise((resolve, reject) => {
+    // `open -a Terminal` with a command requires a script file or AppleScript.
+    // osascript keeps it dependency-free and pops a visible window running the
+    // login command, which opens the browser for OAuth.
+    const osa = `tell application "Terminal"
+  activate
+  do script "${loginCmd.replace(/"/g, '\\"')}"
+end tell`;
+    execFile('osascript', ['-e', osa], { timeout: 15_000 }, (err) => {
+      if (err) {
+        const e = new Error(`Could not open Terminal for login: ${err.message}`);
+        e.statusCode = 500;
+        e.manualCommand = loginCmd;
+        reject(e);
+        return;
+      }
+      resolve({ started: true, provider: providerName, command: loginCmd });
+    });
+  });
+}
+
+export { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream, getAuthStatus, startLogin };

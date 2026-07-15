@@ -292,6 +292,48 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+// Turn a `.card` (whose first child is an <h2> title) into a collapsible
+// section: the title becomes a clickable header with a chevron, the rest
+// folds into a toggle-able body. Open/closed state persists in localStorage
+// under `key` so the operator's layout preferences stick between sessions.
+// Mutates the card in place and returns it.
+function makeCollapsible(card, { open = true, key } = {}) {
+  if (!card || card.dataset.collapsible === '1') return card;
+  const storeKey = key ? `pd_collapse_${key}` : null;
+  let isOpen = open;
+  if (storeKey) {
+    const saved = localStorage.getItem(storeKey);
+    if (saved === '0') isOpen = false;
+    else if (saved === '1') isOpen = true;
+  }
+  const kids = [...card.childNodes];
+  const h2 = kids.find((n) => n.nodeType === 1 && n.tagName === 'H2');
+  const title = h2 ? h2.textContent : '';
+  const rest = kids.filter((n) => n !== h2);
+  card.innerHTML = '';
+  card.classList.add('collapsible');
+  card.dataset.collapsible = '1';
+  const chevron = el('span', { class: 'collapse-chevron' }, isOpen ? '▾' : '▸');
+  const header = el('div', { class: 'collapsible-header' }, [
+    el('span', { class: 'collapsible-title' }, title),
+    chevron,
+  ]);
+  const bodyWrap = el('div', { class: 'collapsible-body' });
+  rest.forEach((n) => bodyWrap.appendChild(n));
+  function apply() {
+    card.classList.toggle('collapsed', !isOpen);
+    chevron.textContent = isOpen ? '▾' : '▸';
+  }
+  header.addEventListener('click', () => {
+    isOpen = !isOpen;
+    if (storeKey) localStorage.setItem(storeKey, isOpen ? '1' : '0');
+    apply();
+  });
+  apply();
+  card.append(header, bodyWrap);
+  return card;
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
     ...opts,
@@ -1539,10 +1581,30 @@ async function renderComposer(view) {
         [manualToggle, ' manual']
       );
 
+      // Remove this account (e.g. a wrong/duplicate connection). Confirms
+      // first; on success drops it from state + selection and re-renders.
+      const removeBtn = el('button', {
+        class: 'account-remove',
+        type: 'button',
+        title: 'Remove this account',
+        onclick: async () => {
+          if (!confirm(`Remove the ${a.platform} account (#${a.id}) from this brand?`)) return;
+          try {
+            await api(`/api/accounts/${a.id}`, { method: 'DELETE' });
+            state.accounts = state.accounts.filter((x) => x.id !== a.id);
+            selectedAccounts.delete(a.id);
+            await loadForBrand(brandId);
+          } catch (err) {
+            alert(`Could not remove account: ${err.message}`);
+          }
+        },
+      }, '✕');
+
       return el('div', { class: 'account-row', style: 'display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:6px;' }, [
         el('label', {}, [cb, ` ${a.platform} (account #${a.id}) - ${limitStr}`]),
         manualLabel,
         badgeHost,
+        removeBtn,
       ]);
     }
 
@@ -1690,6 +1752,51 @@ async function renderComposer(view) {
 
     const aiBox = el('div', { class: 'card' });
     aiBox.appendChild(el('h2', {}, 'Draft with AI'));
+    // AI availability pill + one-click login. Draft-with-AI shells out to the
+    // `claude` CLI on the subscription (no API key); if it isn't logged in,
+    // drafting 503s. This surfaces status and lets the operator log in without
+    // touching a terminal.
+    const aiStatusHost = el('div', { class: 'ai-status-host' });
+    aiBox.appendChild(aiStatusHost);
+    async function refreshAiStatus() {
+      aiStatusHost.innerHTML = '';
+      let status;
+      try {
+        status = await api('/api/ai/status');
+      } catch {
+        return; // best-effort; drafting still surfaces its own error
+      }
+      const c = status.claude || {};
+      const ok = c.installed && c.loggedIn;
+      const pill = el(
+        'span',
+        { class: `ai-pill ${ok ? 'ai-pill-ok' : 'ai-pill-warn'}` },
+        ok ? 'Claude: logged in' : c.installed ? 'Claude: not logged in' : 'Claude CLI not found'
+      );
+      const row = el('div', { class: 'ai-status-row' }, [pill]);
+      if (c.installed && !c.loggedIn) {
+        row.appendChild(
+          el('button', {
+            class: 'btn-secondary',
+            type: 'button',
+            onclick: async () => {
+              try {
+                await api('/api/ai/login', { method: 'POST', body: { provider: 'claude' } });
+                aiStatusHost.appendChild(
+                  el('div', { class: 'hint', style: 'margin-top:6px;color:var(--muted);' },
+                    'A Terminal window opened to sign you in. Approve in your browser, then click Recheck.')
+                );
+              } catch (err) {
+                alert(`Could not start login: ${err.message}`);
+              }
+            },
+          }, 'Log in to Claude')
+        );
+      }
+      row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: refreshAiStatus }, 'Recheck'));
+      aiStatusHost.appendChild(row);
+    }
+    refreshAiStatus();
     const ideaInput = el('textarea', { rows: '3', placeholder: 'Idea text…', id: 'ai-idea-input' });
     ideaInput.oninput = () => (ideaText = ideaInput.value);
     aiBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Idea'), ideaInput]));
@@ -1820,7 +1927,8 @@ async function renderComposer(view) {
 
     const publishAtInput = el('input', { type: 'datetime-local' });
     if (prefillDate) { publishAtInput.value = prefillDate; prefillDate = null; } // from a calendar day click, applied once
-    body.appendChild(el('div', { class: 'card' }, [el('div', { class: 'field-row' }, [el('label', {}, 'Publish at'), publishAtInput])]));
+    const publishCard = el('div', { class: 'card' }, [el('h2', {}, 'Schedule'), el('div', { class: 'field-row' }, [el('label', {}, 'Publish at'), publishAtInput])]);
+    body.appendChild(publishCard);
 
     const saveRow = el('div', { class: 'toolbar' });
     const savedMsg = el('div');
@@ -2247,6 +2355,23 @@ async function renderComposer(view) {
       wrap.appendChild(examplesPanel(platform));
       return wrap;
     }
+
+    // ---- Reorganize into collapsible, reordered sections ----
+    // Images are the primary output, so they sit near the top; secondary
+    // inputs (content type, schedule) collapse by default. Re-appending an
+    // existing node moves it in the DOM, so this only reorders what's already
+    // been built above - no re-creation, no lost handlers.
+    makeCollapsible(accountsBox, { open: true, key: 'acct' });
+    makeCollapsible(imageBox, { open: true, key: 'img' });
+    makeCollapsible(imageOptsCard, { open: true, key: 'imgreq' });
+    makeCollapsible(aiBox, { open: true, key: 'ai' });
+    makeCollapsible(composerBox, { open: true, key: 'variants' });
+    makeCollapsible(contentTypeBox, { open: false, key: 'ctype' });
+    makeCollapsible(publishCard, { open: false, key: 'sched' });
+    body.append(accountsBox, imageBox, imageOptsCard, aiBox, composerBox, contentTypeBox, publishCard);
+    // Sticky action bar so Save/Request are always reachable without scrolling.
+    saveRow.classList.add('composer-actionbar');
+    body.append(savedMsg, imageReqMsg, saveRow);
 
     renderPlatformTabs();
   }
