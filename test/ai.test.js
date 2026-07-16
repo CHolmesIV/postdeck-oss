@@ -12,6 +12,28 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream } from '../src/ai.js';
+import { parseInnerJson } from '../src/draft.js';
+
+test('parseClaudeEnvelope throws a clean 503 on error_max_budget_usd (not parsed as drafts)', () => {
+  const envelope = JSON.stringify({ type: 'result', subtype: 'error_max_budget_usd', is_error: true, result: '' });
+  assert.throws(
+    () => parseClaudeEnvelope(envelope),
+    (err) => {
+      assert.equal(err.statusCode, 503);
+      assert.match(err.message, /cost cap|budget/i);
+      return true;
+    }
+  );
+});
+
+test('parseInnerJson extracts JSON even when the model wraps it in prose + fences', () => {
+  const messy = 'Here is the JSON you asked for:\n```json\n{"linkedin":"Ship it.","twitter":"Go."}\n```\nHope that helps!';
+  assert.deepEqual(parseInnerJson(messy), { linkedin: 'Ship it.', twitter: 'Go.' });
+});
+
+test('parseInnerJson still parses a clean strict-JSON object', () => {
+  assert.deepEqual(parseInnerJson('{"linkedin":"x"}'), { linkedin: 'x' });
+});
 
 function writeStubBin(name, script) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `postdeck-ai-${name}-`));
@@ -41,18 +63,29 @@ test('PROVIDERS registry has claude and codex with the expected shape', () => {
   }
 });
 
-test('claude buildArgs shells `-p <prompt> --model <m> --max-budget-usd <b> --output-format json`', () => {
+test('claude buildArgs shells `-p <prompt> --model <m> --tools "" --max-budget-usd <b> --output-format json`', () => {
   const args = PROVIDERS.claude.buildArgs('hello world', { model: 'claude-haiku-4-5-20251001', budget: '0.05' });
   assert.deepEqual(args, [
     '-p',
     'hello world',
     '--model',
     'claude-haiku-4-5-20251001',
+    // Tools disabled so drafting is a single completion (no agentic file/web
+    // loop that blows the budget). Empty string = no tools.
+    '--tools',
+    '',
     '--max-budget-usd',
     '0.05',
     '--output-format',
     'json',
   ]);
+});
+
+test('claude buildArgs disables tools by default (single-shot completion)', () => {
+  const args = PROVIDERS.claude.buildArgs('x');
+  const i = args.indexOf('--tools');
+  assert.ok(i !== -1, '--tools present');
+  assert.equal(args[i + 1], '', '--tools value is empty (no tools)');
 });
 
 test('codex buildArgs shells `exec --json <prompt>` (headless, no API key)', () => {

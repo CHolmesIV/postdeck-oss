@@ -38,6 +38,11 @@ function buildPrompt({ idea_text, brand, toneProfile, platforms }) {
 
   return [
     `You are drafting social copy for the brand "${brand.name}".`,
+    // Hard guardrails: drafting runs with tools disabled (single completion),
+    // so the model must NOT try to read files or ask for more context - some
+    // voice_rules are placeholders that reference an external doc, and without
+    // this the model replies "I need to read that file" instead of drafting.
+    `IMPORTANT: You have NO access to files, the internet, or any tools. Work only from the guidance in this message. Never say you need to read a file or need more information - if guidance is thin, draft your best professional copy anyway. Output ONLY the JSON object described below and nothing else (no preamble, no explanation).`,
     `Tone profile: ${toneProfile.name}.`,
     `Voice rules: ${toneProfile.voice_rules || '(none provided)'}`,
     `Hard rules (must also follow exactly, mechanically re-enforced after your output): ${hardRules}`,
@@ -46,7 +51,7 @@ function buildPrompt({ idea_text, brand, toneProfile, platforms }) {
     `Write one draft per platform below, respecting each platform's character limit:`,
     limitsLines,
     ``,
-    `Respond with STRICT JSON ONLY, no markdown fences, no commentary — an object`,
+    `Respond with STRICT JSON ONLY, no markdown fences, no commentary - an object`,
     `mapping each platform name to its draft text, e.g.:`,
     `{"twitter": "...", "linkedin": "..."}`,
     `Platforms to draft for: ${platforms.join(', ')}`,
@@ -105,12 +110,29 @@ function runClaudeCli(prompt) {
  * provider produced it.
  */
 function parseInnerJson(resultText) {
-  const cleaned = String(resultText).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  let s = String(resultText).trim();
+  // Strip markdown code fences anywhere (models often wrap JSON in ```json).
+  s = s.replace(/```(?:json)?/gi, '').trim();
+  // 1) Direct parse (the strict case we asked for).
   try {
-    return JSON.parse(cleaned);
-  } catch (err) {
-    throw new Error(`AI CLI result was not strict JSON drafts: ${err.message}`);
+    return JSON.parse(s);
+  } catch {
+    // fall through to extraction
   }
+  // 2) Tolerant: pull the first balanced {...} object out of any surrounding
+  // prose ("Here's the JSON:" / "I need ...") the model added despite the
+  // STRICT-JSON instruction. cheaper models (haiku) do this intermittently.
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    const candidate = s.slice(start, end + 1);
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // fall through to error
+    }
+  }
+  throw new Error(`AI CLI result was not strict JSON drafts: ${s.slice(0, 100)}`);
 }
 
 /**
@@ -122,20 +144,31 @@ async function draftWithAi({ idea_text, brand, toneProfile, platforms, provider 
   const prompt = buildPrompt({ idea_text, brand, toneProfile, platforms });
   const chosenProvider = provider || 'claude';
 
-  let resultText;
-  try {
-    resultText = await aiRunDraft(chosenProvider, { prompt, model: getModel(), budget: getMaxBudgetUsd() });
-  } catch (err) {
-    const wrapped = new Error(err.message || `AI drafting unavailable via ${chosenProvider}`);
-    wrapped.statusCode = err.statusCode || 503;
-    throw wrapped;
-  }
-
+  // A cheap model occasionally ignores "JSON only" and replies with prose.
+  // That's a *successful* CLI call, so the CLI-level retry can't catch it -
+  // retry the whole draft here (up to 2 attempts) on a parse failure. CLI
+  // availability errors (not logged in / missing) are not retryable.
   let rawDrafts;
-  try {
-    rawDrafts = parseInnerJson(resultText);
-  } catch (err) {
-    const wrapped = new Error(`AI drafting unavailable: ${err.message}`);
+  let lastParseErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let resultText;
+    try {
+      resultText = await aiRunDraft(chosenProvider, { prompt, model: getModel(), budget: getMaxBudgetUsd() });
+    } catch (err) {
+      const wrapped = new Error(err.message || `AI drafting unavailable via ${chosenProvider}`);
+      wrapped.statusCode = err.statusCode || 503;
+      throw wrapped;
+    }
+    try {
+      rawDrafts = parseInnerJson(resultText);
+      lastParseErr = null;
+      break;
+    } catch (err) {
+      lastParseErr = err;
+    }
+  }
+  if (lastParseErr) {
+    const wrapped = new Error(`AI drafting unavailable: ${lastParseErr.message}`);
     wrapped.statusCode = 503;
     throw wrapped;
   }
@@ -144,4 +177,4 @@ async function draftWithAi({ idea_text, brand, toneProfile, platforms, provider 
   return scrubDrafts(rawDrafts, hardRules);
 }
 
-export { draftWithAi, buildPrompt, parseClaudeCliOutput, PLATFORM_LIMITS };
+export { draftWithAi, buildPrompt, parseClaudeCliOutput, parseInnerJson, PLATFORM_LIMITS };

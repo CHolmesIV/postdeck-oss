@@ -3,6 +3,23 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-15 - Draft with AI now actually works (agentic-mode was the killer)
+
+Even after logging in, drafting failed. Root causes, all fixed:
+- **`claude -p` runs the full AGENTIC Claude Code** (reads files, web-searches, loops
+  multiple turns). The prompt referenced a voice-doc path, so the model burned turns trying
+  to read it and blew past `--max-budget-usd` (`error_max_budget_usd`). Fix: pass `--tools ""`
+  so drafting is a single, cheap, in-budget completion (1 turn, ~$0.02).
+- **Error envelopes were parsed as drafts.** `parseClaudeEnvelope` now detects `is_error`
+  (incl. `error_max_budget_usd`) and throws a clean, actionable message.
+- **Prose instead of JSON.** Cheap models sometimes wrapped JSON in fences/prose or said
+  "I need to read that file." Hardened the prompt (no tools/files, JSON-only), made the
+  parser tolerant (extracts the first balanced `{...}`), and added a parse-failure retry.
+- **3s stdin hang** on every call: `execFile` has no `stdio` option, so the earlier fix was
+  a no-op. Now the child's stdin is `end()`-ed. Also added CLI-level retry for transient
+  API hiccups. Verified end-to-end in the browser (real drafts populate reliably).
+- Tests: +4 (`--tools` args, `is_error` -> 503, tolerant `parseInnerJson`). Suite 200.
+
 ## 2026-07-15 - Composer redesign + two bug fixes (accounts, AI login)
 
 - **UX: collapsible, reordered sections.** The Composer was one long always-open

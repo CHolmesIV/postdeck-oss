@@ -49,7 +49,18 @@ function parseClaudeEnvelope(stdout) {
   }
   const resultText = typeof outer.result === 'string' ? outer.result : stdout;
   if (/not logged in/i.test(resultText) || /\/login/i.test(resultText)) {
-    throw make503('AI drafting unavailable: claude CLI is not logged in — run `claude` then `/login`.');
+    throw make503('AI drafting unavailable: claude CLI is not logged in — use the "Log in to Claude" button, then Recheck.');
+  }
+  // The CLI signals failures via is_error + a subtype (e.g.
+  // error_max_budget_usd, error_during_execution). Surface these as a clean,
+  // actionable message instead of letting the metadata envelope get parsed
+  // downstream as if it were the drafts object.
+  if (outer.is_error === true) {
+    const subtype = outer.subtype || 'error';
+    if (subtype === 'error_max_budget_usd') {
+      throw make503('AI drafting unavailable: the request hit its cost cap. Try a shorter idea, or raise POSTDECK_DRAFT_BUDGET.');
+    }
+    throw make503(`AI drafting unavailable: claude CLI returned an error (${subtype}).`);
   }
   return resultText;
 }
@@ -118,8 +129,15 @@ const PROVIDERS = {
         prompt,
         '--model',
         model || 'claude-haiku-4-5-20251001',
+        // CRITICAL: `claude -p` is the full AGENTIC Claude Code by default -
+        // it will read files, web-search, and loop for several turns, which
+        // blows past --max-budget-usd (error_max_budget_usd) and is slow.
+        // Drafting is a single text completion, so disable all tools ("" =
+        // none). This makes it 1 turn, cheap, and reliably under budget.
+        '--tools',
+        '',
         '--max-budget-usd',
-        String(budget ?? '0.05'),
+        String(budget ?? '0.10'),
         '--output-format',
         'json',
       ];
@@ -144,28 +162,55 @@ function getBin(providerName) {
   return process.env[provider.binEnv] || provider.defaultBin;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function runCli(providerName, args) {
   return new Promise((resolve, reject) => {
-    execFile(
+    // NOTE: execFile has NO `stdio` option (unlike spawn) - the earlier
+    // attempt to pass one was silently ignored, which is why the 3s "no stdin
+    // data received" warning persisted. The real fix is to grab the child and
+    // end() its stdin so `claude -p` (prompt in argv) doesn't wait on input.
+    const child = execFile(
       getBin(providerName),
       args,
-      {
-        timeout: 60_000,
-        maxBuffer: 10 * 1024 * 1024,
-        // Close stdin (/dev/null) so `claude -p` doesn't sit for ~3s waiting
-        // on stdin it never receives ("no stdin data received in 3s" warning)
-        // when the prompt is passed as an argv arg. Removes per-draft latency.
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-      (err, stdout) => {
+      { timeout: 90_000, maxBuffer: 10 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        // `claude --output-format json` prints a JSON result envelope on
+        // stdout even on a non-zero exit (e.g. is_error with a message, or
+        // "Not logged in"). Prefer that envelope so the parser can surface a
+        // clean, actionable error instead of a raw "Command failed" dump.
+        if (stdout && stdout.trim().startsWith('{')) {
+          resolve(stdout);
+          return;
+        }
         if (err) {
-          reject(Object.assign(new Error(err.message), { code: err.code }));
+          reject(Object.assign(new Error(stderr || err.message), { code: err.code }));
           return;
         }
         resolve(stdout);
       }
     );
+    // Close stdin immediately: removes the ~3s per-call stdin-wait latency.
+    if (child.stdin) child.stdin.end();
   });
+}
+
+// Transient CLI failures (API overload/529, brief network blips) show up as a
+// non-zero exit with no JSON envelope. Retry a couple of times with backoff so
+// a single hiccup doesn't surface as "AI unavailable". ENOENT (binary missing)
+// is not retryable.
+async function runCliWithRetry(providerName, args, attempts = 3) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await runCli(providerName, args);
+    } catch (err) {
+      lastErr = err;
+      if (err.code === 'ENOENT') throw err;
+      if (i < attempts - 1) await sleep(700 * (i + 1));
+    }
+  }
+  throw lastErr;
 }
 
 /**
@@ -184,9 +229,9 @@ async function runDraft(providerName, { prompt, model, budget } = {}) {
   const args = provider.buildArgs(prompt, { model, budget });
   let stdout;
   try {
-    stdout = await runCli(providerName, args);
+    stdout = await runCliWithRetry(providerName, args);
   } catch (err) {
-    const fix = providerName === 'codex' ? 'run `codex login`' : 'run `claude` then `/login`';
+    const fix = providerName === 'codex' ? 'run `codex login`' : 'sign in with the "Log in to Claude" button';
     throw make503(
       `AI drafting unavailable: could not run ${providerName} CLI (${
         err.code === 'ENOENT' ? 'not found on PATH' : err.message
