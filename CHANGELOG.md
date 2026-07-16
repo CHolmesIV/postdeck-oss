@@ -3,6 +3,52 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-16 - Calendar: click a post for a quick-view/edit modal
+
+- Clicking a post chip (month or week view) now opens a **pop-out modal** instead of navigating
+  to a full page. Shows platform, status, brand, publish time, and the copy. For still-editable
+  posts (draft/approved/scheduled_local) the copy and publish time are editable with **Save
+  changes** (PATCH); submitted/published posts show read-only. Also: Copy-to-clipboard, a link
+  to the published post, and "Open full page" for the deep view. Close on X, click-outside, or
+  Esc. Saving refreshes the calendar behind it. Verified in-browser incl. a real edit round-trip.
+
+## 2026-07-16 - Calendar auto-refresh (fix stale-tab confusion)
+
+- The SPA never live-updated, so a tab left open showed stale data (published posts
+  missing, old statuses) and looked broken. Added a **manual refresh button (↻)** to the
+  Calendar toolbar and **auto-refresh on tab focus / visibility** (guarded singleton so only
+  the live calendar reloads - no listener leak). Returning to the app now re-fetches. Verified
+  in-browser: focus fires /api/posts, published PrimeWright posts render on their day.
+
+## 2026-07-15 - Persist PrimeWright design guidelines
+
+- Added `docs/PRIMEWRIGHT_DESIGN_GUIDELINES.md` so PrimeWright UI/UX direction is stored in
+  the repo instead of depending on chat history.
+- Captures command-center posture, website hero standards, app/dashboard standards,
+  explainable AI verdicts, compliance matrix expectations, color/contrast, typography,
+  motion, accessibility, forms/errors, performance, and acceptance checklist.
+- Linked the guidelines from `SPEC.md` and `BUILD_STATUS.md`.
+
+## 2026-07-15 - PrimeWright social went LIVE (dry-run off) + scheduling gotchas
+
+Operational, not code. Documenting the fixes/corrections made while getting PrimeWright's
+first posts out (per CB: log the churn):
+- **Env loading was misdiagnosed.** I wrongly reported the Blotato key "not in .env" - it is
+  in `config/.env`, loaded by `src/env.js` (imported first in server.js). Key +
+  live posting were fine all along. Do NOT create `postdeck/.env` (it shadows config/.env).
+- **listAccounts parse bug (my check, not shipped):** Blotato returns accounts under `items`,
+  not `data`. Resolved the real account map: FB `<redacted-id>`, LinkedIn `<redacted-id>`, Twitter `<redacted-id>`,
+  with per-brand page subaccounts (see SOCIAL_STATUS.md).
+- **PrimeWright accounts wired:** LinkedIn #8 -> acct <redacted-id> / page <redacted-id>; Facebook #9 ->
+  acct <redacted-id> / page <redacted-id>; both manual=0 (worker-eligible).
+- **Flipped `BLOTATO_DRY_RUN=0`** in config/.env -> posting is LIVE.
+- **Scheduling window gotcha:** the worker only hands a post to Blotato within 48h of its
+  publish_at. Posts scheduled >48h out show NOTHING in Blotato's upcoming until then - which
+  looked like "nothing pushed through." Rescheduled PrimeWright's 12 from a week-out block to
+  **daily starting now** (topic1 pushed live to LinkedIn+Facebook via submitNow, verified real
+  Blotato submission IDs; topics 2-6 at noon ET Jul 16-20, auto-handoff).
+- SPA does not live-refresh; a tab open before posts were created needs a reload to show them.
+
 ## 2026-07-15 - Constrain the Codex draft path (single-turn, read-only)
 
 - Codex drafting (`codex exec`) is agentic by default. Verified against codex-cli
@@ -250,9 +296,9 @@ Even after logging in, drafting failed. Root causes, all fixed:
 - Added `listSubaccounts(accountId)` helper in `src/blotato.js` so PostDeck can query the
   official pages/subaccounts surface instead of relying on guessed page mappings.
 - Live validation result:
-  - **Di-Hy X** submits successfully via connected account `18887`.
+  - **Di-Hy X** submits successfully via connected account `<redacted-id>`.
   - **Di-Hy LinkedIn** submits successfully when mapped as connected LinkedIn account
-    `21735` plus company `pageId` `72992521`.
+    `<redacted-id>` plus company `pageId` `<redacted-id>`.
   - **Di-Hy Facebook** still fails with `Page / subaccount not found`, which means the
     top-level Facebook connection is present but the Di-Hy business page is not yet exposed
     as a valid Blotato page/subaccount target.

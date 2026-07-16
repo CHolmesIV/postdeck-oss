@@ -100,6 +100,11 @@ target). No auth on the dashboard — localhost only, bound to 127.0.0.1.
 
 ## Dashboard (localhost web UI — the whole point)
 
+PrimeWright-specific marketing/app design standards live in
+`docs/PRIMEWRIGHT_DESIGN_GUIDELINES.md`. Use that file as the design source of truth for any
+PrimeWright website or app pass: command-center posture, human approval gates, explainable AI
+verdicts, WCAG 2.2 AA, 44-48px tap targets, and no AI-hype visuals.
+
 1. **Calendar / Queue** (home) — week + month views, posts color-coded by brand, status
    badges (draft/approved/submitted/published/failed). Drag to reschedule (only until
    handoff). Filter by brand/platform. "What goes out this week" at a glance.

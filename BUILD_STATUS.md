@@ -31,6 +31,7 @@ flipped.
 | B14 | Image studio v2 (variant count/regenerate/sips resize), branding in Settings, armed agent publish authority | ✅ |
 | B15 | AI provider switcher (Claude/Codex) for copy drafting + compare-both button; both via subscription CLIs | ✅ (Codex path verify-on-signin) |
 | - | Editable image prompt system + settings UI + design pass refresh | ✅ |
+| - | PrimeWright design guidelines persisted in `docs/PRIMEWRIGHT_DESIGN_GUIDELINES.md` | ✅ |
 
 ## Security posture (reviewed 2026-07-15)
 
@@ -71,6 +72,8 @@ flipped.
   listening are stubbed - `research_notes` + inspiration `source` fields are the manual-now /
   API-later boundary. Codex image generation runs in the Codex app (no PostDeck API cost).
   Image prompt settings are now editable in Settings and carried into every handoff spec.
+- **PrimeWright design source**: `docs/PRIMEWRIGHT_DESIGN_GUIDELINES.md` is now the persisted
+  UI/UX direction for PrimeWright website/app passes.
 - **launchd**: installer ships but is not auto-run - start it when ready
   (`scripts/install-launchd.sh`).
 - **Repo公开**: private until a git-history squash before going public at MVP polish.

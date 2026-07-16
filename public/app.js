@@ -334,6 +334,19 @@ function makeCollapsible(card, { open = true, key } = {}) {
   return card;
 }
 
+// Calendar auto-refresh singleton: the current calendar render assigns its
+// guarded reload here; one global focus/visibility listener calls it so a tab
+// left open re-fetches instead of showing stale data. See renderCalendarInto.
+let currentCalendarReload = null;
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && typeof currentCalendarReload === 'function') currentCalendarReload();
+  });
+  window.addEventListener('focus', () => {
+    if (typeof currentCalendarReload === 'function') currentCalendarReload();
+  });
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
     ...opts,
@@ -492,12 +505,13 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
   const prevBtn = el('button', { class: 'cal-nav-btn', title: 'Previous' }, '‹');
   const nextBtn = el('button', { class: 'cal-nav-btn', title: 'Next' }, '›');
   const todayBtn = el('button', { class: 'cal-nav-btn' }, 'Today');
+  const refreshBtn = el('button', { class: 'cal-nav-btn', title: 'Refresh from server' }, '↻');
   const periodLabel = el('span', { class: 'cal-period-label' }, '');
   toolbar.append(
     el('span', {}, 'Brand:'), brandFilter,
     el('span', {}, 'Platform:'), platformFilter,
     el('span', {}, 'View:'), viewToggle,
-    prevBtn, todayBtn, nextBtn, periodLabel
+    prevBtn, todayBtn, nextBtn, refreshBtn, periodLabel
   );
   view.appendChild(toolbar);
 
@@ -533,11 +547,19 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
   prevBtn.onclick = () => step(-1);
   nextBtn.onclick = () => step(1);
   todayBtn.onclick = () => { refDate = new Date(); refDate.setHours(0, 0, 0, 0); reload(); };
+  refreshBtn.onclick = reload;
 
   brandFilter.onchange = () => { setStickyBrand(brandFilter.value); reload(); };
   platformFilter.onchange = reload;
   viewToggle.onchange = reload;
   await reload();
+
+  // Auto-refresh: the SPA doesn't live-update, so a tab left open goes stale
+  // (posts publish, statuses change) and looks broken. Re-fetch whenever this
+  // calendar's grid is the live one and the tab regains focus. A module-level
+  // singleton (currentCalendarReload) means only the current render reloads -
+  // stale listeners from old renders no-op, no accumulation, no leak.
+  currentCalendarReload = () => { if (document.body.contains(grid)) reload(); };
 
   async function reschedulePost(postId, newDateKey, posts) {
     const post = posts.find((p) => String(p.id) === String(postId));
@@ -772,12 +794,18 @@ function buildAttentionSection(container, posts, analyticsData, homeBrand, profi
 }
 
 function weekChip(p) {
-  return el('a', { href: `#/post/${p.id}`, class: 'week-chip', style: `border-left-color:${brandColor(p.brand_id)}` }, [
+  const chip = el('a', { href: `#/post/${p.id}`, class: 'week-chip', style: `border-left-color:${brandColor(p.brand_id)}` }, [
     el('span', { class: 'week-chip-dot', style: `background:${brandColor(p.brand_id)}` }),
     el('span', { class: 'week-chip-platform' }, p.platform),
     el('span', { class: 'week-chip-copy' }, (p.copy || '(no copy)').slice(0, 28)),
     el('span', { class: 'week-chip-date' }, fmtDate(p.publish_at)),
   ]);
+  chip.addEventListener('click', (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+    e.preventDefault();
+    openPostModal(p.id);
+  });
+  return chip;
 }
 
 function buildWeekSection(container, posts) {
@@ -1086,7 +1114,125 @@ function postChip(p) {
   }
   const badge = el('span', { class: `pill status-${p.status}`, style: 'margin-left:4px;font-size:9px;' }, p.status);
   chip.appendChild(badge);
+  // Quick-view modal instead of a full-page navigation (keep href for
+  // middle-click / accessibility, but a plain click opens the pop-out).
+  chip.addEventListener('click', (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return; // let new-tab through
+    e.preventDefault();
+    openPostModal(p.id);
+  });
   return chip;
+}
+
+// ---- Quick-view / edit modal (opened from a calendar chip) ----
+// isoToLocalInput: an ISO string -> a value a datetime-local input accepts,
+// in the viewer's local time.
+function isoToLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function openPostModal(postId) {
+  const overlay = el('div', { class: 'modal-overlay' });
+  const card = el('div', { class: 'modal-card' });
+  overlay.appendChild(card);
+  function close() {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+  card.appendChild(el('div', { style: 'color:var(--muted);padding:8px;' }, 'Loading…'));
+
+  api(`/api/posts/${postId}`)
+    .then((post) => {
+      card.innerHTML = '';
+      const editable = RESCHEDULABLE_STATUSES.includes(post.status);
+
+      card.appendChild(
+        el('div', { class: 'modal-header' }, [
+          el('div', {}, [
+            el('strong', {}, post.platform),
+            ' ',
+            el('span', { class: `pill status-${post.status}` }, post.status),
+          ]),
+          el('button', { class: 'modal-close', title: 'Close', onclick: close }, '✕'),
+        ])
+      );
+      card.appendChild(el('div', { class: 'modal-sub' }, `${brandName(post.brand_id)}`));
+
+      // Publish at
+      let publishInput = null;
+      if (editable) {
+        publishInput = el('input', { type: 'datetime-local', value: isoToLocalInput(post.publish_at) });
+        card.appendChild(el('div', { class: 'field-row', style: 'margin-top:10px;' }, [el('label', {}, 'Publish at'), publishInput]));
+      } else {
+        card.appendChild(el('div', { style: 'margin-top:10px;font-size:12px;color:var(--muted);' }, `Publish at: ${fmtDate(post.publish_at)}`));
+      }
+
+      // Copy (editable while local; read-only once submitted/published)
+      let copyArea = null;
+      if (editable) {
+        copyArea = el('textarea', { rows: '8', style: 'width:100%;' });
+        copyArea.value = post.copy || '';
+        card.appendChild(el('div', { class: 'field-row', style: 'margin-top:8px;' }, [el('label', {}, 'Copy'), copyArea]));
+      } else {
+        card.appendChild(el('div', { class: 'modal-copy-ro', style: 'margin-top:8px;white-space:pre-wrap;' }, post.copy || '(no copy)'));
+      }
+
+      if (post.public_url) {
+        card.appendChild(el('div', { style: 'margin-top:8px;' }, [el('a', { href: post.public_url, target: '_blank' }, 'View published post →')]));
+      }
+      if (post.error_message) {
+        card.appendChild(el('div', { class: 'msg-banner msg-error', style: 'margin-top:8px;' }, post.error_message));
+      }
+
+      const msg = el('div');
+      const actions = el('div', { class: 'toolbar', style: 'margin-top:12px;' });
+
+      actions.appendChild(
+        el('button', {
+          onclick: async () => {
+            await navigator.clipboard.writeText((copyArea ? copyArea.value : post.copy) || '');
+            msg.innerHTML = '';
+            msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Copied to clipboard.'));
+          },
+        }, 'Copy text')
+      );
+
+      if (editable) {
+        actions.appendChild(
+          el('button', {
+            class: 'primary',
+            onclick: async () => {
+              const body = { copy: copyArea.value };
+              if (publishInput) body.publish_at = publishInput.value ? new Date(publishInput.value).toISOString() : null;
+              try {
+                await api(`/api/posts/${post.id}`, { method: 'PATCH', body });
+                close();
+                if (typeof currentCalendarReload === 'function') currentCalendarReload();
+              } catch (err) {
+                msg.innerHTML = '';
+                msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+              }
+            },
+          }, 'Save changes')
+        );
+      }
+
+      actions.appendChild(el('a', { class: 'button', href: `#/post/${post.id}`, onclick: close }, 'Open full page →'));
+      card.appendChild(actions);
+      card.appendChild(msg);
+    })
+    .catch((err) => {
+      card.innerHTML = '';
+      card.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load post: ${err.message}`));
+      card.appendChild(el('button', { style: 'margin-top:8px;', onclick: close }, 'Close'));
+    });
 }
 
 // ---------------- Post detail ----------------

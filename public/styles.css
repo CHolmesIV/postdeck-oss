@@ -1346,3 +1346,65 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   box-shadow: none;
 }
 .account-remove:hover { color: #e79b8f; border-color: var(--red); }
+
+/* ---- Quick-view post modal (from calendar chips) ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+.modal-card {
+  background: var(--grad-surface);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-3);
+  padding: 20px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.modal-close {
+  padding: 2px 9px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
+  box-shadow: none;
+}
+.modal-close:hover { color: var(--fg, #ece9e2); border-color: var(--border-hi); }
+.modal-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.modal-copy-ro {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 13px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.modal-card a.button {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg, #ece9e2);
+  text-decoration: none;
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.modal-card a.button:hover { border-color: var(--border-hi); background: var(--surface-hi); }
