@@ -3,6 +3,17 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-15 - Chat agent: apply the same agentic-mode fix (it could schedule but was broken)
+
+The in-app chat agent (create drafts, set publish_at across days, request images,
+etc.) had its OWN copy of the `claude -p` shell that never got the drafting fix, so
+it hit the same `error_max_budget_usd` failure. Applied the same fixes to `src/agent.js`:
+`--tools ""` (single-shot, no agentic loop), close stdin (no 3s hang), prefer the JSON
+envelope on non-zero exit, detect `is_error` / not-logged-in as clean 503s, and a
+tolerant `parseAgentOutput` (fences/prose -> first balanced `{...}`). Budget headroom
+0.10. Verified end-to-end: "draft 3 LinkedIn posts and schedule one per day from Jul 17
+9am" created 3 dated drafts correctly. +3 tests. Suite 203.
+
 ## 2026-07-15 - Draft with AI now actually works (agentic-mode was the killer)
 
 Even after logging in, drafting failed. Root causes, all fixed:

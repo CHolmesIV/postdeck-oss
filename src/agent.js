@@ -52,16 +52,43 @@ function draftModel() {
   return process.env.POSTDECK_DRAFT_MODEL || 'claude-haiku-4-5-20251001';
 }
 function maxBudgetUsd() {
-  return process.env.POSTDECK_DRAFT_BUDGET || '0.05';
+  // 0.10 headroom: the agent prompt carries the full tool catalog + context,
+  // so it's larger than a plain draft. With tools disabled it still stays
+  // well under this per round.
+  return process.env.POSTDECK_DRAFT_BUDGET || '0.10';
 }
 
 function runClaudeCli(prompt) {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       claudeBin(),
-      ['-p', prompt, '--model', draftModel(), '--max-budget-usd', String(maxBudgetUsd()), '--output-format', 'json'],
-      { timeout: 60_000, maxBuffer: 10 * 1024 * 1024 },
+      [
+        '-p',
+        prompt,
+        '--model',
+        draftModel(),
+        // CRITICAL (same fix as src/ai.js): `claude -p` is the full agentic
+        // Claude Code by default - it reads files, web-searches, and loops
+        // several turns, which blows --max-budget-usd (error_max_budget_usd)
+        // and makes the chat agent fail. The assistant only needs to reason
+        // over the provided context and emit its {reply,actions} JSON, so
+        // disable all tools ("" = none) for a single cheap completion.
+        '--tools',
+        '',
+        '--max-budget-usd',
+        String(maxBudgetUsd()),
+        '--output-format',
+        'json',
+      ],
+      { timeout: 90_000, maxBuffer: 10 * 1024 * 1024 },
       (err, stdout, stderr) => {
+        // Even on a non-zero exit, `--output-format json` prints a result
+        // envelope on stdout (is_error / "Not logged in") - prefer it so
+        // parseAgentOutput can surface a clean, actionable message.
+        if (stdout && stdout.trim().startsWith('{')) {
+          resolve(stdout);
+          return;
+        }
         if (err) {
           reject(Object.assign(new Error(stderr || err.message), { cause: err }));
           return;
@@ -69,6 +96,8 @@ function runClaudeCli(prompt) {
         resolve(stdout);
       }
     );
+    // Close stdin so `claude -p` doesn't wait ~3s for input it never gets.
+    if (child.stdin) child.stdin.end();
   });
 }
 
@@ -85,14 +114,36 @@ function parseAgentOutput(stdout) {
     throw new Error(`claude CLI did not return valid JSON envelope: ${err.message}`);
   }
   const resultText = typeof outer.result === 'string' ? outer.result : stdout;
-  const cleaned = resultText.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  let inner;
-  try {
-    inner = JSON.parse(cleaned);
-  } catch (err) {
-    throw new Error(`claude CLI result was not strict JSON: ${err.message}`);
+  // Surface CLI-level failures (not logged in, budget cap) as clean errors
+  // instead of trying to parse an error envelope as {reply,actions}.
+  if (/not logged in/i.test(resultText) || /\/login/i.test(resultText)) {
+    const e = new Error('Agent unavailable: claude CLI is not logged in — use the "Log in to Claude" button, then retry.');
+    e.statusCode = 503;
+    throw e;
   }
-  return inner;
+  if (outer.is_error === true) {
+    const e = new Error(`Agent unavailable: claude CLI returned an error (${outer.subtype || 'error'}).`);
+    e.statusCode = 503;
+    throw e;
+  }
+  // Tolerant parse: strip fences anywhere, try direct, then extract the first
+  // balanced {...} object out of any surrounding prose the model added.
+  let s = resultText.trim().replace(/```(?:json)?/gi, '').trim();
+  try {
+    return JSON.parse(s);
+  } catch {
+    // fall through to extraction
+  }
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try {
+      return JSON.parse(s.slice(start, end + 1));
+    } catch {
+      // fall through to error
+    }
+  }
+  throw new Error(`claude CLI result was not strict JSON: ${s.slice(0, 100)}`);
 }
 
 // ---------- tool catalog (read + draft-only — NO approve/publish/submit/cancel/delete) ----------

@@ -6,7 +6,7 @@ _Last updated: 2026-07-14. One-page state of the build. Full design: `SPEC.md`. 
 ## Where it stands
 
 Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:4520`
-(`npm start`). **200/200 tests passing.** Dry-run is the hard default unless deliberately
+(`npm start`). **203/203 tests passing.** Dry-run is the hard default unless deliberately
 flipped.
 
 ## Built (done)

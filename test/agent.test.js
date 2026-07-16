@@ -17,7 +17,39 @@ process.env.POSTDECK_DB_PATH = path.join(tmpDbDir, 'agent-test.db');
 process.env.BLOTATO_DRY_RUN = '1';
 
 const { getDb, nowIso } = await import('../src/db.js');
-const { runAgent, executeAction } = await import('../src/agent.js');
+const { runAgent, executeAction, parseAgentOutput } = await import('../src/agent.js');
+
+test('parseAgentOutput tolerates prose/fences around the {reply,actions} JSON', () => {
+  const envelope = JSON.stringify({
+    result: 'Sure! Here you go:\n```json\n{"reply":"ok","actions":[]}\n```',
+  });
+  const parsed = parseAgentOutput(envelope);
+  assert.equal(parsed.reply, 'ok');
+  assert.deepEqual(parsed.actions, []);
+});
+
+test('parseAgentOutput throws a clean 503 on a not-logged-in envelope', () => {
+  const envelope = JSON.stringify({ is_error: true, result: 'Not logged in · Please run /login' });
+  assert.throws(
+    () => parseAgentOutput(envelope),
+    (err) => {
+      assert.equal(err.statusCode, 503);
+      assert.match(err.message, /logged in|Log in/i);
+      return true;
+    }
+  );
+});
+
+test('parseAgentOutput throws a clean 503 on an error envelope (e.g. budget cap)', () => {
+  const envelope = JSON.stringify({ is_error: true, subtype: 'error_max_budget_usd', result: '' });
+  assert.throws(
+    () => parseAgentOutput(envelope),
+    (err) => {
+      assert.equal(err.statusCode, 503);
+      return true;
+    }
+  );
+});
 
 function seedBrand(db, overrides = {}) {
   const now = nowIso();
