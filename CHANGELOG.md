@@ -3,6 +3,47 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-15 - Constrain the Codex draft path (single-turn, read-only)
+
+- Codex drafting (`codex exec`) is agentic by default. Verified against codex-cli
+  0.144.2: an unconstrained call reads stdin and can loop. Now passes
+  `-s read-only --skip-git-repo-check --ephemeral` for a single ~4s completion that
+  never writes files, and relies on runCli closing stdin (else codex blocks on
+  "Reading additional input from stdin..."). Verified a real Codex draft end-to-end.
+  Parallels the Claude `--tools ""` fix. +1 test. Suite 210.
+
+## 2026-07-15 - Editable image prompts + UI design pass
+
+- Added an editable **Image prompt system** in Settings. The app now stores reusable system,
+  negative, brand, and layout prompt text under `/api/settings`, so CB can tune how Codex
+  image briefs are written without editing code.
+- Every image request path now carries those prompt settings into the handoff spec:
+  Composer, chat agent `create_image_request`, and blog redistribution.
+- Image handoff specs now include `brief.prompt_settings`, alongside exact dimensions,
+  format, safe-zone notes, brand logo, colors, copy context, and variant instructions.
+- Composer now links directly to the prompt editor from "Image request options".
+- Design pass: tightened the app shell, cards, typography, contrast, mobile layout,
+  settings prompt editor, and image-request affordances so PostDeck feels more like a
+  serious local command center.
+- Tests: `209/209` passing.
+
+## 2026-07-15 - Codex CLI discovery fix for desktop installs
+
+- PostDeck's Codex provider could falsely report **"codex CLI not installed"** even when Codex
+  was present on the Mac, because the app process only tried `codex` on PATH. On this machine
+  the real binary lives inside the ChatGPT app bundle at
+  `/Applications/ChatGPT.app/Contents/Resources/codex`.
+- Fixed `src/ai.js` to auto-discover known bundled Codex locations (while still honoring
+  `POSTDECK_CODEX_BIN` first), and updated `scripts/open-postdeck.command` to put the ChatGPT
+  app resources on PATH for Finder/Desktop launches.
+- Result: the in-app Codex status/drafting flow no longer depends on a separately-installed
+  shell alias just to find the binary.
+- Follow-up UI fix: the Composer's Draft-with-AI panel now shows a **Codex status row + Log in
+  to Codex button + Recheck**, instead of only showing the Claude status controls.
+- Follow-up auth fix: Codex status now uses the real `codex login status` command, so the pill
+  flips to **logged in** after a successful in-app sign-in instead of staying stuck at
+  "installed".
+
 ## 2026-07-15 - Chat agent: apply the same agentic-mode fix (it could schedule but was broken)
 
 The in-app chat agent (create drafts, set publish_at across days, request images,

@@ -502,7 +502,28 @@ function toolSuggestContentType(db, { brand_id, pillar, platform } = {}) {
 
 function toolCreateImageRequest(db, { post_id = null, brand_id = null, platforms = [], content_type = null, copy = '' } = {}) {
   const brand = brand_id ? db.prepare('SELECT * FROM brands WHERE id = ?').get(brand_id) : null;
-  const brief = buildBrief({ platforms, content_type, copy, brand: brand ? brand.name : null });
+  let colors = null;
+  if (brand?.colors) {
+    try {
+      colors = JSON.parse(brand.colors);
+    } catch {
+      colors = brand.colors;
+    }
+  }
+  const brief = buildBrief({
+    platforms,
+    content_type,
+    copy,
+    brand: brand ? brand.name : null,
+    logo_path: brand ? brand.logo_path || null : null,
+    colors,
+    prompt_settings: {
+      system: getRawSetting(db, 'image_prompt_system'),
+      negative: getRawSetting(db, 'image_prompt_negative'),
+      brand: getRawSetting(db, 'image_prompt_brand'),
+      layout: getRawSetting(db, 'image_prompt_layout'),
+    },
+  });
   const row = createImageRequest(db, { post_id, brand_id, platforms, content_type, brief });
   recordUsage(db, { kind: 'image_request', brand_id });
   return { image_request: row, summary: `Requested images (#${row.id}) for ${platforms.join(', ') || 'no platforms'}.`, link: '#/images' };

@@ -48,6 +48,12 @@ Written by `src/imagespec.js` when CB submits the request. Shape:
       "Text-heavy content_type — export lossless PNG to keep text/edges crisp (no JPEG compression artifacts on typography).",
       "Generate 2-3 variants per request so CB has a real choice at pick time."
     ],
+    "prompt_settings": {
+      "system": "Reusable production direction from Settings...",
+      "negative": "Reusable things to avoid from Settings...",
+      "brand": "Reusable brand-expression rules from Settings...",
+      "layout": "Reusable composition and readability rules from Settings..."
+    },
     "content_type": "static",
     "copy_context": "The actual post copy — read this for what the image needs to say/show.",
     "brand": 2
@@ -73,6 +79,10 @@ Key fields:
   that platform's dims as a rough placeholder and use judgment.
 - `brief.copy_context` — the post copy. The image should support this copy, not repeat it
   verbatim as a caption unless the content_type calls for on-image text (static/carousel).
+- `brief.prompt_settings` — CB-editable reusable prompt guidance from Settings. Treat these
+  as the standing production rules for image generation. `system` describes the job,
+  `negative` lists things to avoid, `brand` describes brand expression, and `layout`
+  describes composition/readability expectations.
 - `output_dir` — where your output goes. Always `image-requests/generated/req-<id>/`
   relative to the PostDeck repo root.
 

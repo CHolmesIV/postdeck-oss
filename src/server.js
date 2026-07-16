@@ -56,6 +56,8 @@ import {
 } from './inspiration.js';
 import {
   buildBrief,
+  DEFAULT_IMAGE_PROMPT_SETTINGS,
+  normalizePromptSettings,
   createImageRequest,
   regenerateImageRequest,
   listImageRequests,
@@ -1173,6 +1175,12 @@ ${bodyHtml}
       hints: b.hints || [],
       logo_path: brand ? brand.logo_path || null : null,
       colors: brandColors,
+      prompt_settings: normalizePromptSettings({
+        system: getRawSetting(db, 'image_prompt_system'),
+        negative: getRawSetting(db, 'image_prompt_negative'),
+        brand: getRawSetting(db, 'image_prompt_brand'),
+        layout: getRawSetting(db, 'image_prompt_layout'),
+      }),
     });
     const row = createImageRequest(db, {
       post_id: b.post_id || null,
@@ -1310,6 +1318,10 @@ ${bodyHtml}
     ...getAllSettings(db),
     global_voice: getGlobalVoice(db),
     global_hard_rules: getGlobalHardRules(db),
+    image_prompt_system: getRawSetting(db, 'image_prompt_system') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.system,
+    image_prompt_negative: getRawSetting(db, 'image_prompt_negative') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.negative,
+    image_prompt_brand: getRawSetting(db, 'image_prompt_brand') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.brand,
+    image_prompt_layout: getRawSetting(db, 'image_prompt_layout') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.layout,
     // B14: "Allow assistant to approve & publish" toggle — default OFF ('0').
     // Lives outside settings.js's fixed DEFAULTS whitelist (same pattern as
     // global_voice/global_hard_rules above), read/written raw via voice.js's
@@ -1322,16 +1334,34 @@ ${bodyHtml}
 
   app.patch('/api/settings', async (req) => {
     const b = req.body || {};
-    const { global_voice, global_hard_rules, agent_can_publish, draft_provider, ...rest } = b;
+    const {
+      global_voice,
+      global_hard_rules,
+      image_prompt_system,
+      image_prompt_negative,
+      image_prompt_brand,
+      image_prompt_layout,
+      agent_can_publish,
+      draft_provider,
+      ...rest
+    } = b;
     const updated = updateSettings(db, rest);
     if (global_voice !== undefined) setGlobalVoice(db, global_voice);
     if (global_hard_rules !== undefined) setGlobalHardRules(db, global_hard_rules);
+    if (image_prompt_system !== undefined) setRawSetting(db, 'image_prompt_system', String(image_prompt_system));
+    if (image_prompt_negative !== undefined) setRawSetting(db, 'image_prompt_negative', String(image_prompt_negative));
+    if (image_prompt_brand !== undefined) setRawSetting(db, 'image_prompt_brand', String(image_prompt_brand));
+    if (image_prompt_layout !== undefined) setRawSetting(db, 'image_prompt_layout', String(image_prompt_layout));
     if (agent_can_publish !== undefined) setRawSetting(db, 'agent_can_publish', String(agent_can_publish));
     if (draft_provider !== undefined) setRawSetting(db, 'draft_provider', String(draft_provider));
     return {
       ...updated,
       global_voice: getGlobalVoice(db),
       global_hard_rules: getGlobalHardRules(db),
+      image_prompt_system: getRawSetting(db, 'image_prompt_system') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.system,
+      image_prompt_negative: getRawSetting(db, 'image_prompt_negative') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.negative,
+      image_prompt_brand: getRawSetting(db, 'image_prompt_brand') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.brand,
+      image_prompt_layout: getRawSetting(db, 'image_prompt_layout') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.layout,
       agent_can_publish: getRawSetting(db, 'agent_can_publish') ?? '0',
       draft_provider: getRawSetting(db, 'draft_provider') ?? 'claude',
     };

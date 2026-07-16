@@ -101,6 +101,10 @@ test('POST /api/image-requests accepts variant_count + hints and folds brand log
   const db = getDb();
   const brandId = seedBrand(db, { colors: { primary: '#111111' } });
   db.prepare('UPDATE brands SET logo_path = ? WHERE id = ?').run('media/brand-logo.png', brandId);
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run('image_prompt_system', 'Use exact Di-Hy production image rules.');
 
   const res = await app.inject({
     method: 'POST',
@@ -120,12 +124,45 @@ test('POST /api/image-requests accepts variant_count + hints and folds brand log
   assert.deepEqual(body.brief.hints, [{ size: 'square', type: 'feed post' }]);
   assert.equal(body.brief.logo_path, 'media/brand-logo.png');
   assert.deepEqual(body.brief.colors, { primary: '#111111' });
+  assert.equal(body.brief.prompt_settings.system, 'Use exact Di-Hy production image rules.');
+  assert.match(body.brief.prompt_settings.negative, /No em-dashes/);
 
   const specPath = path.join(imageReqDir, `req-${body.id}.json`);
   assert.ok(fs.existsSync(specPath));
   const spec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
   assert.equal(spec.brief.variant_count, 3);
+  assert.equal(spec.brief.prompt_settings.system, 'Use exact Di-Hy production image rules.');
   assert.match(spec.instructions, /3 image variants/);
+
+  await app.close();
+});
+
+test('GET/PATCH /api/settings round-trips editable image prompt settings', async () => {
+  const app = buildServer();
+  const db = getDb();
+  db.prepare(
+    "DELETE FROM settings WHERE key IN ('image_prompt_system', 'image_prompt_negative', 'image_prompt_brand', 'image_prompt_layout')"
+  ).run();
+
+  const initial = await app.inject({ method: 'GET', url: '/api/settings' });
+  assert.equal(initial.statusCode, 200);
+  assert.match(initial.json().image_prompt_system, /production-ready organic social visuals/);
+
+  const patched = await app.inject({
+    method: 'PATCH',
+    url: '/api/settings',
+    payload: {
+      image_prompt_system: 'Custom system prompt',
+      image_prompt_negative: 'Custom negative prompt',
+      image_prompt_brand: 'Custom brand prompt',
+      image_prompt_layout: 'Custom layout prompt',
+    },
+  });
+  assert.equal(patched.statusCode, 200);
+  assert.equal(patched.json().image_prompt_system, 'Custom system prompt');
+  assert.equal(patched.json().image_prompt_negative, 'Custom negative prompt');
+  assert.equal(patched.json().image_prompt_brand, 'Custom brand prompt');
+  assert.equal(patched.json().image_prompt_layout, 'Custom layout prompt');
 
   await app.close();
 });

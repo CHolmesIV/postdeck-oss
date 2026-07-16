@@ -25,6 +25,49 @@ const PNG_CONTENT_TYPES = new Set(['static', 'text', 'carousel']);
 // blog renders via its own template) — never throw, just flag it.
 const DEFAULT_DIMS_RAW = '1080x1350 (4:5)';
 
+const DEFAULT_IMAGE_PROMPT_SETTINGS = Object.freeze({
+  system:
+    [
+      'Create production-ready organic social visuals for PostDeck.',
+      'Use the selected brand, platform, copy context, dimensions, logo, and colors as the source of truth.',
+      'The visual should support the post instead of repeating the full caption.',
+      'Use exact output dimensions. Keep key content inside the center safe zone.',
+      'Use readable, restrained on-image text only when the content type needs it.',
+      'Do not use generic startup stock-photo language. Make the image feel specific, operational, and useful.',
+    ].join('\n'),
+  negative:
+    [
+      'No em-dashes in visible text.',
+      'No fake interface details, fake charts, distorted hands, illegible typography, random icons, or decorative clutter.',
+      'No hype language such as game-changer, unlock, synergy, or leverage AI.',
+      'No unbranded text cards when a brand logo or colors are available.',
+    ].join('\n'),
+  brand:
+    [
+      'Charles-first content should feel like an operator note: direct, practical, and earned.',
+      'Di-Hy content should feel clean, implementation-focused, and business-first.',
+      'Prefer Deep Ink, Slate White, Ember Gold, charcoal, and warm neutral surfaces unless the selected brand settings say otherwise.',
+      'Use logo placement like a subtle signature, not a billboard.',
+    ].join('\n'),
+  layout:
+    [
+      'Prioritize scanability at feed size.',
+      'Use strong composition, large readable hierarchy, high contrast, and one clear focal point.',
+      'Avoid tiny body copy. If text is needed, keep it short enough to read on mobile.',
+      'Leave breathing room around logos, faces, and headlines.',
+    ].join('\n'),
+});
+
+function normalizePromptSettings(settings = {}) {
+  const src = settings && typeof settings === 'object' ? settings : {};
+  return {
+    system: typeof src.system === 'string' && src.system.trim() ? src.system : DEFAULT_IMAGE_PROMPT_SETTINGS.system,
+    negative: typeof src.negative === 'string' && src.negative.trim() ? src.negative : DEFAULT_IMAGE_PROMPT_SETTINGS.negative,
+    brand: typeof src.brand === 'string' && src.brand.trim() ? src.brand : DEFAULT_IMAGE_PROMPT_SETTINGS.brand,
+    layout: typeof src.layout === 'string' && src.layout.trim() ? src.layout : DEFAULT_IMAGE_PROMPT_SETTINGS.layout,
+  };
+}
+
 function getImageReqDir() {
   return process.env.POSTDECK_IMAGE_REQ_DIR || path.join(ROOT, 'image-requests');
 }
@@ -100,6 +143,7 @@ function buildBrief({
   hints = [],
   logo_path = null,
   colors = null,
+  prompt_settings = null,
 } = {}) {
   const recommended_format = PNG_CONTENT_TYPES.has(content_type) ? 'png' : 'jpg';
   // B14: CB picks how many variants Codex generates (default 1); per-variant
@@ -155,6 +199,7 @@ function buildBrief({
     platforms: platformBriefs,
     recommended_format,
     quality_notes,
+    prompt_settings: normalizePromptSettings(prompt_settings),
     content_type: content_type ?? null,
     copy_context: copy || '',
     brand: brand ?? null,
@@ -309,6 +354,8 @@ function regenerateImageRequest(db = getDb(), { source_request_id, variant_count
 
 export {
   buildBrief,
+  DEFAULT_IMAGE_PROMPT_SETTINGS,
+  normalizePromptSettings,
   createImageRequest,
   regenerateImageRequest,
   listImageRequests,

@@ -15,7 +15,7 @@ import { copyAssist } from './copy_assist.js';
 import { examplesGrounding } from './examples.js';
 import { buildBrief, createImageRequest } from './imagespec.js';
 import { recordUsage } from './usage.js';
-import { withGlobalVoice } from './voice.js';
+import { withGlobalVoice, getRawSetting } from './voice.js';
 
 /** First tone profile for a brand, if any (mirrors agent.js's lookup). */
 function firstToneProfile(db, brand_id) {
@@ -128,7 +128,28 @@ async function redistributeFromUrl(db, { url, brand_id = null, platforms = [], m
 
   const image_requests = [];
   if (make_images && targetPlatforms.length) {
-    const brief = buildBrief({ platforms: targetPlatforms, content_type: 'image', copy: title || '', brand: brand ? brand.name : null });
+    let colors = null;
+    if (brand?.colors) {
+      try {
+        colors = JSON.parse(brand.colors);
+      } catch {
+        colors = brand.colors;
+      }
+    }
+    const brief = buildBrief({
+      platforms: targetPlatforms,
+      content_type: 'image',
+      copy: title || '',
+      brand: brand ? brand.name : null,
+      logo_path: brand ? brand.logo_path || null : null,
+      colors,
+      prompt_settings: {
+        system: getRawSetting(db, 'image_prompt_system'),
+        negative: getRawSetting(db, 'image_prompt_negative'),
+        brand: getRawSetting(db, 'image_prompt_brand'),
+        layout: getRawSetting(db, 'image_prompt_layout'),
+      },
+    });
     const row = createImageRequest(db, { post_id: null, brand_id, platforms: targetPlatforms, content_type: 'image', brief });
     recordUsage(db, { kind: 'image_request', brand_id, meta: { source: 'redistribute', url } });
     image_requests.push(row);

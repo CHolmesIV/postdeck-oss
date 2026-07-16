@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Finder / osascript launch with a minimal PATH that lacks Homebrew, so node
-# and npm are not found. Put them on PATH before doing anything.
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# Finder / osascript launch with a minimal PATH that lacks Homebrew and the
+# ChatGPT app resources, so npm/claude/codex may not be found. Put the known
+# bins on PATH before doing anything.
+export PATH="/Applications/ChatGPT.app/Contents/Resources:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

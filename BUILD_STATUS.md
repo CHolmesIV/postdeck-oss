@@ -1,12 +1,12 @@
 # PostDeck - Build Status
 
-_Last updated: 2026-07-14. One-page state of the build. Full design: `SPEC.md`. History:
+_Last updated: 2026-07-15. One-page state of the build. Full design: `SPEC.md`. History:
 `CHANGELOG.md`._
 
 ## Where it stands
 
 Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:4520`
-(`npm start`). **203/203 tests passing.** Dry-run is the hard default unless deliberately
+(`npm start`). **210/210 tests passing.** Dry-run is the hard default unless deliberately
 flipped.
 
 ## Built (done)
@@ -30,6 +30,7 @@ flipped.
 | B13 | Brand profiles (source of truth + per-platform generate + staleness) - PrimeWright seeded | ✅ |
 | B14 | Image studio v2 (variant count/regenerate/sips resize), branding in Settings, armed agent publish authority | ✅ |
 | B15 | AI provider switcher (Claude/Codex) for copy drafting + compare-both button; both via subscription CLIs | ✅ (Codex path verify-on-signin) |
+| - | Editable image prompt system + settings UI + design pass refresh | ✅ |
 
 ## Security posture (reviewed 2026-07-15)
 
@@ -53,6 +54,11 @@ flipped.
   all AI features work on your subscription. If AI still shows unavailable, run `claude` +
   `/login` (and `codex login`) once in Terminal, then relaunch. Trade-off: it runs while you
   have it open, not 24/7 (fine - the point is local, on your machine).
+- **Codex CLI discovery** (resolved 2026-07-15): desktop/Finder launches could miss Codex even
+  when it was installed, because the bundled binary lived at
+  `/Applications/ChatGPT.app/Contents/Resources/codex` instead of a normal PATH location.
+  PostDeck now auto-detects known bundled Codex paths and the launcher prepends the ChatGPT app
+  resources dir to PATH before starting the app.
 - **Facebook page/subaccount mapping**: live posting is now proven on X and LinkedIn, but
   Di-Hy Facebook still returns `Page / subaccount not found`. The top-level Facebook account
   is connected, but the Di-Hy page itself still needs to appear as a valid Blotato
@@ -64,6 +70,7 @@ flipped.
 - **Real API seams (deferred, no spend now)**: SEO metrics (Ahrefs/DataForSEO) and social
   listening are stubbed - `research_notes` + inspiration `source` fields are the manual-now /
   API-later boundary. Codex image generation runs in the Codex app (no PostDeck API cost).
+  Image prompt settings are now editable in Settings and carried into every handoff spec.
 - **launchd**: installer ships but is not auto-run - start it when ready
   (`scripts/install-launchd.sh`).
 - **Repo公开**: private until a git-history squash before going public at MVP polish.

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream } from '../src/ai.js';
+import { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream, getBin } from '../src/ai.js';
 import { parseInnerJson } from '../src/draft.js';
 
 test('parseClaudeEnvelope throws a clean 503 on error_max_budget_usd (not parsed as drafts)', () => {
@@ -63,6 +63,20 @@ test('PROVIDERS registry has claude and codex with the expected shape', () => {
   }
 });
 
+test('getBin prefers POSTDECK_CODEX_BIN when explicitly set', () => {
+  process.env.POSTDECK_CODEX_BIN = '/tmp/custom-codex-bin';
+  try {
+    assert.equal(getBin('codex'), '/tmp/custom-codex-bin');
+  } finally {
+    delete process.env.POSTDECK_CODEX_BIN;
+  }
+});
+
+test('codex provider declares a bundled-app fallback path for desktop installs', () => {
+  assert.ok(Array.isArray(PROVIDERS.codex.fallbackBins));
+  assert.ok(PROVIDERS.codex.fallbackBins.includes('/Applications/ChatGPT.app/Contents/Resources/codex'));
+});
+
 test('claude buildArgs shells `-p <prompt> --model <m> --tools "" --max-budget-usd <b> --output-format json`', () => {
   const args = PROVIDERS.claude.buildArgs('hello world', { model: 'claude-haiku-4-5-20251001', budget: '0.05' });
   assert.deepEqual(args, [
@@ -88,9 +102,16 @@ test('claude buildArgs disables tools by default (single-shot completion)', () =
   assert.equal(args[i + 1], '', '--tools value is empty (no tools)');
 });
 
-test('codex buildArgs shells `exec --json <prompt>` (headless, no API key)', () => {
+test('codex buildArgs shells a constrained headless `exec` (read-only, single-turn, no API key)', () => {
   const args = PROVIDERS.codex.buildArgs('hello world');
-  assert.deepEqual(args, ['exec', '--json', 'hello world']);
+  assert.deepEqual(args, ['exec', '--json', '-s', 'read-only', '--skip-git-repo-check', '--ephemeral', 'hello world']);
+});
+
+test('codex buildArgs runs read-only so drafting never writes files', () => {
+  const args = PROVIDERS.codex.buildArgs('x');
+  const i = args.indexOf('-s');
+  assert.ok(i !== -1 && args[i + 1] === 'read-only', 'sandbox is read-only');
+  assert.equal(args[args.length - 1], 'x', 'prompt is the last positional arg');
 });
 
 test('parseClaudeEnvelope unwraps the outer .result to raw text', () => {

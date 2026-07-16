@@ -1766,35 +1766,66 @@ async function renderComposer(view) {
       } catch {
         return; // best-effort; drafting still surfaces its own error
       }
-      const c = status.claude || {};
-      const ok = c.installed && c.loggedIn;
-      const pill = el(
-        'span',
-        { class: `ai-pill ${ok ? 'ai-pill-ok' : 'ai-pill-warn'}` },
-        ok ? 'Claude: logged in' : c.installed ? 'Claude: not logged in' : 'Claude CLI not found'
-      );
-      const row = el('div', { class: 'ai-status-row' }, [pill]);
-      if (c.installed && !c.loggedIn) {
-        row.appendChild(
-          el('button', {
-            class: 'btn-secondary',
-            type: 'button',
-            onclick: async () => {
-              try {
-                await api('/api/ai/login', { method: 'POST', body: { provider: 'claude' } });
-                aiStatusHost.appendChild(
-                  el('div', { class: 'hint', style: 'margin-top:6px;color:var(--muted);' },
-                    'A Terminal window opened to sign you in. Approve in your browser, then click Recheck.')
-                );
-              } catch (err) {
-                alert(`Could not start login: ${err.message}`);
-              }
-            },
-          }, 'Log in to Claude')
+      function appendHint(text) {
+        aiStatusHost.appendChild(
+          el('div', { class: 'hint', style: 'margin-top:6px;color:var(--muted);' }, text)
         );
       }
-      row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: refreshAiStatus }, 'Recheck'));
-      aiStatusHost.appendChild(row);
+      function startProviderLogin(provider, noun) {
+        return async () => {
+          try {
+            await api('/api/ai/login', { method: 'POST', body: { provider } });
+            appendHint(`A Terminal window opened to sign you in to ${noun}. Approve in your browser if prompted, then click Recheck.`);
+          } catch (err) {
+            alert(`Could not start login: ${err.message}`);
+          }
+        };
+      }
+      function providerStatusRow(provider, s = {}) {
+        const installed = s.installed === true;
+        const loggedIn = s.loggedIn === true;
+        const unknownLogin = installed && s.loggedIn == null;
+        const label = provider === 'codex' ? 'Codex' : 'Claude';
+        const pillText =
+          provider === 'codex'
+            ? loggedIn
+              ? 'Codex: logged in'
+              : unknownLogin
+                ? 'Codex: installed'
+                : installed
+                  ? 'Codex: not logged in'
+                  : 'Codex CLI not found'
+            : loggedIn
+              ? 'Claude: logged in'
+              : installed
+                ? 'Claude: not logged in'
+                : 'Claude CLI not found';
+        const pillClass = loggedIn ? 'ai-pill-ok' : 'ai-pill-warn';
+        const row = el('div', { class: 'ai-status-row' }, [
+          el('span', { class: `ai-pill ${pillClass}` }, pillText),
+        ]);
+        const showLogin =
+          provider === 'codex'
+            ? installed && !loggedIn
+            : installed && !loggedIn;
+        if (showLogin) {
+          row.appendChild(
+            el(
+              'button',
+              {
+                class: 'btn-secondary',
+                type: 'button',
+                onclick: startProviderLogin(provider, label),
+              },
+              `Log in to ${label}`
+            )
+          );
+        }
+        row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: refreshAiStatus }, 'Recheck'));
+        return row;
+      }
+      aiStatusHost.appendChild(providerStatusRow('claude', status.claude || {}));
+      aiStatusHost.appendChild(providerStatusRow('codex', status.codex || {}));
     }
     refreshAiStatus();
     const ideaInput = el('textarea', { rows: '3', placeholder: 'Idea text…', id: 'ai-idea-input' });
@@ -1968,6 +1999,12 @@ async function renderComposer(view) {
     // never hardcoded to a fixed count.
     const imageOptsCard = el('div', { class: 'card' });
     imageOptsCard.appendChild(el('h2', {}, 'Image request options'));
+    imageOptsCard.appendChild(
+      el('div', { class: 'image-prompt-note' }, [
+        el('span', {}, 'Reusable image prompts live in Settings and are included in every Codex handoff.'),
+        el('button', { onclick: () => { location.hash = '#/settings'; } }, 'Edit prompts'),
+      ])
+    );
     const variantCountSelect = el(
       'select',
       {},
@@ -2787,6 +2824,10 @@ function settingsToggleRow(checked, label) {
   return { row, cb };
 }
 
+function settingsHint(text) {
+  return el('div', { class: 'settings-hint' }, text);
+}
+
 async function renderSettings(view) {
   view.innerHTML = '';
   view.appendChild(el('h1', {}, 'Settings'));
@@ -2919,6 +2960,62 @@ async function renderSettings(view) {
   };
   providerCard.appendChild(providerMsg);
   view.appendChild(providerCard);
+
+  // ---- Image prompt system ----
+  const imagePromptCard = el('div', { class: 'card settings-section settings-prompt-card' });
+  imagePromptCard.appendChild(el('h2', {}, 'Image prompt system'));
+  imagePromptCard.appendChild(
+    settingsHint('These instructions are included in every Codex image handoff spec, including Composer, chat agent, and blog redistribution requests.')
+  );
+  const promptFields = [
+    ['image_prompt_system', 'System direction', 7],
+    ['image_prompt_negative', 'Negative prompt', 5],
+    ['image_prompt_brand', 'Brand rules', 5],
+    ['image_prompt_layout', 'Layout rules', 5],
+  ];
+  const promptInputs = {};
+  const promptGrid = el('div', { class: 'settings-prompt-grid' });
+  for (const [key, label, rows] of promptFields) {
+    const area = el('textarea', { rows: String(rows), placeholder: label });
+    area.value = settings[key] || '';
+    promptInputs[key] = area;
+    promptGrid.appendChild(el('div', { class: 'field-row' }, [el('label', {}, label), area]));
+  }
+  imagePromptCard.appendChild(promptGrid);
+  const imagePromptMsg = el('div');
+  imagePromptCard.appendChild(
+    el('div', { class: 'toolbar settings-prompt-actions' }, [
+      el('button', {
+        class: 'primary',
+        onclick: async () => {
+          imagePromptMsg.innerHTML = '';
+          try {
+            await api('/api/settings', {
+              method: 'PATCH',
+              body: Object.fromEntries(Object.entries(promptInputs).map(([key, input]) => [key, input.value])),
+            });
+            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Image prompt system saved.'));
+          } catch (err) {
+            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+          }
+        },
+      }, 'Save image prompts'),
+      el('button', {
+        onclick: async () => {
+          imagePromptMsg.innerHTML = '';
+          try {
+            const fresh = await api('/api/settings');
+            for (const [key] of promptFields) promptInputs[key].value = fresh[key] || '';
+            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Reloaded from Settings.'));
+          } catch (err) {
+            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+          }
+        },
+      }, 'Reload'),
+    ])
+  );
+  imagePromptCard.appendChild(imagePromptMsg);
+  view.appendChild(imagePromptCard);
 
   // ---- Per-brand tone tweaks ----
   const brandCard = el('div', { class: 'card settings-section' });

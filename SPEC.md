@@ -265,7 +265,9 @@ without a rewrite.*
      1. CB clicks "Request image" on a post/idea → dashboard builds a **brief** from the
         selected platforms + content_type + copy context, and recommends quality settings
         (format PNG for text-heavy, exact px per platform, max file size, safe zones).
-        CB can edit the brief (this is CB's "input" gate) → `POST /api/image-requests`.
+        The reusable image prompt system is editable in Settings and is included under
+        `brief.prompt_settings` for every request. CB can edit the one-off brief/input gate
+        before `POST /api/image-requests`.
      2. The request is written as a spec file `image-requests/req-<id>.json` (the outbound
         analogue of capture-inbox) AND persisted as an `image_requests` row (status
         `requested`). **This is the Codex contract** — Codex reads the JSON, generates

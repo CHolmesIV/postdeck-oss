@@ -30,6 +30,23 @@ process.exit(0);
 );
 process.env.POSTDECK_CLAUDE_BIN = stubPath;
 
+// Stub `codex`: `codex login status` -> prints a human-readable auth state
+// from an env flag; anything else exits 0 with empty output.
+const codexStubPath = path.join(cliDir, 'codex-stub.js');
+fs.writeFileSync(
+  codexStubPath,
+  `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'login' && args[1] === 'status') {
+  process.stdout.write(process.env.STUB_CODEX_LOGGED_IN === '1' ? 'Logged in using ChatGPT' : 'Not logged in');
+  process.exit(0);
+}
+process.exit(0);
+`,
+  { mode: 0o755 }
+);
+process.env.POSTDECK_CODEX_BIN = codexStubPath;
+
 const { getAuthStatus, startLogin } = await import('../src/ai.js');
 
 test('getAuthStatus reports logged-in when claude auth status says so', async () => {
@@ -53,6 +70,31 @@ test('getAuthStatus reports not-installed when the bin is missing', async () => 
   assert.equal(s.installed, false);
   assert.equal(s.loggedIn, false);
   process.env.POSTDECK_CLAUDE_BIN = prev;
+});
+
+test('getAuthStatus reports logged-in when codex login status says so', async () => {
+  process.env.STUB_CODEX_LOGGED_IN = '1';
+  const s = await getAuthStatus('codex');
+  assert.equal(s.installed, true);
+  assert.equal(s.loggedIn, true);
+  assert.match(s.detail, /logged in/i);
+});
+
+test('getAuthStatus reports not-logged-in when codex login status says so', async () => {
+  process.env.STUB_CODEX_LOGGED_IN = '0';
+  const s = await getAuthStatus('codex');
+  assert.equal(s.installed, true);
+  assert.equal(s.loggedIn, false);
+  assert.match(s.detail, /not logged in/i);
+});
+
+test('getAuthStatus reports codex not-installed when the bin is missing', async () => {
+  const prev = process.env.POSTDECK_CODEX_BIN;
+  process.env.POSTDECK_CODEX_BIN = path.join(cliDir, 'does-not-exist-codex');
+  const s = await getAuthStatus('codex');
+  assert.equal(s.installed, false);
+  assert.equal(s.loggedIn, false);
+  process.env.POSTDECK_CODEX_BIN = prev;
 });
 
 test('startLogin refuses on non-macOS with a manual command hint', async () => {

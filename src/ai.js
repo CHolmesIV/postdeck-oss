@@ -16,16 +16,15 @@
 //   (tolerant of both a bare `{"type":"agent_message","text":...}` shape and
 //   a `{"type":"item.completed","item":{"type":"agent_message","text":...}}`
 //   shape, and of non-JSON lines interleaved in the stream — skipped).
-//   ASSUMPTION (undocumented at build time, no `codex` CLI available to
-//   introspect against): no read-only/sandbox flag is passed. `codex exec`
-//   without a flag still requires a prompt-only response for our use (pure
-//   text drafting, no file edits requested), but this is UNVERIFIED against
-//   a real login — see SPEC.md B15 honesty note. If a real `codex --help`
-//   later reveals a `--sandbox read-only` (or similar) flag, add it to
-//   codex.buildArgs below; keep the parser as-is.
+//   VERIFIED against codex-cli 0.144.2 (logged in): `codex exec` is agentic
+//   by default, so buildArgs constrains it with `-s read-only`,
+//   `--skip-git-repo-check`, and `--ephemeral` for a single ~4s drafting
+//   turn. stdin MUST be closed (runCli does child.stdin.end()) or codex
+//   blocks on "Reading additional input from stdin...".
 //   Reuses the saved Codex CLI login (ChatGPT/subscription) — no API key.
 
-import { execFile, spawn } from 'node:child_process';
+import fs from 'node:fs';
+import { execFile } from 'node:child_process';
 
 function make503(message) {
   const err = new Error(message);
@@ -147,11 +146,21 @@ const PROVIDERS = {
   codex: {
     binEnv: 'POSTDECK_CODEX_BIN',
     defaultBin: 'codex',
-    // Headless, JSON event stream, pure text response. See file-header note:
-    // no sandbox/read-only flag added (unverified against a real codex
-    // login) — model/budget are claude-specific and intentionally unused.
+    fallbackBins: [
+      '/Applications/ChatGPT.app/Contents/Resources/codex',
+      '/Applications/Codex.app/Contents/MacOS/codex',
+    ],
+    // Headless, JSON event stream, pure text response. `codex exec` is an
+    // agentic coding CLI by default, so constrain it for drafting (verified
+    // against codex-cli 0.144.2, logged in): `-s read-only` (never writes
+    // files), `--skip-git-repo-check` (PostDeck's cwd may not be a git repo),
+    // `--ephemeral` (don't persist session files). With these + stdin closed
+    // by runCli, drafting is a single ~4s turn instead of an agentic loop.
+    // NOTE: stdin MUST be closed (runCli does child.stdin.end()) - otherwise
+    // codex blocks on "Reading additional input from stdin...". model/budget
+    // are claude-specific and intentionally unused here.
     buildArgs(prompt) {
-      return ['exec', '--json', prompt];
+      return ['exec', '--json', '-s', 'read-only', '--skip-git-repo-check', '--ephemeral', prompt];
     },
     parse: parseCodexStream,
   },
@@ -159,7 +168,14 @@ const PROVIDERS = {
 
 function getBin(providerName) {
   const provider = PROVIDERS[providerName];
-  return process.env[provider.binEnv] || provider.defaultBin;
+  if (!provider) return null;
+  if (process.env[provider.binEnv]) return process.env[provider.binEnv];
+  for (const candidate of provider.fallbackBins || []) {
+    if (typeof candidate === 'string' && candidate.startsWith('/') && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return provider.defaultBin;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -245,9 +261,9 @@ async function runDraft(providerName, { prompt, model, budget } = {}) {
 /**
  * Report whether a provider's CLI is installed and logged in, without
  * spending any tokens. For claude we call `claude auth status` (fast,
- * non-interactive, prints JSON `{loggedIn:boolean,...}`). For codex we only
- * check that the binary resolves (no cheap status probe assumed). Never
- * throws — returns a plain status object so the UI can render a pill.
+ * non-interactive, prints JSON `{loggedIn:boolean,...}`). For codex we call
+ * `codex login status`, which prints human-readable auth state. Never throws
+ * — returns a plain status object so the UI can render a pill.
  *
  * @returns {Promise<{provider:string, installed:boolean, loggedIn:boolean, detail?:string}>}
  */
@@ -276,15 +292,21 @@ function getAuthStatus(providerName) {
     });
   }
 
-  // codex: only a presence check (no assumed status subcommand).
+  // codex: use the built-in non-interactive status command.
   return new Promise((resolve) => {
-    execFile(bin, ['--version'], { timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }, (err) => {
+    execFile(bin, ['login', 'status'], { timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }, (err, stdout, stderr) => {
       if (err && err.code === 'ENOENT') {
         resolve({ provider: 'codex', installed: false, loggedIn: false, detail: 'codex CLI not installed' });
         return;
       }
-      // Installed; we can't cheaply confirm login, so report unknown-but-present.
-      resolve({ provider: 'codex', installed: true, loggedIn: null, detail: 'installed (login unverified)' });
+      const text = String(stdout || stderr || '').trim();
+      const loggedIn = /logged in/i.test(text) && !/not logged in/i.test(text);
+      resolve({
+        provider: 'codex',
+        installed: true,
+        loggedIn,
+        detail: text || (loggedIn ? 'logged in' : 'not logged in'),
+      });
     });
   });
 }
@@ -334,4 +356,4 @@ end tell`;
   });
 }
 
-export { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream, getAuthStatus, startLogin };
+export { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream, getAuthStatus, startLogin, getBin };

@@ -3,10 +3,9 @@
 Local-first multi-brand social scheduler + content studio. Full architecture, data model,
 and build plan live in [`SPEC.md`](./SPEC.md) — read that first; current state is in
 [`BUILD_STATUS.md`](./BUILD_STATUS.md) and history in [`CHANGELOG.md`](./CHANGELOG.md).
-Shipped through **B9**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
-polish (B6), analytics portal (B7), Content Studio (B8 — copy assist, content-type
-recommender, image sizing + Codex handoff, ops stats, research/inspiration), and the Home
-command center (B9), on a designed dark UI.
+Shipped through **B15**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
+analytics, Content Studio, image sizing + Codex handoff, chat agent, brand/profile settings,
+Claude/Codex drafting, editable image prompts, and a designed local command-center UI.
 
 ## Delivery rule
 
@@ -65,6 +64,8 @@ That script:
 - checks whether PostDeck is already running on `127.0.0.1:4520`
 - starts `npm start` in the background if needed
 - opens the dashboard in your default browser
+- prepends Homebrew and the ChatGPT app resources path to `PATH`, so Finder
+  launches can still find `npm`, `claude`, and the bundled `codex` CLI
 
 To place a double-clickable launcher on the macOS Desktop:
 
