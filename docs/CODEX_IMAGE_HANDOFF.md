@@ -1,8 +1,8 @@
-# Codex Image Handoff - the contract
+# Codex Image Handoff — the contract
 
-*Companion to SPEC.md "B8 - Content Studio", feature 4 (Image workflow). This is the
+*Companion to SPEC.md "B8 — Content Studio", feature 4 (Image workflow). This is the
 protocol a Codex session follows to turn a PostDeck image request into files PostDeck can
-pick up automatically. PostDeck never generates images itself - this handoff is the only
+pick up automatically. PostDeck never generates images itself — this handoff is the only
 bridge.*
 
 ## The flow, in one line
@@ -45,35 +45,35 @@ Written by `src/imagespec.js` when CB submits the request. Shape:
     ],
     "recommended_format": "png",
     "quality_notes": [
-      "Text-heavy content_type - export lossless PNG to keep text/edges crisp (no JPEG compression artifacts on typography).",
+      "Text-heavy content_type — export lossless PNG to keep text/edges crisp (no JPEG compression artifacts on typography).",
       "Generate 2-3 variants per request so CB has a real choice at pick time."
     ],
     "content_type": "static",
-    "copy_context": "The actual post copy - read this for what the image needs to say/show.",
+    "copy_context": "The actual post copy — read this for what the image needs to say/show.",
     "brand": 2
   },
-  "instructions": "Generate 2-3 image variants at the exact dims/format specified per platform in `brief.platforms[]`. Respect `max_mb` and `safe_notes`. Drop the output files plus a manifest.json into image-requests/generated/req-42/ - see docs/CODEX_IMAGE_HANDOFF.md for the exact manifest.json shape PostDeck expects back.",
+  "instructions": "Generate 2-3 image variants at the exact dims/format specified per platform in `brief.platforms[]`. Respect `max_mb` and `safe_notes`. Drop the output files plus a manifest.json into image-requests/generated/req-42/ — see docs/CODEX_IMAGE_HANDOFF.md for the exact manifest.json shape PostDeck expects back.",
   "output_dir": "image-requests/generated/req-42/"
 }
 ```
 
 Key fields:
 
-- `brief.platforms[].dims` - the exact pixel target. `{w, h}` is authoritative when
+- `brief.platforms[].dims` — the exact pixel target. `{w, h}` is authoritative when
   present; `aspect` is the ratio; `raw` is the original platform-specs.json string in case
-  you want the full context (e.g. "1080x1350 (4:5) preferred, 1080x1080 ok" - the first
+  you want the full context (e.g. "1080x1350 (4:5) preferred, 1080x1080 ok" — the first
   number pair is the one already extracted into `w`/`h`).
-- `brief.platforms[].format` - `png` (text-heavy: static/text/carousel content_type) or
-  `jpg` (photo/video-led). Follow it unless a platform's `formats` list disagrees - dims
+- `brief.platforms[].format` — `png` (text-heavy: static/text/carousel content_type) or
+  `jpg` (photo/video-led). Follow it unless a platform's `formats` list disagrees — dims
   win over format when in doubt.
-- `brief.platforms[].max_mb` - hard ceiling if present; keep well under it.
-- `brief.platforms[].safe_notes` - platform-specific notes (crop/caption chrome, best
+- `brief.platforms[].max_mb` — hard ceiling if present; keep well under it.
+- `brief.platforms[].safe_notes` — platform-specific notes (crop/caption chrome, best
   practices) plus a standing safe-zone reminder. Read it; it can include a flag like "no
-  image spec found... using default" if `platform-specs.json` didn't have an entry - treat
+  image spec found... using default" if `platform-specs.json` didn't have an entry — treat
   that platform's dims as a rough placeholder and use judgment.
-- `brief.copy_context` - the post copy. The image should support this copy, not repeat it
+- `brief.copy_context` — the post copy. The image should support this copy, not repeat it
   verbatim as a caption unless the content_type calls for on-image text (static/carousel).
-- `output_dir` - where your output goes. Always `image-requests/generated/req-<id>/`
+- `output_dir` — where your output goes. Always `image-requests/generated/req-<id>/`
   relative to the PostDeck repo root.
 
 ## 2. What you produce
@@ -81,10 +81,10 @@ Key fields:
 Create the directory named in `output_dir` (`image-requests/generated/req-<id>/`) and put
 in it:
 
-1. **The image files** - one per variant, any filename you choose (no spaces recommended;
+1. **The image files** — one per variant, any filename you choose (no spaces recommended;
    they get renamed on import anyway). Generate 2-3 variants total across the requested
    platforms/dims, per `quality_notes`.
-2. **`manifest.json`** - the exact shape PostDeck expects back:
+2. **`manifest.json`** — the exact shape PostDeck expects back:
 
 ```json
 {
@@ -96,20 +96,20 @@ in it:
 }
 ```
 
-- `request_id` - must match the id from the spec file / the `req-<id>` directory name.
+- `request_id` — must match the id from the spec file / the `req-<id>` directory name.
   If it doesn't match any real `image_requests` row, PostDeck's importer skips the whole
-  directory (logs it, leaves it untouched) rather than guessing - get this right.
-- `variants[].file` - filename relative to this same directory (the file must actually be
+  directory (logs it, leaves it untouched) rather than guessing — get this right.
+- `variants[].file` — filename relative to this same directory (the file must actually be
   sitting next to `manifest.json`).
-- `variants[].platform` - which platform this variant targets (matches one of
+- `variants[].platform` — which platform this variant targets (matches one of
   `brief.platforms[].platform`).
-- `variants[].dims` - the actual pixel dims you rendered at, as a plain string (doesn't
+- `variants[].dims` — the actual pixel dims you rendered at, as a plain string (doesn't
   need the parenthetical aspect note).
-- `variants[].notes` - anything CB should know when picking (crop choice, what changed
+- `variants[].notes` — anything CB should know when picking (crop choice, what changed
   between variants, anything you couldn't fully honor from the brief).
 
 Do not write anywhere else, and do not touch the `image_requests` table or any other
-PostDeck file - the worker owns the import step.
+PostDeck file — the worker owns the import step.
 
 ## 3. What happens after you drop the files
 
@@ -124,7 +124,7 @@ PostDeck file - the worker owns the import step.
    `image-requests/generated/processed/req-<id>/` so `generated/` doesn't pile up.
 
 CB then sees the request in the dashboard's Images view, picks a variant
-(`POST /api/image-requests/:id/pick`), and it attaches to the post - request status becomes
+(`POST /api/image-requests/:id/pick`), and it attaches to the post — request status becomes
 `picked`.
 
 ## Worked example
@@ -148,7 +148,7 @@ image-requests/generated/req-42/
 {
   "request_id": 42,
   "variants": [
-    { "file": "variant-a.png", "platform": "instagram", "dims": "1080x1350", "notes": "Primary layout - headline top third, product bottom two-thirds." },
+    { "file": "variant-a.png", "platform": "instagram", "dims": "1080x1350", "notes": "Primary layout — headline top third, product bottom two-thirds." },
     { "file": "variant-b.png", "platform": "facebook", "dims": "1080x1350", "notes": "Same layout, warmer color treatment for FB feed contrast." }
   ]
 }
@@ -158,7 +158,7 @@ image-requests/generated/req-42/
 
 ```json
 [
-  { "path": "media/1752521400000_1-variant-a.png", "url": "/media/1752521400000_1-variant-a.png", "platform": "instagram", "dims": "1080x1350", "notes": "Primary layout - headline top third, product bottom two-thirds." },
+  { "path": "media/1752521400000_1-variant-a.png", "url": "/media/1752521400000_1-variant-a.png", "platform": "instagram", "dims": "1080x1350", "notes": "Primary layout — headline top third, product bottom two-thirds." },
   { "path": "media/1752521400000_2-variant-b.png", "url": "/media/1752521400000_2-variant-b.png", "platform": "facebook", "dims": "1080x1350", "notes": "Same layout, warmer color treatment for FB feed contrast." }
 ]
 ```
