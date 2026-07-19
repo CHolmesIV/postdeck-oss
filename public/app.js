@@ -79,6 +79,16 @@ function textLimitFor(platform) {
   return FALLBACK_PLATFORM_LIMITS[platform]?.text ?? null;
 }
 
+// F1: the "…see more" feed-fold point for a platform, from
+// config/platform-specs.json's <platform>.preview.fold_chars (null = no fold,
+// e.g. reddit is title-led and blog renders full-length on the site).
+function foldCharsFor(platform) {
+  const spec = platformSpec(platform);
+  if (spec && spec.preview && spec.preview.fold_chars !== undefined) return spec.preview.fold_chars;
+  const FALLBACK_FOLD = { linkedin: 210, facebook: 477, twitter: 280, instagram: 125, tiktok: 1000, reddit: null, blog: null };
+  return FALLBACK_FOLD[platform] ?? null;
+}
+
 function tiktokRequiredFieldsFromSpec() {
   const spec = platformSpec('tiktok');
   return (
@@ -325,6 +335,15 @@ const STICKY_BRAND_KEY = 'pd_current_brand';
 function getStickyBrand() {
   return localStorage.getItem(STICKY_BRAND_KEY) || '';
 }
+// F8: persisted calendar view mode (month/week/upcoming) for the standalone
+// #/calendar route - the Home-embedded calendar still forces 'week' (B9).
+const STICKY_CAL_VIEW_KEY = 'pd_cal_view_mode';
+function getStickyCalView() {
+  return localStorage.getItem(STICKY_CAL_VIEW_KEY) || null;
+}
+function setStickyCalView(mode) {
+  localStorage.setItem(STICKY_CAL_VIEW_KEY, mode);
+}
 function setStickyBrand(id) {
   localStorage.setItem(STICKY_BRAND_KEY, id || '');
 }
@@ -348,7 +367,25 @@ function el(tag, attrs = {}, children = []) {
 // folds into a toggle-able body. Open/closed state persists in localStorage
 // under `key` so the operator's layout preferences stick between sessions.
 // Mutates the card in place and returns it.
-function makeCollapsible(card, { open = true, key } = {}) {
+// Autosizing textarea (item 3 - "when I make text, I should be able to edit
+// it and make it easy"): grows with content instead of forcing a scrollbar
+// inside a fixed-height box, on every input plus once immediately (so a
+// prefilled value, e.g. an AI draft or Quick Compose handoff, is sized
+// correctly without the operator having to type first). Safe to call more
+// than once on the same textarea (re-renders re-set the same listener).
+function autosizeTextarea(ta) {
+  if (!ta || ta.dataset.autosize === '1') return ta;
+  ta.dataset.autosize = '1';
+  const resize = () => {
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight + 2}px`;
+  };
+  ta.addEventListener('input', resize);
+  requestAnimationFrame(resize);
+  return ta;
+}
+
+function makeCollapsible(card, { open = true, key, draggable = false } = {}) {
   if (!card || card.dataset.collapsible === '1') return card;
   const storeKey = key ? `pd_collapse_${key}` : null;
   let isOpen = open;
@@ -364,18 +401,35 @@ function makeCollapsible(card, { open = true, key } = {}) {
   card.innerHTML = '';
   card.classList.add('collapsible');
   card.dataset.collapsible = '1';
+  if (key) card.dataset.sectionKey = key;
   const chevron = el('span', { class: 'collapse-chevron' }, isOpen ? '▾' : '▸');
-  const header = el('div', { class: 'collapsible-header' }, [
-    el('span', { class: 'collapsible-title' }, title),
-    chevron,
-  ]);
+  const headerKids = [];
+  if (draggable) {
+    headerKids.push(
+      el('span', {
+        class: 'drag-handle',
+        title: 'Drag to reorder',
+        // Prevent the click-to-toggle handler on the header from also firing
+        // when grabbing the handle - mousedown stopPropagation is enough
+        // since HTML5 DnD itself starts on its own dragstart event.
+        onmousedown: (e) => e.stopPropagation(),
+      }, '⠿')
+    );
+  }
+  headerKids.push(el('span', { class: 'collapsible-title' }, title), chevron);
+  const header = el('div', { class: 'collapsible-header' }, headerKids);
+  if (draggable) {
+    header.draggable = true;
+    header.classList.add('is-draggable');
+  }
   const bodyWrap = el('div', { class: 'collapsible-body' });
   rest.forEach((n) => bodyWrap.appendChild(n));
   function apply() {
     card.classList.toggle('collapsed', !isOpen);
     chevron.textContent = isOpen ? '▾' : '▸';
   }
-  header.addEventListener('click', () => {
+  header.addEventListener('click', (e) => {
+    if (e.target.closest('.drag-handle')) return;
     isOpen = !isOpen;
     if (storeKey) localStorage.setItem(storeKey, isOpen ? '1' : '0');
     apply();
@@ -383,6 +437,84 @@ function makeCollapsible(card, { open = true, key } = {}) {
   apply();
   card.append(header, bodyWrap);
   return card;
+}
+
+// L4 - drag-to-reorder for a set of makeCollapsible cards that share a
+// parent container. `container` is the element the cards are appended into
+// (order of DOM children == visual order); `storageKey` persists the chosen
+// order (array of section keys) to localStorage so it applies on every
+// future render. `sections` is the ordered list of {key, node} the caller
+// built - reordering only ever re-appends existing nodes (no re-creation,
+// same pattern as the pre-existing "D2 L3 assembly" reorder).
+function makeSectionsReorderable(container, storageKey, sections) {
+  const order = loadSectionOrder(storageKey, sections.map((s) => s.key));
+  const byKey = Object.fromEntries(sections.map((s) => [s.key, s.node]));
+  function applyOrder(keys) {
+    for (const k of keys) {
+      if (byKey[k]) container.appendChild(byKey[k]);
+    }
+  }
+  applyOrder(order);
+
+  let dragKey = null;
+  for (const { key, node } of sections) {
+    const header = node.querySelector(':scope > .collapsible-header');
+    if (!header) continue;
+    header.addEventListener('dragstart', (e) => {
+      dragKey = key;
+      node.classList.add('is-dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', key); } catch { /* some browsers require this call to not throw */ }
+    });
+    header.addEventListener('dragend', () => {
+      node.classList.remove('is-dragging');
+      dragKey = null;
+    });
+    node.addEventListener('dragover', (e) => {
+      if (!dragKey || dragKey === key) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    node.addEventListener('drop', (e) => {
+      if (!dragKey || dragKey === key) return;
+      e.preventDefault();
+      const current = [...container.children]
+        .map((n) => n.dataset.sectionKey)
+        .filter(Boolean);
+      const from = current.indexOf(dragKey);
+      const to = current.indexOf(key);
+      if (from === -1 || to === -1) return;
+      current.splice(from, 1);
+      current.splice(to, 0, dragKey);
+      saveSectionOrder(storageKey, current);
+      applyOrder(current);
+      dragKey = null;
+    });
+  }
+}
+
+function loadSectionOrder(storageKey, defaultKeys) {
+  let saved = [];
+  try {
+    saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+  } catch {
+    saved = [];
+  }
+  if (!Array.isArray(saved)) saved = [];
+  const known = new Set(defaultKeys);
+  const ordered = saved.filter((k) => known.has(k));
+  for (const k of defaultKeys) {
+    if (!ordered.includes(k)) ordered.push(k);
+  }
+  return ordered;
+}
+
+function saveSectionOrder(storageKey, keys) {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(keys));
+  } catch {
+    // best-effort only - a failed persist just means order resets next load
+  }
 }
 
 // =====================================================================
@@ -448,6 +580,95 @@ function emptyState(msg, ctaLabel, ctaFn) {
   return el('div', { class: 'empty-state' }, kids);
 }
 
+// ---------------- F1: platform icons + feed preview ----------------
+// Hand-rolled single-color SVGs (currentColor, 16px viewBox) - no external
+// assets/deps. Exported on window.PostDeckIcons too so later agents (F7
+// calendar chips/popover, coverage strip) can reuse the exact same set
+// without re-implementing paths.
+const PLATFORM_ICON_PATHS = {
+  linkedin: '<path d="M3.5 5.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM2 7h3v7H2V7zm5 0h2.9v1h.04c.4-.75 1.4-1.55 2.9-1.55C15.9 6.45 16 8.1 16 10v4h-3v-3.5c0-.85 0-1.95-1.2-1.95-1.2 0-1.4.93-1.4 1.9V14H7V7z"/>',
+  facebook: '<path d="M10.9 16V9.2h2.3l.34-2.65h-2.64V4.86c0-.77.21-1.29 1.32-1.29h1.4V1.2C13 1.13 12.2 1 11.27 1 9.3 1 7.95 2.2 7.95 4.4v1.15H5.6V8.2h2.35V16h2.95z"/>',
+  instagram: '<path d="M8 4.7A3.3 3.3 0 1 0 8 11.3 3.3 3.3 0 0 0 8 4.7zm0 5.45A2.15 2.15 0 1 1 8 5.85a2.15 2.15 0 0 1 0 4.3zM11.4 4.55a.77.77 0 1 1 0-1.54.77.77 0 0 1 0 1.54zM16 4.8c-.06-1.03-.29-1.94-1.06-2.7C14.18 1.34 13.27 1.1 12.24 1.05 11.18 1 4.82 1 3.76 1.05c-1.03.05-1.94.29-2.7 1.05C.3 2.86.06 3.77 1.05 4.8.5 5.87.5 12.13 1.05 13.2c.06 1.03.29 1.94 1.06 2.7.76.76 1.67 1 2.7 1.05 1.06.05 7.42.05 8.48 0 1.03-.05 1.94-.29 2.7-1.05.76-.76 1-1.67 1.05-2.7.06-1.06.06-7.32 0-8.4zM14.5 12.9a2.9 2.9 0 0 1-1.63 1.63c-1.13.45-3.8.34-5.04.34s-3.92.1-5.04-.34A2.9 2.9 0 0 1 1.16 12.9c-.45-1.13-.35-3.8-.35-5.04S.7 3.94 1.16 2.82A2.9 2.9 0 0 1 2.79 1.2c1.13-.45 3.8-.34 5.04-.34s3.92-.1 5.04.34a2.9 2.9 0 0 1 1.63 1.63c.45 1.13.34 3.8.34 5.04s.11 3.9-.34 5.03z"/>',
+  twitter: '<path d="M9.53 6.9 15 1h-1.3l-4.75 5.13L5.15 1H1l5.74 8.15L1 15h1.3l5.02-5.42L11.5 15h4.15L9.53 6.9zm-1.78 1.92-.58-.8L2.6 1.9h2l3.72 5.17.58.8 4.85 6.74h-2L7.75 8.82z"/>',
+  tiktok: '<path d="M11.4 1h-2.3v9.7a1.95 1.95 0 1 1-1.4-1.87V6.5a4.35 4.35 0 1 0 3.7 4.3V6.1a5.4 5.4 0 0 0 3.1.97V4.8a3 3 0 0 1-3.1-3.05V1z"/>',
+  reddit: '<circle cx="8" cy="8.8" r="6" fill="none" stroke="currentColor" stroke-width="1.15"/><circle cx="5.6" cy="8.6" r=".85"/><circle cx="10.4" cy="8.6" r=".85"/><path d="M5.3 10.4c.7.55 1.6.85 2.7.85s2-.3 2.7-.85" fill="none" stroke="currentColor" stroke-width=".9" stroke-linecap="round"/><path d="M8 5.6V2.8m0 0 2.1.55M8 2.8 6.4 3.9" fill="none" stroke="currentColor" stroke-width=".9" stroke-linecap="round"/><circle cx="10.7" cy="3.6" r=".85"/>',
+  youtube: '<path d="M15.4 4.9a2 2 0 0 0-1.4-1.4C12.7 3.2 8 3.2 8 3.2s-4.7 0-6 .3a2 2 0 0 0-1.4 1.4A21 21 0 0 0 .3 8c0 1 .1 2.1.3 3.1a2 2 0 0 0 1.4 1.4c1.3.3 6 .3 6 .3s4.7 0 6-.3a2 2 0 0 0 1.4-1.4c.2-1 .3-2 .3-3.1 0-1-.1-2.1-.3-3.1zM6.4 10.3V5.7L10.4 8l-4 2.3z"/>',
+  blog: '<path d="M4 1.5h6.2L13 4.3V14.5H4v-13z" fill="none" stroke="currentColor" stroke-width="1"/><path d="M6 6h5M6 8.3h5M6 10.6h3.3" stroke="currentColor" stroke-width=".9" stroke-linecap="round"/>',
+};
+function platformIcon(name, { size = 16 } = {}) {
+  const key = String(name || '').toLowerCase();
+  const inner = PLATFORM_ICON_PATHS[key] || PLATFORM_ICON_PATHS.blog;
+  const span = el('span', { class: 'platform-icon', 'data-platform': key, style: `display:inline-flex;width:${size}px;height:${size}px;vertical-align:middle;` });
+  span.innerHTML = `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="currentColor" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+  return span;
+}
+if (typeof window !== 'undefined') window.PostDeckIcons = { platformIcon, PLATFORM_ICON_PATHS };
+
+// "Fold in N chars" hint - amber under 30 remaining, red once past the fold.
+// Returns { text, cls } for callers to plug into a `.fold-counter` node; null
+// text when the platform has no fold point (reddit/blog).
+function foldCounterState(text, foldChars) {
+  if (foldChars == null) return { text: '', cls: '' };
+  const len = (text || '').length;
+  const remaining = foldChars - len;
+  if (remaining < 0) return { text: `${Math.abs(remaining)} over the fold`, cls: 'fold-over' };
+  if (remaining <= 30) return { text: `Fold in ${remaining} chars`, cls: 'fold-amber' };
+  return { text: `Fold in ${remaining} chars`, cls: '' };
+}
+
+// F1 - feed-card mockup approximating how the post reads in-platform: header
+// (avatar/logo, brand name, platform icon+label), copy with a dimmed
+// "…see more" fold, optional image thumb. Deliberately a light card on the
+// app's dark chrome (matches how Sprout/Blotato-style previews read) so it
+// visually reads as "the platform" rather than more app chrome. Twitter is a
+// hard limit (invalid over 280), not a soft fold, so overflow is reddened
+// instead of dimmed.
+function renderPostPreview(platform, { copy = '', mediaUrl = null, brand = null } = {}) {
+  const foldChars = foldCharsFor(platform);
+  const isHardLimit = platform === 'twitter';
+  const text = copy || '';
+
+  const header = el('div', { class: 'feed-preview-header' });
+  if (brand && brand.logo_path) {
+    header.appendChild(el('img', { class: 'feed-preview-avatar', src: brand.logo_path, alt: `${brand.name || 'Brand'} logo` }));
+  } else {
+    let initial = '?';
+    if (brand && brand.name) initial = brand.name.trim().charAt(0).toUpperCase();
+    header.appendChild(el('div', { class: 'feed-preview-avatar feed-preview-avatar-disc' }, initial));
+  }
+  const headerText = el('div', { class: 'feed-preview-header-text' }, [
+    el('div', { class: 'feed-preview-brand' }, (brand && brand.name) || 'Brand'),
+    el('div', { class: 'feed-preview-platform' }, [platformIcon(platform, { size: 13 }), el('span', {}, ` ${platform}`)]),
+  ]);
+  header.appendChild(headerText);
+
+  const bodyEl = el('div', { class: 'feed-preview-body' });
+  if (isHardLimit && foldChars != null) {
+    if (text.length <= foldChars) {
+      bodyEl.appendChild(el('span', {}, text || '(no copy yet)'));
+    } else {
+      bodyEl.append(
+        el('span', {}, text.slice(0, foldChars)),
+        el('span', { class: 'feed-preview-overflow' }, text.slice(foldChars))
+      );
+    }
+  } else if (foldChars != null && text.length > foldChars) {
+    bodyEl.append(
+      el('span', {}, text.slice(0, foldChars)),
+      el('div', { class: 'feed-preview-fold-line' }, '···· see more fold ····'),
+      el('span', { class: 'feed-preview-dimmed' }, text.slice(foldChars))
+    );
+  } else {
+    bodyEl.appendChild(el('span', {}, text || '(no copy yet)'));
+  }
+
+  const card = el('div', { class: `feed-preview-card feed-preview-${platform}` }, [header, bodyEl]);
+  if (mediaUrl) {
+    card.appendChild(el('div', { class: 'feed-preview-media' }, [el('img', { src: mediaUrl, alt: '' })]));
+  }
+  return card;
+}
+
 // Calendar auto-refresh singleton: the current calendar render assigns its
 // guarded reload here; one global focus/visibility listener calls it so a tab
 // left open re-fetches instead of showing stale data. See renderCalendarInto.
@@ -502,6 +723,7 @@ const routes = {
   '': renderHome,
   home: renderHome,
   calendar: renderCalendar,
+  review: renderReview,
   ideas: renderIdeas,
   library: renderLibrary,
   composer: renderComposer,
@@ -575,7 +797,7 @@ async function renderCalendar(view) {
   view.classList.add('view-flush');
   const container = el('div');
   view.appendChild(container);
-  await renderCalendarInto(container);
+  await renderCalendarInto(container, { defaultMode: getStickyCalView() || 'month' });
 }
 
 // Reusable calendar body (toolbar + grid + drag-reschedule) - used standalone
@@ -612,6 +834,7 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
   const viewToggle = el('select', { id: 'cal-view' }, [
     el('option', { value: 'week', selected: defaultMode === 'week' ? 'selected' : undefined }, 'Week'),
     el('option', { value: 'month', selected: defaultMode === 'month' ? 'selected' : undefined }, 'Month'),
+    el('option', { value: 'upcoming', selected: defaultMode === 'upcoming' ? 'selected' : undefined }, 'Upcoming'),
   ]);
   // B17a: tag/campaign filter - populated from GET /api/tags, filtered
   // client-side against each post's tags[] (same pattern as brand/platform).
@@ -647,12 +870,17 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
 
   const grid = el('div', { class: 'cal-grid', id: 'cal-grid' });
   view.appendChild(grid);
+  // F8: Upcoming agenda view - swaps in for the grid when viewToggle === 'upcoming'.
+  const agendaHost = el('div', { class: 'agenda-list', hidden: true });
+  view.appendChild(agendaHost);
 
   function updateLabel(mode) {
     if (mode === 'month') {
       periodLabel.textContent = refDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-    } else {
+    } else if (mode === 'week') {
       periodLabel.textContent = 'Week of ' + refDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    } else {
+      periodLabel.textContent = 'Next 14 days';
     }
   }
 
@@ -669,12 +897,26 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
         (!tagId || (p.tags || []).some((t) => String(t.id) === tagId))
     );
     updateLabel(mode);
-    renderCoverageStrip(coverageStrip, filtered, state.brands, mode, refDate);
-    drawGrid(grid, filtered, mode, refDate);
+    prevBtn.disabled = mode === 'upcoming';
+    nextBtn.disabled = mode === 'upcoming';
+    todayBtn.disabled = mode === 'upcoming';
+    if (mode === 'upcoming') {
+      coverageStrip.hidden = true;
+      grid.hidden = true;
+      agendaHost.hidden = false;
+      drawAgenda(agendaHost, filtered);
+    } else {
+      coverageStrip.hidden = false;
+      grid.hidden = false;
+      agendaHost.hidden = true;
+      renderCoverageStrip(coverageStrip, filtered, state.brands, mode, refDate);
+      drawGrid(grid, filtered, mode, refDate);
+    }
   }
 
   function step(dir) {
     const mode = viewToggle.value;
+    if (mode === 'upcoming') return; // not paged by refDate
     if (mode === 'month') refDate.setMonth(refDate.getMonth() + dir, 1);
     else refDate.setDate(refDate.getDate() + dir * 7);
     reload();
@@ -687,7 +929,7 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
   brandFilter.onchange = () => { setStickyBrand(brandFilter.value); reload(); };
   platformFilter.onchange = reload;
   tagFilter.onchange = reload;
-  viewToggle.onchange = reload;
+  viewToggle.onchange = () => { setStickyCalView(viewToggle.value); reload(); };
   await reload();
 
   // Auto-refresh: the SPA doesn't live-update, so a tab left open goes stale
@@ -725,18 +967,19 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
 // so the quick-create buttons can prefill the Composer with it. `onRedistribute`
 // (B11) toggles the redistribute-from-blog form open/closed.
 function homeQuickCreateBar(getBrand, onRedistribute) {
-  function goCompose({ focusAI = false } = {}) {
+  // Both quick-create buttons now open the Quick Compose modal (compact
+  // brand/accounts/copy/schedule dialog) instead of navigating to the full
+  // #/composer page - see openQuickCompose. "Open full composer" inside the
+  // modal is still the escape hatch to the full page for anything more
+  // involved (per-platform variants, TikTok/Reddit fields, tags, etc).
+  function goCompose() {
     const brand = getBrand();
-    if (brand) sessionStorage.setItem('pd_composer_prefill_brand', brand);
-    else sessionStorage.removeItem('pd_composer_prefill_brand');
-    if (focusAI) sessionStorage.setItem('pd_composer_focus_ai', '1');
-    else sessionStorage.removeItem('pd_composer_focus_ai');
-    location.hash = '#/composer';
+    openQuickCompose(brand ? { brandId: brand } : {});
   }
 
   return el('div', { class: 'home-quickbar' }, [
     el('button', { class: 'button primary md', onclick: () => goCompose() }, '+ New Post'),
-    el('button', { class: 'button secondary md', onclick: () => goCompose({ focusAI: true }) }, 'Draft with AI'),
+    el('button', { class: 'button secondary md', onclick: () => goCompose() }, 'Draft with AI'),
     el('button', { class: 'button secondary md', onclick: () => { location.hash = '#/ideas'; } }, '+ Idea'),
     el('button', { class: 'button secondary md', onclick: () => { location.hash = '#/images'; } }, 'Request image (Codex)'),
     el('button', { class: 'button secondary md', onclick: onRedistribute }, 'Redistribute blog post'),
@@ -892,7 +1135,7 @@ function buildAttentionSection(container, posts, analyticsData, homeBrand, profi
 
   const drafts = posts.filter((p) => p.status === 'draft');
   if (drafts.length) {
-    rows.push(attentionRow(`${drafts.length} draft(s) awaiting approval`, '#/calendar', 'warn'));
+    rows.push(attentionRow(`Review drafts (${drafts.length})`, '#/review', 'warn'));
   }
 
   const now = Date.now();
@@ -931,9 +1174,9 @@ function buildAttentionSection(container, posts, analyticsData, homeBrand, profi
 }
 
 function weekChip(p) {
-  const chip = el('a', { href: `#/post/${p.id}`, class: 'week-chip', style: `border-left-color:${brandColor(p.brand_id)}` }, [
+  const chip = el('a', { href: `#/post/${p.id}`, class: 'week-chip', style: `border-left-color:${brandColor(p.brand_id)}`, title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}` }, [
     el('span', { class: 'week-chip-dot', style: `background:${brandColor(p.brand_id)}` }),
-    el('span', { class: 'week-chip-platform' }, p.platform),
+    platformIcon(p.platform, { size: 12 }),
     el('span', { class: 'week-chip-copy' }, (p.copy || '(no copy)').slice(0, 28)),
     el('span', { class: 'week-chip-date' }, fmtDate(p.publish_at)),
   ]);
@@ -986,7 +1229,8 @@ function buildPlatformChipsSection(container, posts, homeBrand) {
     row.appendChild(
       el('div', { class: 'platform-chip' }, [
         el('span', { class: `health-dot ${failed ? 'bad' : 'ok'}`, title: failed ? 'Recent failure' : 'Healthy' }),
-        el('span', { class: 'platform-chip-name' }, `${acct.platform} · ${brandName(acct.brand_id)}`),
+        platformIcon(acct.platform, { size: 13 }),
+        el('span', { class: 'platform-chip-name' }, ` ${acct.platform} · ${brandName(acct.brand_id)}`),
         el('span', { class: 'platform-chip-meta' }, `${scheduledCount} scheduled`),
         el('span', { class: 'platform-chip-meta' }, lastPublished ? `last: ${fmtDate(lastPublished)}` : 'never published'),
       ])
@@ -1054,6 +1298,112 @@ function buildMiniAnalyticsSection(container, analyticsData, homeBrand) {
   container.appendChild(card);
 }
 
+// ---- F6: brand setup completeness card ----
+// One collapsible row per brand, checks over existing endpoints only (no
+// backend changes): Blotato account connected, queue slots defined, link
+// tracking (neutral off/on - never a warning, it's optional), brand profile
+// current (no stale profiles + at least one exists), voice/tone set (a
+// per-brand tone profile with rules, OR the shared global voice). Each item
+// jumps to the relevant view/brand context. A brand at 100% collapses by
+// default (via makeCollapsible's per-key localStorage persistence) so a
+// fully-set-up roster doesn't clutter Home once it's done.
+async function buildSetupCard(container) {
+  container.innerHTML = '';
+  const card = el('div', { class: 'card home-section' });
+  card.appendChild(el('h2', {}, 'Setup'));
+  const body = el('div', { class: 'setup-card-body' });
+  body.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'Checking brand setup…'));
+  card.appendChild(body);
+  container.appendChild(card);
+
+  if (!state.brands.length) {
+    body.innerHTML = '';
+    body.appendChild(emptyState('No brands yet.', 'Go to settings', () => { location.hash = '#/settings'; }));
+    return;
+  }
+
+  let profiles = [];
+  let globalVoiceSet = false;
+  try {
+    const settings = await api('/api/settings');
+    globalVoiceSet = Boolean((settings.global_voice || '').trim());
+  } catch { /* best-effort */ }
+  try {
+    profiles = await api('/api/profiles');
+  } catch { /* best-effort - endpoint may not exist yet */ }
+
+  const perBrand = await Promise.all(
+    state.brands.map(async (b) => {
+      const [slots, tones] = await Promise.all([
+        api(`/api/queue-slots?brand_id=${b.id}`).catch(() => []),
+        api(`/api/tone-profiles?brand_id=${b.id}`).catch(() => []),
+      ]);
+      const brandAccounts = state.accounts.filter((a) => String(a.brand_id) === String(b.id));
+      const brandProfiles = (profiles || []).filter((p) => String(p.brand_id) === String(b.id));
+      const hasToneRules = (tones || []).some((t) => (t.voice_rules || '').trim().length > 0);
+      const jumpToBrand = (hash) => { setStickyBrand(String(b.id)); location.hash = hash; };
+
+      const checks = [
+        {
+          label: 'Blotato account connected',
+          done: brandAccounts.length > 0,
+          jump: () => jumpToBrand('#/composer'),
+        },
+        {
+          label: 'Queue slots defined',
+          done: (slots || []).length > 0,
+          jump: () => jumpToBrand('#/settings'),
+        },
+        {
+          label: 'Link tracking',
+          neutral: true,
+          state: b.utm_enabled ? 'on' : 'off',
+          jump: () => jumpToBrand('#/settings'),
+        },
+        {
+          label: 'Brand profile current',
+          done: brandProfiles.length > 0 && !brandProfiles.some((p) => p.status === 'stale'),
+          jump: () => { location.hash = '#/profiles'; },
+        },
+        {
+          label: 'Voice/tone set',
+          done: hasToneRules || globalVoiceSet,
+          jump: () => jumpToBrand('#/settings'),
+        },
+      ];
+      const incomplete = checks.filter((c) => !c.neutral && !c.done);
+      return { brand: b, checks, complete: incomplete.length === 0 };
+    })
+  );
+
+  body.innerHTML = '';
+  for (const { brand, checks, complete } of perBrand) {
+    const rowCard = el('div', { class: 'card setup-brand-card' });
+    rowCard.appendChild(el('h2', {}, complete ? `${brand.name} ✓` : brand.name));
+    const list = el('div', { class: 'setup-check-list' });
+    for (const c of checks) {
+      const mark = c.neutral ? c.state : (c.done ? '✓' : '—');
+      list.appendChild(
+        el(
+          'button',
+          {
+            type: 'button',
+            class: 'setup-check-item' + (!c.neutral && !c.done ? ' setup-check-incomplete' : ''),
+            onclick: c.jump,
+          },
+          [
+            el('span', { class: 'setup-check-mark' }, mark),
+            el('span', { class: 'setup-check-label' }, c.label),
+          ]
+        )
+      );
+    }
+    rowCard.appendChild(list);
+    makeCollapsible(rowCard, { open: !complete, key: `setup_${brand.id}` });
+    body.appendChild(rowCard);
+  }
+}
+
 async function renderHome(view) {
   view.innerHTML = '';
   view.classList.add('view-default');
@@ -1081,6 +1431,7 @@ async function renderHome(view) {
   view.appendChild(redistributeHost);
 
   const attentionHost = el('div');
+  const setupHost = el('div');
   const weekHost = el('div');
   const platformHost = el('div');
   const analyticsHost = el('div');
@@ -1088,7 +1439,7 @@ async function renderHome(view) {
   calendarCard.appendChild(el('h2', { style: 'margin:8px 0 12px;' }, 'Calendar'));
   const calendarHost = el('div');
   calendarCard.appendChild(calendarHost);
-  view.append(attentionHost, weekHost, platformHost, analyticsHost, calendarCard);
+  view.append(attentionHost, setupHost, weekHost, platformHost, analyticsHost, calendarCard);
 
   async function refresh() {
     const [posts, analyticsData, profiles] = await Promise.all([
@@ -1103,6 +1454,7 @@ async function renderHome(view) {
     buildPlatformChipsSection(platformHost, filteredPosts, homeBrand);
     buildMiniAnalyticsSection(analyticsHost, analyticsData, homeBrand);
     await renderCalendarInto(calendarHost, { initialBrand: homeBrand, defaultMode: 'week' });
+    buildSetupCard(setupHost); // F6: independent of the homeBrand filter (always all brands), fire-and-forget so it doesn't block first paint
   }
 
   brandSelect.onchange = () => {
@@ -1120,6 +1472,29 @@ function rescheduleToDateKeepingTime(originalIso, newDateKey) {
   const dt = originalIso ? new Date(originalIso) : new Date();
   dt.setFullYear(y, m - 1, d);
   return dt.toISOString();
+}
+
+// F3: drag mime type for an idea-card drop onto a calendar day cell - kept
+// distinct from the plain 'text/plain' postId the existing chip-reschedule
+// drag uses, so the two drag kinds never get confused in the drop handler.
+const IDEA_DRAG_MIME = 'application/x-postdeck-idea';
+
+// F3: idea -> Quick Compose prefill, shared by the calendar drag-drop and the
+// idea card's "Use in post" button. `dateKey` (YYYY-MM-DD) is only present on
+// a calendar drop - the button omits it and just seeds the copy/brand as
+// usual (no date context to prefill). idea.id rides along so the Quick
+// Compose save path can flip the idea to 'done' once the post is created.
+function composeFromIdea(idea, dateKey) {
+  const sticky = getStickyBrand();
+  const brandId = idea.brand_id != null
+    ? idea.brand_id
+    : (sticky && state.brands.some((b) => String(b.id) === String(sticky)) ? sticky : null);
+  openQuickCompose({
+    brandId,
+    copy: idea.title || '',
+    publishAt: dateKey ? `${dateKey}T09:00` : undefined,
+    ideaId: idea.id,
+  });
 }
 
 // Jump to the composer with "Publish at" prefilled to the clicked day (09:00
@@ -1242,6 +1617,16 @@ function drawGrid(grid, posts, mode, refDate) {
     dayCell.addEventListener('drop', (e) => {
       e.preventDefault();
       dayCell.classList.remove('drop-target');
+      // F3: an idea-card drop carries its own mime type so it never collides
+      // with the existing chip-reschedule drag (which only ever sets
+      // text/plain) - check it first.
+      const ideaRaw = e.dataTransfer.getData(IDEA_DRAG_MIME);
+      if (ideaRaw) {
+        let idea = null;
+        try { idea = JSON.parse(ideaRaw); } catch { idea = null; }
+        if (idea) composeFromIdea(idea, dateKey);
+        return;
+      }
       const postId = e.dataTransfer.getData('text/plain');
       if (postId && grid.reschedulePost) grid.reschedulePost(postId, dateKey, posts);
     });
@@ -1331,6 +1716,116 @@ function drawGrid(grid, posts, mode, refDate) {
   }
 }
 
+// ---------------- F8: Upcoming agenda view ----------------
+// Pure grouping helper (DOM-free, same style as computeDayPlatformCounts /
+// computeBrandCoverage above): posts -> { unscheduled, days, todayKey }.
+// `days` covers [today, today+13] (14 days), only dates that actually have
+// a post (gap-days are the month view's job, not this one - per spec).
+function computeAgendaGroups(posts, now = new Date()) {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const todayKey = dateKeyLocal(today);
+  const endDate = new Date(today);
+  endDate.setDate(endDate.getDate() + 13);
+  const endKey = dateKeyLocal(endDate);
+
+  const unscheduled = posts
+    .filter((p) => !p.publish_at && p.status === 'draft')
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+  const byDay = {};
+  for (const p of posts) {
+    if (!p.publish_at) continue;
+    const key = p.publish_at.slice(0, 10);
+    if (key < todayKey || key > endKey) continue;
+    (byDay[key] = byDay[key] || []).push(p);
+  }
+  const days = Object.keys(byDay)
+    .sort()
+    .map((key) => ({
+      key,
+      posts: byDay[key].slice().sort((a, b) => new Date(a.publish_at) - new Date(b.publish_at)),
+    }));
+
+  return { unscheduled, days, todayKey };
+}
+
+function agendaDayLabel(key, todayKey) {
+  if (key === todayKey) return 'Today';
+  const [y, m, d] = key.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  const tomorrow = new Date();
+  tomorrow.setHours(0, 0, 0, 0);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (key === dateKeyLocal(tomorrow)) return 'Tomorrow';
+  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+}
+
+function agendaRow(p) {
+  const time = p.publish_at
+    ? new Date(p.publish_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    : '--:--';
+  const row = el(
+    'button',
+    { type: 'button', class: 'agenda-row', title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}` },
+    [
+      platformIcon(p.platform, { size: 14 }),
+      el('span', { class: 'agenda-row-time' }, time),
+      el('span', { class: 'pill', style: `border-left-color:${brandColor(p.brand_id)}` }, brandName(p.brand_id)),
+      el('span', { class: 'agenda-row-copy' }, (p.copy || '(no copy)').split('\n')[0]),
+      el('span', { class: `pill status-${p.status}` }, p.status),
+    ]
+  );
+  row.addEventListener('click', () => openPostPopover(p.id, row));
+  return row;
+}
+
+// Renders the agenda list (respects the calendar's existing brand/platform/tag
+// filters - `posts` is already filtered by the caller). Unscheduled drafts
+// group is collapsed by default; day groups are always expanded.
+function drawAgenda(host, posts) {
+  host.innerHTML = '';
+  const { unscheduled, days, todayKey } = computeAgendaGroups(posts);
+
+  if (unscheduled.length) {
+    const caret = el('span', {}, '▸');
+    const unschedTitle = el(
+      'div',
+      { class: 'agenda-group-title agenda-unscheduled', role: 'button', tabindex: '0' },
+      [caret, ` Unscheduled drafts (${unscheduled.length})`]
+    );
+    const unschedBody = el(
+      'div',
+      { class: 'agenda-group-body' },
+      unscheduled.map((p) => agendaRow(p))
+    );
+    unschedBody.hidden = true; // collapsed by default per spec
+    function toggle() {
+      unschedBody.hidden = !unschedBody.hidden;
+      caret.textContent = unschedBody.hidden ? '▸' : '▾';
+    }
+    unschedTitle.addEventListener('click', toggle);
+    unschedTitle.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    });
+    host.appendChild(el('div', {}, [unschedTitle, unschedBody]));
+  }
+
+  if (!days.length) {
+    host.appendChild(el('div', { class: 'agenda-empty' }, 'Nothing scheduled in the next 14 days.'));
+    return;
+  }
+
+  for (const day of days) {
+    host.appendChild(
+      el('div', {}, [
+        el('div', { class: 'agenda-group-title' }, agendaDayLabel(day.key, todayKey)),
+        el('div', { class: 'agenda-group-body' }, day.posts.map((p) => agendaRow(p))),
+      ])
+    );
+  }
+}
+
 function postChip(p) {
   const draggable = RESCHEDULABLE_STATUSES.includes(p.status);
   // B17a: a post carrying a campaign tag gets its chip's left border colored
@@ -1349,7 +1844,7 @@ function postChip(p) {
       title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}${draggable ? ' (drag to reschedule)' : ''}${tagNames ? ` - tags: ${tagNames}` : ''}`,
       draggable: draggable ? 'true' : 'false',
     },
-    `${p.platform}: ${(p.copy || '(no copy)').slice(0, 24)}`
+    (p.copy || '(no copy)').slice(0, 24)
   );
   if (draggable) {
     chip.addEventListener('dragstart', (e) => {
@@ -1361,14 +1856,304 @@ function postChip(p) {
   }
   const badge = el('span', { class: `pill status-${p.status}`, style: 'margin-left:4px;font-size:9px;' }, p.status);
   chip.appendChild(badge);
-  // Quick-view modal instead of a full-page navigation (keep href for
-  // middle-click / accessibility, but a plain click opens the pop-out).
+  chip.prepend(platformIcon(p.platform, { size: 12 }));
+  // F7a: quick-action popover instead of a full-page navigation (keep href
+  // for middle-click / accessibility, but a plain click opens the pop-out).
+  // "See more" inside the popover reaches the full quick-view modal.
   chip.addEventListener('click', (e) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return; // let new-tab through
     e.preventDefault();
-    openPostModal(p.id);
+    openPostPopover(p.id, chip);
   });
   return chip;
+}
+
+// ---- F4: Duplicate / Copy to brand (shared by the popover and the modal) ----
+// Renders an inline row of brand chip buttons (every brand except the post's
+// current one) into `hostEl`; clicking one calls `onPick(brandId)`. Same
+// "expand a row under the button" pattern the popover's Reschedule uses.
+function renderBrandPickerRow(hostEl, currentBrandId, onPick) {
+  hostEl.innerHTML = '';
+  const targets = state.brands.filter((b) => String(b.id) !== String(currentBrandId));
+  if (!targets.length) {
+    hostEl.appendChild(el('span', { style: 'color:var(--muted);font-size:12px;' }, 'No other brands set up.'));
+    return;
+  }
+  for (const b of targets) {
+    hostEl.appendChild(
+      el('button', { type: 'button', class: 'chip-btn', onclick: () => onPick(b.id) }, b.name)
+    );
+  }
+}
+
+// Duplicates `post` (same brand when brandId is omitted, otherwise a copy-
+// to-brand). POST /api/posts/:id/duplicate already strips publish_at/status
+// history and drops any campaign tag on a cross-brand copy (server-side, F4
+// spec); this just handles the "what happens after": for a cross-brand copy,
+// best-effort re-voice the copy through the target brand's 'business' tone
+// via the existing /api/draft path (grounded on the original copy) - falls
+// back silently to the verbatim copy the backend already carried over if no
+// tone profile exists or AI drafting is unavailable. Then hands the new
+// draft to the post modal so CB can adjust/save it in place - NOT to Quick
+// Compose, which always creates a fresh post on save and would silently
+// produce a third row on top of the original + the duplicate.
+async function duplicatePostFlow(post, { brandId } = {}) {
+  const crossBrand = brandId != null && String(brandId) !== String(post.brand_id);
+  let created;
+  try {
+    created = await api(`/api/posts/${post.id}/duplicate`, {
+      method: 'POST',
+      body: crossBrand ? { brand_id: brandId } : {},
+    });
+  } catch (err) {
+    toast(`Could not duplicate: ${err.message}`, 'error');
+    return;
+  }
+
+  let revoiced = false;
+  if (crossBrand) {
+    try {
+      const tp = await findToneProfileId(brandId, 'business');
+      if (tp) {
+        const draftRes = await api('/api/draft', {
+          method: 'POST',
+          body: {
+            idea_text: post.copy || '',
+            brand_id: Number(brandId),
+            tone_profile_id: tp,
+            platforms: [post.platform],
+            provider: sessionDraftProvider || 'claude',
+          },
+        });
+        const redraft = draftRes.drafts?.[post.platform];
+        if (redraft) {
+          await api(`/api/posts/${created.id}`, { method: 'PATCH', body: { copy: redraft } });
+          created.copy = redraft;
+          revoiced = true;
+        }
+      }
+    } catch {
+      // AI unavailable, no tone profile, or the draft call failed - the
+      // duplicate already carries the verbatim original copy, so this is a
+      // silent no-op rather than an error the operator needs to see.
+    }
+  }
+
+  let msg = crossBrand ? `Copied to ${brandName(brandId)}.` : 'Post duplicated.';
+  if (revoiced) msg = `Copied to ${brandName(brandId)} - re-voiced with AI.`;
+  if (created.account_unresolved) msg += ' No matching account for that brand yet - pick one before approving.';
+  toast(msg, created.account_unresolved ? 'error' : 'ok');
+  if (typeof currentCalendarReload === 'function') currentCalendarReload();
+  openPostModal(created.id);
+}
+
+// ---- F7: compact anchored popover opened from a calendar chip or agenda row ----
+// Quick actions (reschedule / move to drafts / delete-or-cancel) without the
+// full modal; "See more" hands off to openPostModal for the full view/edit.
+// One popover open at a time; Esc/click-outside closes it.
+let currentPostPopover = null;
+
+function closePostPopover() {
+  if (!currentPostPopover) return;
+  const { overlay, onKey, onOutside } = currentPostPopover;
+  overlay.remove();
+  document.removeEventListener('keydown', onKey);
+  document.removeEventListener('mousedown', onOutside, true);
+  currentPostPopover = null;
+}
+
+// Anchors the popover near `anchorEl`, flipping above/left when it would
+// overflow the viewport. Called once on open and again after the reschedule
+// row expands (its height changes the ideal position).
+function positionPostPopover(pop, anchorEl) {
+  const rect = anchorEl.getBoundingClientRect();
+  const margin = 8;
+  const pw = pop.offsetWidth;
+  const ph = pop.offsetHeight;
+  let left = rect.left;
+  let top = rect.bottom + margin;
+  if (top + ph > window.innerHeight - margin) {
+    top = rect.top - ph - margin;
+    if (top < margin) top = margin;
+  }
+  if (left + pw > window.innerWidth - margin) left = window.innerWidth - pw - margin;
+  if (left < margin) left = margin;
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+}
+
+function openPostPopover(postId, anchorEl, { onChange } = {}) {
+  closePostPopover();
+
+  const pop = el('div', { class: 'chip-popover', role: 'dialog' });
+  pop.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'Loading…'));
+  document.body.appendChild(pop);
+  positionPostPopover(pop, anchorEl);
+
+  function onKey(e) { if (e.key === 'Escape') closePostPopover(); }
+  function onOutside(e) { if (!pop.contains(e.target) && e.target !== anchorEl && !anchorEl.contains?.(e.target)) closePostPopover(); }
+  document.addEventListener('keydown', onKey);
+  // Defer registration so the same click that opened the popover (which is
+  // still bubbling) doesn't immediately close it via onOutside.
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+  currentPostPopover = { overlay: pop, onKey, onOutside };
+
+  function refresh() {
+    if (typeof onChange === 'function') onChange();
+    else if (typeof currentCalendarReload === 'function') currentCalendarReload();
+  }
+
+  api(`/api/posts/${postId}`)
+    .then((post) => {
+      pop.innerHTML = '';
+      const brand = state.brands.find((b) => b.id === post.brand_id);
+      const copyLines = (post.copy || '(no copy)').split('\n').slice(0, 3).join('\n');
+
+      pop.appendChild(
+        el('div', { class: 'chip-popover-header' }, [
+          platformIcon(post.platform, { size: 15 }),
+          el('span', { class: 'chip-popover-platform' }, ` ${post.platform}`),
+          el('button', { class: 'button ghost sm modal-close', type: 'button', title: 'Close', onclick: closePostPopover }, '✕'),
+        ])
+      );
+      pop.appendChild(
+        el('div', { class: 'chip-popover-meta' }, [
+          el('span', { class: 'pill', style: `border-left-color:${brandColor(post.brand_id)}` }, brand ? brand.name : brandName(post.brand_id)),
+          el('span', { class: `pill status-${post.status}` }, post.status),
+        ])
+      );
+      pop.appendChild(el('div', { class: 'chip-popover-date' }, fmtDate(post.publish_at)));
+      pop.appendChild(el('div', { class: 'chip-popover-copy' }, copyLines));
+
+      const actions = el('div', { class: 'chip-popover-actions' });
+
+      // Reschedule - hidden for submitted/published (mirrors RESCHEDULABLE_STATUSES).
+      if (RESCHEDULABLE_STATUSES.includes(post.status)) {
+        const rescheduleRow = el('div', { class: 'chip-popover-reschedule', hidden: true });
+        const dtInput = el('input', { type: 'datetime-local', value: isoToLocalInput(post.publish_at) });
+        const saveBtn = el('button', { class: 'button primary sm', type: 'button' }, 'Save');
+        rescheduleRow.append(dtInput, saveBtn);
+        const rescheduleBtn = el('button', {
+          class: 'button ghost sm',
+          type: 'button',
+          onclick: () => { rescheduleRow.hidden = !rescheduleRow.hidden; positionPostPopover(pop, anchorEl); },
+        }, 'Reschedule');
+        saveBtn.onclick = async () => {
+          try {
+            const publish_at = dtInput.value ? new Date(dtInput.value).toISOString() : null;
+            await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { publish_at } });
+            toast('Post rescheduled.');
+            closePostPopover();
+            refresh();
+          } catch (err) {
+            toast(`Could not reschedule: ${err.message}`, 'error');
+          }
+        };
+        actions.append(rescheduleBtn, rescheduleRow);
+      }
+
+      // Move to drafts - only for approved/scheduled_local.
+      if (['approved', 'scheduled_local'].includes(post.status)) {
+        actions.appendChild(
+          el('button', {
+            class: 'button ghost sm',
+            type: 'button',
+            onclick: async () => {
+              try {
+                await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { status: 'draft', publish_at: null } });
+                toast('Moved to drafts.');
+                closePostPopover();
+                refresh();
+              } catch (err) {
+                toast(`Could not move to drafts: ${err.message}`, 'error');
+              }
+            },
+          }, 'Move to drafts')
+        );
+      }
+
+      // Delete (draft/canceled, hard delete) or Cancel post (scheduled/approved).
+      if (['draft', 'canceled'].includes(post.status)) {
+        actions.appendChild(
+          el('button', {
+            class: 'button destructive sm',
+            type: 'button',
+            onclick: async () => {
+              if (!confirm('Permanently delete this post? This cannot be undone.')) return;
+              try {
+                await api(`/api/posts/${post.id}`, { method: 'DELETE' });
+                toast('Post deleted.');
+                closePostPopover();
+                refresh();
+              } catch (err) {
+                toast(`Could not delete: ${err.message}`, 'error');
+              }
+            },
+          }, 'Delete')
+        );
+      } else if (['approved', 'scheduled_local'].includes(post.status)) {
+        actions.appendChild(
+          el('button', {
+            class: 'button destructive sm',
+            type: 'button',
+            onclick: async () => {
+              if (!confirm('Cancel this post?')) return;
+              try {
+                await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { status: 'canceled' } });
+                toast('Post canceled.');
+                closePostPopover();
+                refresh();
+              } catch (err) {
+                toast(`Could not cancel: ${err.message}`, 'error');
+              }
+            },
+          }, 'Cancel post')
+        );
+      }
+
+      // F4: Duplicate (same brand) + Copy to brand -> (expandable brand chip
+      // row, mirrors the Reschedule row's expand pattern above).
+      actions.appendChild(
+        el('button', {
+          class: 'button ghost sm',
+          type: 'button',
+          onclick: () => { closePostPopover(); duplicatePostFlow(post); },
+        }, 'Duplicate')
+      );
+      const copyToBrandRow = el('div', { class: 'chip-row', hidden: true, style: 'margin-top:6px;' });
+      actions.appendChild(
+        el('button', {
+          class: 'button ghost sm',
+          type: 'button',
+          onclick: () => {
+            copyToBrandRow.hidden = !copyToBrandRow.hidden;
+            if (!copyToBrandRow.hidden) {
+              renderBrandPickerRow(copyToBrandRow, post.brand_id, (targetBrandId) => {
+                closePostPopover();
+                duplicatePostFlow(post, { brandId: targetBrandId });
+              });
+            }
+            positionPostPopover(pop, anchorEl);
+          },
+        }, 'Copy to brand →')
+      );
+      actions.appendChild(copyToBrandRow);
+
+      actions.appendChild(
+        el('button', {
+          class: 'button ghost sm',
+          type: 'button',
+          onclick: () => { closePostPopover(); openPostModal(post.id); },
+        }, 'See more')
+      );
+
+      pop.appendChild(actions);
+      positionPostPopover(pop, anchorEl);
+    })
+    .catch((err) => {
+      pop.innerHTML = '';
+      pop.appendChild(inlineBanner(`Could not load post: ${err.message}`, 'error'));
+    });
 }
 
 // ---- Quick-view / edit modal (opened from a calendar chip) ----
@@ -1403,7 +2188,8 @@ function openPostModal(postId) {
       card.appendChild(
         el('div', { class: 'modal-header' }, [
           el('div', {}, [
-            el('strong', {}, post.platform),
+            platformIcon(post.platform, { size: 15 }),
+            el('strong', {}, ` ${post.platform}`),
             ' ',
             el('span', { class: `pill status-${post.status}` }, post.status),
           ]),
@@ -1428,14 +2214,24 @@ function openPostModal(postId) {
         card.appendChild(el('div', { style: 'margin-top:10px;font-size:12px;color:var(--muted);' }, `Publish at: ${fmtDate(post.publish_at)}`));
       }
 
+      // F1: feed preview replaces the plain copy display - raw text stays
+      // reachable via the editable textarea when the post is still local.
+      const brand = state.brands.find((b) => b.id === post.brand_id);
+      const mediaUrl = post.media && post.media.length ? (post.media[0].url || null) : null;
+      const previewHost = el('div', { style: 'margin-top:8px;' });
+      previewHost.appendChild(renderPostPreview(post.platform, { copy: post.copy || '', mediaUrl, brand }));
+      card.appendChild(previewHost);
+
       // Copy (editable while local; read-only once submitted/published)
       let copyArea = null;
       if (editable) {
         copyArea = el('textarea', { rows: '8', style: 'width:100%;' });
         copyArea.value = post.copy || '';
-        card.appendChild(el('div', { class: 'field-row', style: 'margin-top:8px;' }, [el('label', {}, 'Copy'), copyArea]));
-      } else {
-        card.appendChild(el('div', { class: 'modal-copy-ro', style: 'margin-top:8px;white-space:pre-wrap;' }, post.copy || '(no copy)'));
+        copyArea.addEventListener('input', () => {
+          previewHost.innerHTML = '';
+          previewHost.appendChild(renderPostPreview(post.platform, { copy: copyArea.value, mediaUrl, brand }));
+        });
+        card.appendChild(el('div', { class: 'field-row', style: 'margin-top:8px;' }, [el('label', {}, 'Copy (raw text)'), copyArea]));
       }
 
       if (post.public_url) {
@@ -1485,14 +2281,903 @@ function openPostModal(postId) {
         actions.appendChild(saveBtn);
       }
 
+      // F4: Duplicate (same brand) + Copy to brand -> (chip row toggled
+      // below the action bar, same expand pattern as the popover's).
+      actions.appendChild(
+        el('button', {
+          class: 'button ghost md',
+          type: 'button',
+          onclick: () => { close(); duplicatePostFlow(post); },
+        }, 'Duplicate')
+      );
+      const copyToBrandRow = el('div', { class: 'chip-row', hidden: true, style: 'margin-top:8px;' });
+      actions.appendChild(
+        el('button', {
+          class: 'button ghost md',
+          type: 'button',
+          onclick: () => {
+            copyToBrandRow.hidden = !copyToBrandRow.hidden;
+            if (!copyToBrandRow.hidden) {
+              renderBrandPickerRow(copyToBrandRow, post.brand_id, (targetBrandId) => {
+                close();
+                duplicatePostFlow(post, { brandId: targetBrandId });
+              });
+            }
+          },
+        }, 'Copy to brand →')
+      );
+
       actions.appendChild(el('a', { class: 'button ghost md', href: `#/post/${post.id}`, onclick: close }, 'Open full page →'));
       card.appendChild(actions);
+      card.appendChild(copyToBrandRow);
     })
     .catch((err) => {
       card.innerHTML = '';
       card.appendChild(inlineBanner(`Could not load post: ${err.message}`, 'error'));
       card.appendChild(el('button', { class: 'button secondary md', style: 'margin-top:8px;', onclick: close }, 'Close'));
     });
+}
+
+// ---------------- Image prompt system - shared editor + quick-edit modal ----------------
+// The "system/negative/brand/layout" fields that feed every Codex image
+// handoff (Settings originally owned this outright). `buildImagePromptEditor`
+// is the ONE place that builds the grid + Save/Reload - Settings and the new
+// Composer/Quick-Compose "Edit prompts" modal both call this instead of each
+// keeping their own copy, so there's exactly one save path to the same
+// `image_prompt_*` settings keys (item 4 of the 2026-07-19 feedback pass).
+function buildImagePromptEditor(container, initialSettings = {}) {
+  const promptFields = [
+    ['image_prompt_system', 'System direction', 7],
+    ['image_prompt_negative', 'Negative prompt', 5],
+    ['image_prompt_brand', 'Brand rules', 5],
+    ['image_prompt_layout', 'Layout rules', 5],
+  ];
+  const promptInputs = {};
+  const promptGrid = el('div', { class: 'settings-prompt-grid' });
+  for (const [key, label, rows] of promptFields) {
+    const area = el('textarea', { rows: String(rows), placeholder: label });
+    area.value = initialSettings[key] || '';
+    promptInputs[key] = area;
+    promptGrid.appendChild(el('div', { class: 'field-row' }, [el('label', {}, label), area]));
+  }
+  container.appendChild(promptGrid);
+  const msg = el('div');
+  container.appendChild(
+    el('div', { class: 'toolbar settings-prompt-actions' }, [
+      el('button', {
+        class: 'primary',
+        onclick: async () => {
+          msg.innerHTML = '';
+          try {
+            await api('/api/settings', {
+              method: 'PATCH',
+              body: Object.fromEntries(Object.entries(promptInputs).map(([key, input]) => [key, input.value])),
+            });
+            toast('Image prompt system saved.');
+          } catch (err) {
+            msg.appendChild(inlineBanner(err.message, 'error'));
+          }
+        },
+      }, 'Save image prompts'),
+      el('button', {
+        onclick: async () => {
+          msg.innerHTML = '';
+          try {
+            const fresh = await api('/api/settings');
+            for (const [key] of promptFields) promptInputs[key].value = fresh[key] || '';
+            toast('Reloaded from Settings.');
+          } catch (err) {
+            msg.appendChild(inlineBanner(err.message, 'error'));
+          }
+        },
+      }, 'Reload'),
+    ])
+  );
+  container.appendChild(msg);
+  return { promptFields, promptInputs };
+}
+
+// Quick-edit modal - same fields/save path as Settings' Image prompt system
+// card, opened from a ghost button next to "Request image" so a quick prompt
+// tweak doesn't require leaving the composer.
+function openImagePromptModal() {
+  const overlay = el('div', { class: 'modal-overlay' });
+  const card = el('div', { class: 'modal-card' });
+  overlay.appendChild(card);
+  function close() {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+  card.appendChild(
+    el('div', { class: 'modal-header' }, [
+      el('strong', {}, 'Image prompt system'),
+      el('button', { class: 'modal-close', title: 'Close', type: 'button', onclick: close }, '✕'),
+    ])
+  );
+  card.appendChild(
+    settingsHint('These instructions are included in every Codex image handoff spec. Saving here saves to the same Settings fields.')
+  );
+  api('/api/settings')
+    .then((settings) => buildImagePromptEditor(card, settings))
+    .catch((err) => card.appendChild(inlineBanner(`Could not load settings: ${err.message}`, 'error')));
+}
+
+// ---------------- Quick Compose (FAB modal) ----------------
+// Compact "start a post" dialog: brand -> accounts -> one big copy box with
+// Draft-with-AI right next to it -> media -> schedule -> done in ~15s. This
+// is the FAB's landing spot instead of the full #/composer page (CB's
+// verdict: the full composer "opens up a whole bunch of text" - Quick
+// Compose is the Sprout/Hootsuite-style compact modal). Reuses the composer's
+// own endpoints (no new backend routes): POST /api/posts, /api/draft,
+// /api/posts/:id/queue, /api/best-times, /api/media, /api/image-requests,
+// PATCH /api/posts/:id (status: approved). "Open full composer" hands off to
+// #/composer via sessionStorage (pd_composer_prefill_brand, already read by
+// renderComposer, plus a new pd_composer_qc_prefill key it also reads at
+// mount - see loadForBrand's "Quick Compose hand-off" block).
+function openQuickCompose(prefill = {}) {
+  const overlay = el('div', { class: 'modal-overlay' });
+  const card = el('div', { class: 'modal-card modal-compose' });
+  overlay.appendChild(card);
+
+  function hasUnsavedChanges() {
+    return copyArea.value.trim().length > 0;
+  }
+  function close({ force = false } = {}) {
+    if (!force && hasUnsavedChanges() && !confirm('Discard this post?')) return;
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  card.appendChild(
+    el('div', { class: 'modal-header' }, [
+      el('strong', {}, 'Quick post'),
+      el('button', { class: 'modal-close', title: 'Close', type: 'button', onclick: () => close() }, '✕'),
+    ])
+  );
+
+  let brandId = (prefill.brandId != null ? prefill.brandId : null)
+    || (getStickyBrand() && state.brands.some((b) => String(b.id) === String(getStickyBrand())) ? getStickyBrand() : null)
+    || (state.brands[0] && state.brands[0].id)
+    || null;
+  let selectedAccounts = new Set(prefill.accountIds || []);
+  let attachedImage = null;
+  let currentProvider = sessionDraftProvider || 'claude';
+  let mediaFiles = [];
+  // F3: idea-drag/"Use in post" handoff - once a post is actually created
+  // from this compose session, flip the source idea to 'done' (IDEA_STATUSES'
+  // terminal "used" state) so it drops off the board's active columns.
+  const prefillIdeaId = prefill.ideaId || null;
+  // Returns true when the idea was actually flipped (so callers can fold
+  // "Idea used." into their own single toast - toast() replaces the last one
+  // rather than stacking, so two separate calls in a row would just lose
+  // the first message).
+  async function markIdeaUsedIfNeeded() {
+    if (!prefillIdeaId) return false;
+    try {
+      await api(`/api/ideas/${prefillIdeaId}`, { method: 'PATCH', body: { status: 'done' } });
+      return true;
+    } catch {
+      return false; // best-effort - the post was still created either way
+    }
+  }
+
+  const brandChipRow = el('div', { class: 'chip-row' });
+  const accountChipRow = el('div', { class: 'chip-row' });
+  const charCountEl = el('div', { class: 'char-count' });
+  const foldCountEl = el('div', { class: 'fold-count' });
+  const previewToggleBtn = el('button', { class: 'button ghost sm', type: 'button' }, 'Preview');
+  const previewHost = el('div', { class: 'feed-preview-host', style: 'margin-top:8px;' });
+  let previewOpen = false;
+  let previewDebounce = null;
+  const toneSelect = el(
+    'select',
+    { class: 'sm' },
+    ['business', 'personal', 'casual'].map((t) => el('option', { value: t }, t))
+  );
+  const aiMsg = el('div');
+  const draftBtn = el('button', { class: 'button primary sm', type: 'button' }, 'Draft with AI');
+  const copyArea = el('textarea', { rows: '6', placeholder: "What's the post about…", id: 'qc-copy-area' });
+  autosizeTextarea(copyArea);
+  copyArea.addEventListener('input', updateCharCount);
+
+  const imageSelect = el('select', { class: 'sm' }, [el('option', { value: '' }, '(no image)')]);
+  const imageReqBtn = el('button', { class: 'button secondary sm', type: 'button' }, 'Request image (Codex)');
+  const imageStatus = el('div', { class: 'hint', style: 'color:var(--muted);font-size:12px;' });
+
+  const publishAtInput = el('input', { type: 'datetime-local', class: 'sm' });
+  const bestTimeHost = el('div', { class: 'best-time-host' });
+  const queueBtn = el('button', { class: 'button secondary sm', type: 'button' }, 'Add to queue');
+  const scheduleMsg = el('div');
+
+  const saveBtn = el('button', { class: 'button primary md', type: 'button' }, 'Save draft');
+  const saveApproveBtn = el('button', { class: 'button secondary md', type: 'button' }, 'Save & approve');
+  const openFullBtn = el('button', { class: 'button ghost md', type: 'button' }, 'Open full composer →');
+  const actionMsg = el('div');
+
+  function currentAccounts() {
+    return state.accounts.filter((a) => String(a.brand_id) === String(brandId));
+  }
+  function selectedPlatforms() {
+    const accounts = currentAccounts();
+    return [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
+  }
+  function mostRestrictiveLimit() {
+    const limits = selectedPlatforms().map((p) => textLimitFor(p)).filter((n) => n != null);
+    return limits.length ? Math.min(...limits) : null;
+  }
+  // F1: the fold counter tracks whichever selected platform folds soonest
+  // (most restrictive), matching mostRestrictiveLimit's approach for the
+  // hard char limit above it.
+  function mostRestrictiveFoldPlatform() {
+    const platforms = selectedPlatforms();
+    let best = null;
+    for (const p of platforms) {
+      const f = foldCharsFor(p);
+      if (f == null) continue;
+      if (best == null || f < best.fold) best = { platform: p, fold: f };
+    }
+    return best;
+  }
+  function updateCharCount() {
+    const limit = mostRestrictiveLimit();
+    if (limit == null) { charCountEl.textContent = ''; charCountEl.classList.remove('over'); }
+    else {
+      charCountEl.textContent = `${copyArea.value.length} / ${limit}`;
+      charCountEl.classList.toggle('over', copyArea.value.length > limit);
+    }
+    const best = mostRestrictiveFoldPlatform();
+    foldCountEl.className = 'fold-count';
+    if (!best) { foldCountEl.textContent = ''; }
+    else {
+      const state2 = foldCounterState(copyArea.value, best.fold);
+      foldCountEl.textContent = state2.text ? `${state2.text} (${best.platform})` : '';
+      if (state2.cls) foldCountEl.classList.add(state2.cls);
+    }
+    scheduleLivePreview();
+  }
+  function scheduleLivePreview() {
+    if (!previewOpen) return;
+    clearTimeout(previewDebounce);
+    previewDebounce = setTimeout(renderQcPreview, 200);
+  }
+  function renderQcPreview() {
+    previewHost.innerHTML = '';
+    if (!previewOpen) return;
+    const platforms = selectedPlatforms();
+    const platform = platforms[0];
+    if (!platform) {
+      previewHost.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'Pick an account to preview.'));
+      return;
+    }
+    const brand = state.brands.find((b) => String(b.id) === String(brandId));
+    const mediaUrl = attachedImage ? (mediaFiles.find((f) => f.path === attachedImage.path)?.url || null) : null;
+    previewHost.appendChild(renderPostPreview(platform, { copy: copyArea.value, mediaUrl, brand }));
+  }
+  previewToggleBtn.addEventListener('click', () => {
+    previewOpen = !previewOpen;
+    previewToggleBtn.classList.toggle('active-tag', previewOpen);
+    if (previewOpen) renderQcPreview();
+    else previewHost.innerHTML = '';
+  });
+
+  function renderBrandChips() {
+    brandChipRow.innerHTML = '';
+    for (const b of state.brands) {
+      const active = String(b.id) === String(brandId);
+      brandChipRow.appendChild(
+        el('button', {
+          type: 'button',
+          class: 'chip-btn' + (active ? ' active-tag' : ''),
+          onclick: () => {
+            if (String(brandId) === String(b.id)) return;
+            brandId = b.id;
+            setStickyBrand(b.id);
+            selectedAccounts = new Set();
+            renderBrandChips();
+            renderAccountChips();
+            renderMedia();
+            updateCharCount();
+            updateBestTime();
+          },
+        }, b.name)
+      );
+    }
+  }
+
+  function renderAccountChips() {
+    accountChipRow.innerHTML = '';
+    const accounts = currentAccounts();
+    if (!accounts.length) {
+      accountChipRow.appendChild(
+        el('span', { style: 'color:var(--muted);font-size:12px;' }, 'No accounts for this brand yet - add one in the full composer.')
+      );
+      return;
+    }
+    for (const a of accounts) {
+      const active = selectedAccounts.has(a.id);
+      const manual = isManualAccount(a);
+      accountChipRow.appendChild(
+        el('button', {
+          type: 'button',
+          class: 'chip-btn' + (active ? ' active-tag' : ''),
+          onclick: () => {
+            if (active) selectedAccounts.delete(a.id);
+            else selectedAccounts.add(a.id);
+            renderAccountChips();
+            updateCharCount();
+            updateBestTime();
+          },
+        }, [platformIcon(a.platform, { size: 13 }), ` ${a.platform}${manual ? ' (manual)' : ''}`])
+      );
+    }
+  }
+
+  async function renderMedia() {
+    imageSelect.innerHTML = '';
+    imageSelect.appendChild(el('option', { value: '' }, '(no image)'));
+    attachedImage = null;
+    mediaFiles = await api('/api/media').catch(() => []);
+    for (const f of mediaFiles.filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f.filename))) {
+      imageSelect.appendChild(el('option', { value: f.path }, f.filename));
+    }
+  }
+  imageSelect.onchange = () => {
+    const f = mediaFiles.find((x) => x.path === imageSelect.value);
+    attachedImage = f ? { path: f.path, altText: '' } : null;
+    scheduleLivePreview();
+  };
+
+  let bestTimeToken = 0;
+  function updateBestTime() {
+    const accounts = currentAccounts();
+    const firstAcct = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).find(Boolean);
+    const myToken = ++bestTimeToken;
+    renderBestTimeHint(bestTimeHost, {
+      brandId,
+      platform: firstAcct?.platform,
+      guard: { stale: () => myToken !== bestTimeToken },
+      onApplyIso: (val) => { publishAtInput.value = val; },
+    });
+  }
+
+  draftBtn.addEventListener('click', async () => {
+    aiMsg.innerHTML = '';
+    const platforms = selectedPlatforms();
+    if (!platforms.length) {
+      aiMsg.appendChild(inlineBanner('Pick at least one account first.', 'error'));
+      return;
+    }
+    const ideaText = copyArea.value.trim() || 'Write an engaging post';
+    draftBtn.disabled = true;
+    draftBtn.classList.add('is-pending');
+    draftBtn.textContent = 'Drafting…';
+    try {
+      const tp = await findToneProfileId(brandId, toneSelect.value).catch(() => null);
+      const result = await api('/api/draft', {
+        method: 'POST',
+        body: { idea_text: ideaText, brand_id: Number(brandId), tone_profile_id: tp, platforms, provider: currentProvider },
+      });
+      const draft = result.drafts?.[platforms[0]];
+      if (draft) {
+        copyArea.value = draft;
+        updateCharCount();
+        aiMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft applied - edit freely, or open the full composer for per-platform variants.'));
+      } else {
+        aiMsg.appendChild(inlineBanner('No draft returned.', 'error'));
+      }
+    } catch (err) {
+      if (err.status === 503) {
+        aiMsg.appendChild(
+          inlineBanner(`AI drafting unavailable - log in to the AI provider from the full composer's AI panel. (${err.message})`, 'error')
+        );
+      } else {
+        aiMsg.appendChild(inlineBanner(`AI drafting unavailable: ${err.message}`, 'error'));
+      }
+    } finally {
+      draftBtn.disabled = false;
+      draftBtn.classList.remove('is-pending');
+      draftBtn.textContent = 'Draft with AI';
+    }
+  });
+
+  imageReqBtn.addEventListener('click', async () => {
+    imageStatus.textContent = '';
+    const platforms = selectedPlatforms();
+    if (!platforms.length) { imageStatus.textContent = 'Pick at least one account first.'; return; }
+    imageReqBtn.disabled = true;
+    try {
+      await api('/api/image-requests', {
+        method: 'POST',
+        body: { brand_id: Number(brandId), platforms, content_type: null, copy: copyArea.value, variant_count: 1, hints: {} },
+      });
+      imageStatus.textContent = 'Waiting on Codex - run the image handoff to generate this (see Images tab).';
+    } catch (err) {
+      imageStatus.textContent = `Could not request image: ${err.message}`;
+    } finally {
+      imageReqBtn.disabled = false;
+    }
+  });
+
+  async function createPosts(publishAtOverride) {
+    const accounts = currentAccounts();
+    const targets = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).filter(Boolean);
+    if (!targets.length) return [];
+    const media = attachedImage ? [{ path: attachedImage.path, altText: attachedImage.altText || '' }] : [];
+    const created = [];
+    for (const acct of targets) {
+      const row = await api('/api/posts', {
+        method: 'POST',
+        body: {
+          brand_id: Number(brandId),
+          account_id: acct.id,
+          platform: acct.platform,
+          copy: copyArea.value,
+          platform_fields: {},
+          content_type: null,
+          media,
+          publish_at: publishAtOverride !== undefined
+            ? publishAtOverride
+            : (publishAtInput.value ? new Date(publishAtInput.value).toISOString() : null),
+        },
+      });
+      created.push(row);
+    }
+    return created;
+  }
+
+  saveBtn.addEventListener('click', async () => {
+    actionMsg.innerHTML = '';
+    if (!selectedAccounts.size) { actionMsg.appendChild(inlineBanner('Pick at least one account first.', 'error')); return; }
+    saveBtn.disabled = true;
+    saveBtn.classList.add('is-pending');
+    try {
+      await createPosts();
+      const ideaUsed = await markIdeaUsedIfNeeded();
+      toast(ideaUsed ? 'Draft saved. Idea used.' : 'Draft saved.');
+      close({ force: true });
+      if (typeof currentCalendarReload === 'function') currentCalendarReload();
+    } catch (err) {
+      actionMsg.appendChild(inlineBanner(`Could not save: ${err.message}`, 'error'));
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.classList.remove('is-pending');
+    }
+  });
+
+  saveApproveBtn.addEventListener('click', async () => {
+    actionMsg.innerHTML = '';
+    if (!selectedAccounts.size) { actionMsg.appendChild(inlineBanner('Pick at least one account first.', 'error')); return; }
+    saveApproveBtn.disabled = true;
+    saveApproveBtn.classList.add('is-pending');
+    try {
+      const created = await createPosts();
+      for (const row of created) {
+        await api(`/api/posts/${row.id}`, { method: 'PATCH', body: { status: 'approved' } });
+      }
+      const ideaUsed = await markIdeaUsedIfNeeded();
+      toast(ideaUsed ? 'Saved and approved. Idea used.' : 'Saved and approved.');
+      close({ force: true });
+      if (typeof currentCalendarReload === 'function') currentCalendarReload();
+    } catch (err) {
+      actionMsg.appendChild(inlineBanner(`Could not save & approve: ${err.message}`, 'error'));
+    } finally {
+      saveApproveBtn.disabled = false;
+      saveApproveBtn.classList.remove('is-pending');
+    }
+  });
+
+  queueBtn.addEventListener('click', async () => {
+    scheduleMsg.innerHTML = '';
+    if (!selectedAccounts.size) { scheduleMsg.appendChild(inlineBanner('Pick at least one account first.', 'error')); return; }
+    queueBtn.disabled = true;
+    try {
+      const created = await createPosts(null);
+      const lines = [];
+      let anySucceeded = false;
+      let anyNoSlot = false;
+      for (const post of created) {
+        try {
+          const res = await api(`/api/posts/${post.id}/queue`, { method: 'POST', body: {} });
+          lines.push(`${post.platform}: queued for ${fmtDate(res.publish_at)}`);
+          anySucceeded = true;
+        } catch (err) {
+          if (err.status === 422 && err.data?.error === 'no_open_slot') {
+            lines.push(`${post.platform}: no open queue slots - set one up in Settings`);
+            anyNoSlot = true;
+          } else {
+            lines.push(`${post.platform}: ${err.message}`);
+          }
+        }
+      }
+      // The post(s) themselves were still saved as drafts even if queueing
+      // failed (e.g. no open slot yet) - never close on a silent failure,
+      // or the operator loses track of what happened to their draft.
+      scheduleMsg.appendChild(
+        el('div', { class: `msg-banner ${anySucceeded ? 'msg-ok' : 'msg-error'}` }, lines.join(' · '))
+      );
+      if (anyNoSlot) {
+        scheduleMsg.appendChild(
+          el('div', {}, [el('a', { href: '#/settings', onclick: () => close({ force: true }) }, 'Set up a queue slot in Settings')])
+        );
+      }
+      if (anySucceeded) {
+        const ideaUsed = await markIdeaUsedIfNeeded();
+        toast(ideaUsed ? 'Added to queue. Idea used.' : 'Added to queue.');
+        close({ force: true });
+        if (typeof currentCalendarReload === 'function') currentCalendarReload();
+      } else {
+        toast('Draft saved, but could not queue.', 'error');
+      }
+    } catch (err) {
+      scheduleMsg.appendChild(inlineBanner(`Could not queue: ${err.message}`, 'error'));
+    } finally {
+      queueBtn.disabled = false;
+    }
+  });
+
+  openFullBtn.addEventListener('click', () => {
+    if (brandId) sessionStorage.setItem('pd_composer_prefill_brand', brandId);
+    else sessionStorage.removeItem('pd_composer_prefill_brand');
+    sessionStorage.setItem(
+      'pd_composer_qc_prefill',
+      JSON.stringify({ copy: copyArea.value, account_ids: [...selectedAccounts] })
+    );
+    close({ force: true });
+    location.hash = '#/composer';
+  });
+
+  card.append(
+    el('div', { class: 'field-row', style: 'margin-top:10px;' }, [el('label', {}, 'Brand'), brandChipRow]),
+    el('div', { class: 'field-row', style: 'margin-top:8px;' }, [el('label', {}, 'Post to'), accountChipRow]),
+    el('div', { class: 'qc-copy-row', style: 'margin-top:10px;' }, [
+      el('div', { class: 'toolbar qc-copy-toolbar' }, [
+        el('label', {}, 'Tone'),
+        toneSelect,
+        draftBtn,
+        previewToggleBtn,
+        charCountEl,
+      ]),
+      foldCountEl,
+      copyArea,
+      previewHost,
+      aiMsg,
+    ]),
+    el('div', { class: 'field-row', style: 'margin-top:8px;' }, [
+      el('label', {}, 'Image'),
+      el('div', { class: 'qc-inline-controls' }, [
+        imageSelect,
+        imageReqBtn,
+        el('button', { class: 'button ghost sm', type: 'button', onclick: openImagePromptModal }, 'Edit prompts'),
+      ]),
+    ]),
+    imageStatus,
+    el('div', { class: 'field-row', style: 'margin-top:8px;' }, [
+      el('label', {}, 'Publish at'),
+      el('div', { class: 'qc-inline-controls' }, [publishAtInput, queueBtn]),
+    ]),
+    bestTimeHost,
+    scheduleMsg,
+    actionMsg,
+    el('div', { class: 'toolbar qc-action-bar' }, [openFullBtn, saveApproveBtn, saveBtn])
+  );
+
+  if (prefill.copy) copyArea.value = prefill.copy;
+  if (prefill.publishAt) publishAtInput.value = prefill.publishAt;
+  renderBrandChips();
+  renderAccountChips();
+  renderMedia();
+  updateCharCount();
+  updateBestTime();
+
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+  setTimeout(() => copyArea.focus(), 0);
+}
+
+// ---------------- Review mode (F2) ----------------
+// Batch approval for AI-drafted posts: one draft at a time, full F1 preview,
+// act, next. Queue = status:'draft' posts (brand-filtered by the same sticky
+// brand chip row Quick Compose/Home use), oldest first. No new backend
+// endpoints beyond the F2 hard-delete (DELETE /api/posts/:id) - approve/skip
+// reuse the existing PATCH /api/posts/:id + POST /api/posts/:id/queue paths,
+// so the approve-gate (TikTok field check, UTM append) fires exactly as it
+// does everywhere else.
+async function renderReview(view) {
+  view.innerHTML = '';
+  view.classList.add('view-default');
+
+  let reviewBrand = getStickyBrand();
+  let queue = [];
+  let originalTotal = 0;
+  let approvedCount = 0;
+  let skippedCount = 0;
+  let trashedCount = 0;
+  let currentCopyArea = null; // for the 'E' shortcut to focus
+
+  const brandChipRow = el('div', { class: 'chip-row' });
+  view.appendChild(pageHeader('Review', brandChipRow));
+
+  const body = el('div', { class: 'review-body' });
+  view.appendChild(body);
+
+  function processed() {
+    return approvedCount + skippedCount + trashedCount;
+  }
+
+  function renderBrandChips() {
+    brandChipRow.innerHTML = '';
+    brandChipRow.appendChild(
+      el('button', {
+        type: 'button',
+        class: 'chip-btn' + (!reviewBrand ? ' active-tag' : ''),
+        onclick: () => { if (!reviewBrand) return; reviewBrand = ''; setStickyBrand(''); load(); },
+      }, 'All brands')
+    );
+    for (const b of state.brands) {
+      brandChipRow.appendChild(
+        el('button', {
+          type: 'button',
+          class: 'chip-btn' + (String(reviewBrand) === String(b.id) ? ' active-tag' : ''),
+          onclick: () => {
+            if (String(reviewBrand) === String(b.id)) return;
+            reviewBrand = b.id;
+            setStickyBrand(b.id);
+            load();
+          },
+        }, b.name)
+      );
+    }
+  }
+
+  async function load() {
+    renderBrandChips();
+    body.innerHTML = '<p style="color:var(--muted)">Loading…</p>';
+    const qs = reviewBrand ? `?status=draft&brand=${encodeURIComponent(reviewBrand)}` : '?status=draft';
+    const posts = await api(`/api/posts${qs}`);
+    queue = posts.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    originalTotal = queue.length;
+    approvedCount = 0;
+    skippedCount = 0;
+    trashedCount = 0;
+    renderCurrent();
+  }
+
+  function renderCurrent() {
+    body.innerHTML = '';
+    currentCopyArea = null;
+
+    if (!queue.length) {
+      if (originalTotal === 0) {
+        body.appendChild(
+          emptyState('No drafts to review', 'Open Quick Compose', () => openQuickCompose(reviewBrand ? { brandId: reviewBrand } : {}))
+        );
+      } else {
+        const parts = [`${approvedCount} approved`, `${skippedCount} skipped`];
+        if (trashedCount) parts.push(`${trashedCount} trashed`);
+        body.appendChild(
+          el('div', { class: 'card review-summary' }, [
+            el('h2', {}, 'All done'),
+            el('div', {}, parts.join(', ') + '.'),
+            el('div', { class: 'toolbar', style: 'margin-top:12px;' }, [
+              el('a', { class: 'button primary md', href: '#/home' }, 'Back to Home'),
+            ]),
+          ])
+        );
+      }
+      return;
+    }
+
+    const post = queue[0];
+    const brand = state.brands.find((b) => b.id === post.brand_id);
+    const mediaUrl = post.media && post.media.length ? (post.media[0].url || null) : null;
+
+    const card = el('div', { class: 'card review-card' });
+    card.appendChild(el('div', { class: 'review-progress' }, `${processed() + 1} of ${originalTotal}`));
+    card.appendChild(
+      el('div', { class: 'modal-sub' }, `${brandName(post.brand_id)} · ${post.platform}`)
+    );
+
+    const previewHost = el('div', { style: 'margin-top:8px;' });
+    previewHost.appendChild(renderPostPreview(post.platform, { copy: post.copy || '', mediaUrl, brand }));
+    card.appendChild(previewHost);
+
+    const copyArea = el('textarea', { rows: '8', class: 'review-copy-area' });
+    copyArea.value = post.copy || '';
+    autosizeTextarea(copyArea);
+    copyArea.addEventListener('input', () => {
+      previewHost.innerHTML = '';
+      previewHost.appendChild(renderPostPreview(post.platform, { copy: copyArea.value, mediaUrl, brand }));
+    });
+    card.appendChild(el('div', { class: 'field-row', style: 'margin-top:8px;' }, [el('label', {}, 'Copy'), copyArea]));
+    currentCopyArea = copyArea;
+
+    const publishAtInput = el('input', { type: 'datetime-local', class: 'sm' });
+    if (post.publish_at) publishAtInput.value = isoToLocalInput(post.publish_at);
+    const queueBtn = el('button', { class: 'button secondary sm', type: 'button' }, 'Add to queue');
+    const scheduleMsg = el('div');
+    const bestTimeHost = el('div', { class: 'best-time-host' });
+    const noTimeHint = el('div');
+
+    function updateNoTimeHint() {
+      noTimeHint.innerHTML = '';
+      if (!publishAtInput.value) {
+        noTimeHint.appendChild(inlineBanner('No time set - it will not auto-post once approved.', 'info'));
+      }
+    }
+    publishAtInput.addEventListener('input', updateNoTimeHint);
+    updateNoTimeHint();
+
+    card.appendChild(
+      el('div', { class: 'field-row', style: 'margin-top:8px;' }, [
+        el('label', {}, 'Publish at'),
+        el('div', { class: 'qc-inline-controls' }, [publishAtInput, queueBtn]),
+      ])
+    );
+    card.appendChild(bestTimeHost);
+    card.appendChild(noTimeHint);
+    card.appendChild(scheduleMsg);
+
+    renderBestTimeHint(bestTimeHost, {
+      brandId: post.brand_id,
+      platform: post.platform,
+      onApplyIso: (v) => { publishAtInput.value = v; updateNoTimeHint(); },
+    });
+
+    queueBtn.addEventListener('click', async () => {
+      scheduleMsg.innerHTML = '';
+      queueBtn.disabled = true;
+      try {
+        const res = await api(`/api/posts/${post.id}/queue`, { method: 'POST', body: {} });
+        post.publish_at = res.publish_at;
+        publishAtInput.value = isoToLocalInput(res.publish_at);
+        updateNoTimeHint();
+        toast('Added to queue.');
+      } catch (err) {
+        if (err.status === 422 && err.data?.error === 'no_open_slot') {
+          scheduleMsg.appendChild(inlineBanner('No open queue slots - set one up in Settings.', 'error'));
+        } else {
+          scheduleMsg.appendChild(inlineBanner(`Could not queue: ${err.message}`, 'error'));
+        }
+      } finally {
+        queueBtn.disabled = false;
+      }
+    });
+
+    const actionMsg = el('div');
+    const actionsRow = el('div', { class: 'toolbar review-actions', style: 'margin-top:12px;' });
+
+    async function doApprove(andNext) {
+      actionMsg.innerHTML = '';
+      const body2 = { copy: copyArea.value, status: 'approved' };
+      const newPublishAt = publishAtInput.value ? new Date(publishAtInput.value).toISOString() : null;
+      if (newPublishAt !== (post.publish_at || null)) body2.publish_at = newPublishAt;
+      approveNextBtn.disabled = true;
+      approveBtn.disabled = true;
+      try {
+        await api(`/api/posts/${post.id}`, { method: 'PATCH', body: body2 });
+        approvedCount++;
+        toast('Approved.');
+        if (typeof currentCalendarReload === 'function') currentCalendarReload();
+        if (andNext) {
+          queue.shift();
+          renderCurrent();
+        } else {
+          actionMsg.appendChild(inlineBanner('Approved.', 'ok'));
+          actionsRow.innerHTML = '';
+          actionsRow.appendChild(
+            el('button', { class: 'button primary md', type: 'button', onclick: () => { queue.shift(); renderCurrent(); } }, 'Next →')
+          );
+        }
+      } catch (err) {
+        approveNextBtn.disabled = false;
+        approveBtn.disabled = false;
+        if (err.status === 422 && err.data?.error === 'tiktok_fields_missing') {
+          actionMsg.appendChild(inlineBanner(`Missing TikTok fields: ${(err.data.missing || []).join(', ')} - open in composer to fill them in.`, 'error'));
+        } else {
+          actionMsg.appendChild(inlineBanner(`Could not approve: ${err.message}`, 'error'));
+        }
+      }
+    }
+
+    function doSkip() {
+      skippedCount++;
+      queue.shift();
+      renderCurrent();
+    }
+
+    async function doTrash() {
+      if (!confirm('Delete this draft permanently? This cannot be undone.')) return;
+      actionMsg.innerHTML = '';
+      trashBtn.disabled = true;
+      try {
+        await api(`/api/posts/${post.id}`, { method: 'DELETE' });
+        trashedCount++;
+        toast('Deleted.');
+        queue.shift();
+        if (typeof currentCalendarReload === 'function') currentCalendarReload();
+        renderCurrent();
+      } catch (err) {
+        trashBtn.disabled = false;
+        actionMsg.appendChild(inlineBanner(`Could not delete: ${err.message}`, 'error'));
+      }
+    }
+
+    function doOpenComposer() {
+      if (post.brand_id) sessionStorage.setItem('pd_composer_prefill_brand', post.brand_id);
+      else sessionStorage.removeItem('pd_composer_prefill_brand');
+      sessionStorage.setItem(
+        'pd_composer_qc_prefill',
+        JSON.stringify({ copy: copyArea.value, account_ids: post.account_id ? [post.account_id] : [] })
+      );
+      location.hash = '#/composer';
+    }
+
+    const approveNextBtn = el('button', { class: 'button primary md', type: 'button', onclick: () => doApprove(true) }, 'Approve & next');
+    const approveBtn = el('button', { class: 'button secondary md', type: 'button', onclick: () => doApprove(false) }, 'Approve');
+    const skipBtn = el('button', { class: 'button ghost md', type: 'button', onclick: doSkip }, 'Skip');
+    const trashBtn = el('button', { class: 'button destructive md', type: 'button', onclick: doTrash }, 'Trash');
+    const openComposerBtn = el('button', { class: 'button ghost md', type: 'button', onclick: doOpenComposer }, 'Open in composer');
+    actionsRow.append(approveNextBtn, approveBtn, skipBtn, trashBtn, openComposerBtn);
+
+    card.appendChild(actionMsg);
+    card.appendChild(actionsRow);
+    card.appendChild(
+      el('div', { class: 'review-key-hint' }, '? A approve & next · S skip · ← → prev/next · E edit copy · Esc leave editor')
+    );
+
+    body.appendChild(card);
+
+    // Local prev/next (arrow keys) - re-orders the front of the queue so the
+    // operator can glance back without those posts being counted as acted
+    // on. Only meaningful while there's more than one post queued.
+    card._reviewNav = {
+      next: () => { if (queue.length > 1) { queue.push(queue.shift()); renderCurrent(); } },
+      prev: () => { if (queue.length > 1) { queue.unshift(queue.pop()); renderCurrent(); } },
+    };
+  }
+
+  function keyHandler(e) {
+    if (currentRoute().name !== 'review') return;
+    const active = document.activeElement;
+    const typing = active && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT' || active.isContentEditable);
+    if (typing) {
+      if (e.key === 'Escape') { active.blur(); e.preventDefault(); }
+      return;
+    }
+    const card = body.querySelector('.review-card');
+    if (e.key === 'a' || e.key === 'A') {
+      e.preventDefault();
+      const btn = card && card.querySelector('.review-actions .button.primary');
+      if (btn) btn.click();
+    } else if (e.key === 's' || e.key === 'S') {
+      e.preventDefault();
+      const btn = card && card.querySelectorAll('.review-actions .button.ghost')[0];
+      if (btn) btn.click();
+    } else if (e.key === 'e' || e.key === 'E') {
+      e.preventDefault();
+      if (currentCopyArea) currentCopyArea.focus();
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      if (card && card._reviewNav) card._reviewNav.next();
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (card && card._reviewNav) card._reviewNav.prev();
+    }
+  }
+  function cleanup() {
+    document.removeEventListener('keydown', keyHandler);
+    window.removeEventListener('hashchange', cleanup);
+  }
+  document.addEventListener('keydown', keyHandler);
+  window.addEventListener('hashchange', cleanup);
+
+  await load();
 }
 
 // ---------------- Post detail ----------------
@@ -1502,7 +3187,7 @@ async function renderPostDetail(view, params) {
   const post = await api(`/api/posts/${id}`);
   view.innerHTML = '';
   view.classList.add('view-default');
-  view.appendChild(pageHeader(`Post #${post.id} - ${post.platform}`, el('span', { class: `pill status-${post.status}` }, post.status)));
+  view.appendChild(pageHeader([`Post #${post.id} - `, platformIcon(post.platform, { size: 16 }), ` ${post.platform}`], el('span', { class: `pill status-${post.status}` }, post.status)));
 
   const card = el('div', { class: 'card' });
   card.appendChild(el('div', {}, [el('strong', {}, 'Brand: '), brandName(post.brand_id)]));
@@ -1837,11 +3522,26 @@ async function renderIdeas(view) {
       },
       [...IDEA_STATUSES, 'killed'].map((s) => el('option', { value: s, selected: s === idea.status ? 'selected' : undefined }, s))
     );
-    return el('div', { class: 'idea-card' }, [
+    // F3: drag this idea onto a calendar day to open Quick Compose prefilled
+    // (see composeFromIdea) - "Use in post" is the same prefill without
+    // needing a drag (touch/small screens, or just faster than aiming a
+    // drag at the right day).
+    const useBtn = el(
+      'button',
+      { class: 'button ghost sm', type: 'button', onclick: () => composeFromIdea(idea) },
+      'Use in post'
+    );
+    const card = el('div', { class: 'idea-card', draggable: 'true' }, [
       el('div', {}, idea.title),
       el('div', { class: 'meta' }, `${idea.brand_id ? brandName(idea.brand_id) : 'no brand'}${idea.pillar ? ' · ' + idea.pillar : ''}`),
       select,
+      useBtn,
     ]);
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData(IDEA_DRAG_MIME, JSON.stringify({ id: idea.id, title: idea.title, brand_id: idea.brand_id }));
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+    return card;
   }
 }
 
@@ -2005,6 +3705,20 @@ async function renderComposer(view) {
     }
   }
 
+  // Quick Compose (FAB modal) "Open full composer" hand-off - carries the
+  // in-progress copy + selected accounts over so nothing typed there is
+  // lost. Consumed once, applied in loadForBrand once accounts are known.
+  let qcPrefill = null;
+  const qcRaw = sessionStorage.getItem('pd_composer_qc_prefill');
+  sessionStorage.removeItem('pd_composer_qc_prefill');
+  if (qcRaw) {
+    try {
+      qcPrefill = JSON.parse(qcRaw);
+    } catch {
+      qcPrefill = null;
+    }
+  }
+
   const brandSelect = el('select', {}, [
     el('option', { value: '' }, 'Select brand…'),
     ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
@@ -2051,6 +3765,12 @@ async function renderComposer(view) {
       redraftMatchingAcct = accounts.find((a) => a.platform === pendingRedraft.platform) || null;
       if (redraftMatchingAcct) selectedAccounts.add(redraftMatchingAcct.id);
       redraftData = null; // consume once - a later brand switch shouldn't repeat it
+    }
+    // Quick Compose hand-off: pre-check whichever accounts were selected there.
+    if (qcPrefill && Array.isArray(qcPrefill.account_ids)) {
+      for (const id of qcPrefill.account_ids) {
+        if (accounts.some((a) => a.id === id)) selectedAccounts.add(id);
+      }
     }
     // B12: default the tone dropdown to the brand's saved default tone
     // (settings key brand_<id>_default_tone, set from #/settings) - falls
@@ -2473,6 +4193,7 @@ async function renderComposer(view) {
     }
     refreshAiStatus();
     const ideaInput = el('textarea', { rows: '3', placeholder: 'Idea text…', id: 'ai-idea-input' });
+    autosizeTextarea(ideaInput);
     ideaInput.oninput = () => (ideaText = ideaInput.value);
     if (pendingRedraft && redraftMatchingAcct) {
       // B18b: frame the idea as a repurpose of the proven post, not a copy -
@@ -2751,7 +4472,7 @@ async function renderComposer(view) {
     imageOptsCard.appendChild(
       el('div', { class: 'image-prompt-note' }, [
         el('span', {}, 'Reusable image prompts live in Settings and are included in every Codex handoff.'),
-        el('button', { onclick: () => { location.hash = '#/settings'; } }, 'Edit prompts'),
+        el('button', { class: 'button ghost sm', type: 'button', onclick: openImagePromptModal }, 'Edit prompts'),
       ])
     );
     const variantCountSelect = el(
@@ -2807,7 +4528,7 @@ async function renderComposer(view) {
               },
             });
             imageReqMsg.appendChild(
-              el('div', { class: 'msg-banner msg-ok' }, `Request #${res.id} written - Codex will drop variants into the Images view.`)
+              el('div', { class: 'msg-banner msg-ok' }, `Request #${res.id}: Waiting on Codex - run the image handoff to generate this (see Images tab).`)
             );
           } catch (err) {
             imageReqMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
@@ -2924,7 +4645,7 @@ async function renderComposer(view) {
       if (!currentTab || !platforms.includes(currentTab)) currentTab = platforms[0];
       for (const p of platforms) {
         tabsRow.appendChild(
-          el('button', { class: p === currentTab ? 'active' : '', onclick: () => { currentTab = p; renderPlatformTabs(); updateContentTypeSuggestion(); } }, p)
+          el('button', { class: p === currentTab ? 'active' : '', onclick: () => { currentTab = p; renderPlatformTabs(); updateContentTypeSuggestion(); } }, [platformIcon(p, { size: 13 }), ` ${p}`])
         );
       }
       editorHost.appendChild(platformEditor(currentTab));
@@ -3082,6 +4803,33 @@ async function renderComposer(view) {
       return container;
     }
 
+    // F1: fold counter + collapsible feed-preview shared by every variant
+    // tab (default open per spec). getCopy is re-read on demand so it always
+    // reflects whichever field (textarea/fields.body) backs this platform.
+    function variantPreviewSection(platform, getCopy) {
+      const foldChars = foldCharsFor(platform);
+      const foldLine = el('div', { class: 'fold-count' });
+      const previewBody = el('div', { class: 'feed-preview-host' });
+      const previewCard = el('div', { class: 'card variant-preview-card' }, [el('h2', {}, 'Preview'), previewBody]);
+      makeCollapsible(previewCard, { open: true, key: `variant-preview-${platform}` });
+      function refresh() {
+        const copy = getCopy();
+        if (foldChars != null) {
+          const st = foldCounterState(copy, foldChars);
+          foldLine.className = 'fold-count' + (st.cls ? ` ${st.cls}` : '');
+          foldLine.textContent = st.text;
+        } else {
+          foldLine.textContent = '';
+        }
+        previewBody.innerHTML = '';
+        const brand = state.brands.find((b) => String(b.id) === String(brandId));
+        const mediaUrl = attachedImage ? attachedImage.url || null : null;
+        previewBody.appendChild(renderPostPreview(platform, { copy, mediaUrl, brand }));
+      }
+      refresh();
+      return { foldLine, previewCard, refresh };
+    }
+
     function platformEditor(platform) {
       const fields = platformFieldsByPlatform[platform] || (platformFieldsByPlatform[platform] = {});
       const hintText = platformHint(platform);
@@ -3095,13 +4843,19 @@ async function renderComposer(view) {
           setCopy: (v) => { fields.body = v; renderPlatformTabs(); },
           platform,
         });
-        return el('div', {}, [hint, redditFieldsEditor(fields), assist, examplesPanel(platform)]);
+        const preview = variantPreviewSection(platform, () => fields.body || '');
+        const bodyField = redditFieldsEditor(fields);
+        const bodyArea = bodyField.querySelector ? bodyField.querySelector('textarea') : null;
+        if (bodyArea) bodyArea.addEventListener('input', preview.refresh);
+        return el('div', {}, [hint, bodyField, preview.foldLine, assist, preview.previewCard, examplesPanel(platform)]);
       }
 
       if (platform === 'blog') {
         const bodyArea = el('textarea', { rows: '10', placeholder: 'Body (markdown)' });
+        autosizeTextarea(bodyArea);
         bodyArea.value = draftsByPlatform.blog || '';
-        bodyArea.oninput = () => (draftsByPlatform.blog = bodyArea.value);
+        const preview = variantPreviewSection(platform, () => draftsByPlatform.blog || '');
+        bodyArea.oninput = () => { draftsByPlatform.blog = bodyArea.value; preview.refresh(); };
         const assist = copyAssistPanel({
           getCopy: () => draftsByPlatform.blog || '',
           setCopy: (v) => { draftsByPlatform.blog = v; renderPlatformTabs(); },
@@ -3111,11 +4865,14 @@ async function renderComposer(view) {
           hint,
           blogFieldsEditor(fields, mediaFiles),
           el('div', { class: 'field-row' }, [el('label', {}, 'Body (markdown)'), bodyArea]),
+          preview.foldLine,
           assist,
+          preview.previewCard,
           examplesPanel(platform),
         ]);
       }
       const area = el('textarea', { rows: '8' });
+      autosizeTextarea(area);
       area.value = draftsByPlatform[platform] || '';
       const counter = el('div', { class: 'char-count' });
       function updateCounter() {
@@ -3124,9 +4881,11 @@ async function renderComposer(view) {
         counter.textContent = limit == null ? `${len} chars (no limit)` : `${len} / ${limit}`;
         counter.classList.toggle('over', limit != null && len > limit);
       }
+      const preview = variantPreviewSection(platform, () => draftsByPlatform[platform] || '');
       area.oninput = () => {
         draftsByPlatform[platform] = area.value;
         updateCounter();
+        preview.refresh();
       };
       updateCounter();
       const assist = copyAssistPanel({
@@ -3134,43 +4893,54 @@ async function renderComposer(view) {
         setCopy: (v) => { draftsByPlatform[platform] = v; renderPlatformTabs(); },
         platform,
       });
-      const wrap = el('div', {}, [hint, area, counter, assist]);
+      const wrap = el('div', {}, [hint, area, counter, preview.foldLine, assist]);
       if (platform === 'tiktok') {
         wrap.appendChild(tiktokFieldsEditor(fields));
       }
+      wrap.appendChild(preview.previewCard);
       wrap.appendChild(examplesPanel(platform));
       return wrap;
     }
 
-    // ---- D2 L3 assembly: distribution -> content -> media -> metadata ->
-    // scheduling -> AI tools (grouped in one collapsible). Re-appending an
-    // existing node moves it in the DOM, so this only reorders what's
-    // already been built above - no re-creation, no lost handlers. This
-    // replaces an earlier ad-hoc reorder (images-first, ai/content-type
-    // each separately collapsible) with the Sprout-style compose order from
-    // docs/D2_CONSISTENCY_PASS_SPEC.md L3.
-    makeCollapsible(accountsBox, { open: true, key: 'acct' });
-    makeCollapsible(imageBox, { open: true, key: 'img' });
-    makeCollapsible(contentTypeBox, { open: false, key: 'ctype' });
-    makeCollapsible(publishCard, { open: false, key: 'sched' });
-    const aiToolsCard = el('div', { class: 'card ai-tools-group' }, [
-      el('h2', {}, 'AI tools'),
-      aiBox,
-      imageOptsCard,
-    ]);
-    makeCollapsible(aiToolsCard, { open: false, key: 'composer-ai-tools' });
-    body.append(
-      accountsBox,     // distribution
-      composerBox,      // content (copy editor + per-platform variants)
-      imageBox,         // media
-      contentTypeBox,   // metadata (content type)
-      tagsCard,         // metadata (tags & campaign)
-      publishCard,      // scheduling
-      aiToolsCard       // AI tools, grouped + collapsible
-    );
+    // ---- D2 L3 assembly, revised per CB feedback (2026-07-19): Draft with
+    // AI moved up next to the copy/content editor (was buried at the bottom
+    // inside a collapsed "AI tools" group) - distribution -> AI draft ->
+    // content -> media -> metadata -> scheduling -> image options. Every
+    // section is independently collapsible (all are real `.card`s with an
+    // <h2> first child, so makeCollapsible can wrap each standalone - no
+    // more grouping two unrelated cards into one collapsible shell, which is
+    // why "AI tools" used to swallow Image request options too). All are
+    // draggable; makeSectionsReorderable persists the chosen order under
+    // pd_composer_order and re-applies it on every render (L4).
+    const composerSections = [
+      { key: 'acct', node: accountsBox, open: true },
+      { key: 'ai', node: aiBox, open: true },
+      { key: 'content', node: composerBox, open: true },
+      { key: 'img', node: imageBox, open: true },
+      { key: 'ctype', node: contentTypeBox, open: false },
+      { key: 'tags', node: tagsCard, open: false },
+      { key: 'sched', node: publishCard, open: false },
+      { key: 'imgopts', node: imageOptsCard, open: false },
+    ];
+    for (const s of composerSections) {
+      makeCollapsible(s.node, { open: s.open, key: s.key, draggable: true });
+    }
+    makeSectionsReorderable(body, 'pd_composer_order', composerSections);
     // Sticky action bar so Save/Request are always reachable without scrolling.
     saveRow.classList.add('composer-actionbar');
     body.append(savedMsg, queueMsg, imageReqMsg, saveRow);
+
+    // Quick Compose hand-off: drop the in-progress copy straight into every
+    // selected platform's variant tab (and the idea box, for re-drafting),
+    // then consume it so a later brand switch doesn't repeat it.
+    if (qcPrefill && qcPrefill.copy) {
+      for (const p of new Set(accounts.filter((a) => selectedAccounts.has(a.id)).map((a) => a.platform))) {
+        draftsByPlatform[p] = qcPrefill.copy;
+      }
+      ideaInput.value = qcPrefill.copy;
+      ideaText = qcPrefill.copy;
+      qcPrefill = null;
+    }
 
     renderPlatformTabs();
 
@@ -3386,9 +5156,11 @@ async function renderAnalytics(view) {
     el('option', { value: '' }, 'All (no campaign filter)'),
     ...campaigns.map((c) => el('option', { value: c.id }, c.name)),
   ]);
+  const importBtn = el('button', { class: 'button secondary sm', type: 'button', onclick: () => openMetricsImportModal(() => renderAnalyticsBody(campaignSelect.value)) }, 'Import analytics');
   const analyticsBody = el('div');
-  // R1: title -> actions; campaign filter is the only action, rightmost.
-  view.appendChild(pageHeader('Analytics', el('span', {}, 'Campaign:'), campaignSelect));
+  // R1: title -> actions; export/import next, campaign filter (the only
+  // narrowing filter on this view) rightmost.
+  view.appendChild(pageHeader('Analytics', importBtn, el('span', {}, 'Campaign:'), campaignSelect));
   view.appendChild(analyticsBody);
   campaignSelect.onchange = () => renderAnalyticsBody(campaignSelect.value);
   await renderAnalyticsBody('');
@@ -3428,6 +5200,60 @@ function redraftButton(p) {
   }, 'Redraft');
 }
 
+// Item 6 (2026-07-19 feedback): inline quick-entry for the metrics-due list
+// - impressions/comments/shares mirror the 3 most prominent fields on the
+// full manual metrics form (renderPostDetail's `fields` list starts with
+// impressions/comments/shares; saves/profile_visits/follows/dms/leads stay
+// full-form-only). Enter in any field or the checkmark button both save via
+// the SAME POST /api/posts/:id/metrics route the full form uses - no new
+// endpoint. On success the row is removed from the due list in place and a
+// toast confirms, matching the rest of the app's save feedback pattern.
+function metricsDueRow(p, dueContainer) {
+  const impressionsInput = el('input', { type: 'number', class: 'sm', placeholder: 'impressions', style: 'width:90px;' });
+  const commentsInput = el('input', { type: 'number', class: 'sm', placeholder: 'comments', style: 'width:80px;' });
+  const sharesInput = el('input', { type: 'number', class: 'sm', placeholder: 'shares', style: 'width:70px;' });
+  const rowMsg = el('div', { style: 'font-size:11px;' });
+  const saveBtn = el('button', { class: 'button primary sm', type: 'button', title: 'Save metrics' }, '✓');
+
+  async function save() {
+    const body = {};
+    if (impressionsInput.value !== '') body.impressions = Number(impressionsInput.value);
+    if (commentsInput.value !== '') body.comments = Number(commentsInput.value);
+    if (sharesInput.value !== '') body.shares = Number(sharesInput.value);
+    if (!Object.keys(body).length) {
+      rowMsg.innerHTML = '';
+      rowMsg.appendChild(inlineBanner('Enter at least one value first.', 'error'));
+      return;
+    }
+    saveBtn.disabled = true;
+    try {
+      await api(`/api/posts/${p.id}/metrics`, { method: 'POST', body });
+      toast(`Metrics saved for #${p.id}.`);
+      row.remove();
+    } catch (err) {
+      saveBtn.disabled = false;
+      rowMsg.innerHTML = '';
+      rowMsg.appendChild(inlineBanner(`Could not save: ${err.message}`, 'error'));
+    }
+  }
+  saveBtn.onclick = save;
+  for (const input of [impressionsInput, commentsInput, sharesInput]) {
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+  }
+
+  const row = el('div', { style: 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);' }, [
+    el('div', { style: 'display:flex;flex-direction:column;gap:2px;min-width:180px;' }, [
+      el('a', { href: `#/post/${p.id}` }, [platformIcon(p.platform, { size: 12 }), ` #${p.id} - ${brandName(p.brand_id)} - ${p.platform}`]),
+      el('span', { style: 'color:var(--muted);font-size:11px;' }, `published ${fmtDate(p.updated_at)}`),
+    ]),
+    el('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;' }, [
+      impressionsInput, commentsInput, sharesInput, saveBtn,
+    ]),
+    rowMsg,
+  ]);
+  return row;
+}
+
 function renderAnalyticsSections(view, data) {
   if (data.metrics_due.length) {
     const due = el('div', { class: 'card' });
@@ -3435,12 +5261,7 @@ function renderAnalyticsSections(view, data) {
     due.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;margin-bottom:6px;' },
       'Published posts older than 48h with no metrics entered yet.'));
     for (const p of data.metrics_due) {
-      due.appendChild(
-        el('div', { style: 'display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);' }, [
-          el('a', { href: `#/post/${p.id}` }, `#${p.id} - ${brandName(p.brand_id)} - ${p.platform}`),
-          el('span', { style: 'color:var(--muted);white-space:nowrap;' }, `published ${fmtDate(p.updated_at)}`),
-        ])
-      );
+      due.appendChild(metricsDueRow(p, due));
     }
     due.appendChild(el('div', { style: 'color:var(--muted);font-size:11px;margin-top:8px;text-align:center;' }, `— end of list (${data.metrics_due.length}) —`));
     view.appendChild(due);
@@ -3516,6 +5337,194 @@ function renderAnalyticsSections(view, data) {
     renderTab();
 
     view.appendChild(card);
+  }
+}
+
+// ---------------- Metrics import (item 7, 2026-07-19 feedback) ----------------
+// Analytics -> "Import analytics": platform/brand + a CSV export (LinkedIn or
+// Meta/Facebook) -> POST /api/metrics-import/preview (no writes) -> operator
+// confirms/corrects matches -> POST /api/metrics-import/apply (writes). Both
+// routes already existed server-side (src/metrics-import.js) with no UI.
+function openMetricsImportModal(onApplied) {
+  const overlay = el('div', { class: 'modal-overlay' });
+  const card = el('div', { class: 'modal-card modal-import' });
+  overlay.appendChild(card);
+  function close() {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+
+  card.appendChild(
+    el('div', { class: 'modal-header' }, [
+      el('strong', {}, 'Import analytics'),
+      el('button', { class: 'modal-close', title: 'Close', type: 'button', onclick: close }, '✕'),
+    ])
+  );
+
+  const platformSelect = el('select', {}, [
+    el('option', { value: '' }, 'Select platform…'),
+    ...['linkedin', 'facebook', 'twitter', 'instagram', 'reddit', 'tiktok', 'youtube', 'threads'].map((p) => el('option', { value: p }, p)),
+  ]);
+  const brandSelect = el('select', {}, [
+    el('option', { value: '' }, 'All brands'),
+    ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
+  ]);
+  const fileInput = el('input', { type: 'file', accept: '.csv,text/csv' });
+  const previewBtn = el('button', { class: 'button primary md', type: 'button' }, 'Preview');
+  const formMsg = el('div');
+  card.append(
+    el('div', { class: 'field-row' }, [el('label', {}, 'Platform'), platformSelect]),
+    el('div', { class: 'field-row' }, [el('label', {}, 'Brand'), brandSelect]),
+    el('div', { class: 'field-row' }, [el('label', {}, 'CSV export'), fileInput]),
+    el('div', { style: 'color:var(--muted);font-size:11px;margin:-4px 0 8px;' }, 'Export as CSV from LinkedIn (Analytics -> Content) or Meta Business Suite (Insights -> Export). XLSX is not supported - export/save as CSV.'),
+    el('div', { class: 'toolbar' }, [previewBtn]),
+    formMsg
+  );
+
+  const previewHost = el('div');
+  card.appendChild(previewHost);
+
+  previewBtn.addEventListener('click', async () => {
+    formMsg.innerHTML = '';
+    previewHost.innerHTML = '';
+    if (!platformSelect.value) { formMsg.appendChild(inlineBanner('Pick a platform first.', 'error')); return; }
+    if (!fileInput.files.length) { formMsg.appendChild(inlineBanner('Choose a CSV file first.', 'error')); return; }
+    previewBtn.disabled = true;
+    try {
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+      fd.append('platform', platformSelect.value);
+      if (brandSelect.value) fd.append('brand_id', brandSelect.value);
+      const res = await api('/api/metrics-import/preview', { method: 'POST', body: fd });
+      renderImportPreview(res);
+    } catch (err) {
+      formMsg.appendChild(inlineBanner(`Could not parse file: ${err.message}`, 'error'));
+    } finally {
+      previewBtn.disabled = false;
+    }
+  });
+
+  function renderImportPreview(res) {
+    previewHost.innerHTML = '';
+    previewHost.appendChild(
+      el('div', { style: 'color:var(--muted);font-size:12px;margin:8px 0;' },
+        `${res.total_rows} row(s) parsed, ${res.skipped_rows} skipped (no parseable date).`)
+    );
+    if (!res.matches.length) {
+      previewHost.appendChild(emptyState('No rows to import.'));
+      return;
+    }
+    const table = el('table', { class: 'metrics-import-table' });
+    table.appendChild(
+      el('tr', {}, [
+        el('th', {}, ''),
+        el('th', {}, 'Date'),
+        el('th', {}, 'Metrics'),
+        el('th', {}, 'Matched post'),
+        el('th', {}, 'Confidence'),
+      ])
+    );
+    // Per-row state: whether it's included in the apply, and (for ambiguous
+    // rows) which candidate post the operator picked.
+    const rowStates = res.matches.map((m) => ({
+      match: m,
+      included: m.confidence !== 'none',
+      chosenPostId: m.confidence === 'ambiguous' ? null : m.post_id,
+    }));
+
+    function metricsSummary(row) {
+      const parts = [];
+      for (const f of ['impressions', 'clicks', 'likes', 'comments', 'shares', 'reach', 'results', 'engagement_rate']) {
+        if (row[f] != null && row[f] !== '') parts.push(`${f}: ${row[f]}`);
+      }
+      return parts.join(', ') || '(no metrics parsed)';
+    }
+
+    for (const state_ of rowStates) {
+      const m = state_.match;
+      const checkbox = el('input', { type: 'checkbox' });
+      checkbox.checked = state_.included;
+      checkbox.disabled = m.confidence === 'none' && !m.post_id;
+      checkbox.addEventListener('change', () => { state_.included = checkbox.checked; });
+
+      let matchCell;
+      if (m.confidence === 'ambiguous' && m.candidates?.length) {
+        const candSelect = el('select', {}, [
+          el('option', { value: '' }, 'Pick a post…'),
+          ...m.candidates.map((c) => el('option', { value: c.post_id }, `#${c.post_id} - ${c.post_copy_snippet || '(no copy)'}`)),
+        ]);
+        candSelect.addEventListener('change', () => {
+          state_.chosenPostId = candSelect.value ? Number(candSelect.value) : null;
+          state_.included = !!state_.chosenPostId;
+          checkbox.checked = state_.included;
+        });
+        matchCell = candSelect;
+      } else if (m.post_id) {
+        matchCell = el('span', {}, `#${m.post_id} - ${m.post_copy_snippet || '(no copy)'}`);
+      } else {
+        matchCell = el('span', { style: 'color:var(--muted);' }, m.reason === 'unparseable_date' ? 'no date' : 'no match');
+      }
+
+      const confBadge = el('span', { class: `pill confidence-${m.confidence}` }, m.confidence);
+
+      table.appendChild(
+        el('tr', {}, [
+          el('td', {}, checkbox),
+          el('td', {}, m.row.date || '-'),
+          el('td', { style: 'font-size:12px;' }, metricsSummary(m.row)),
+          el('td', { style: 'font-size:12px;' }, matchCell),
+          el('td', {}, confBadge),
+        ])
+      );
+    }
+    previewHost.appendChild(table);
+
+    const applyMsg = el('div');
+    const applyBtn = el('button', { class: 'button primary md', type: 'button' }, `Apply ${rowStates.filter((s) => s.included).length} rows`);
+    function refreshApplyCount() {
+      applyBtn.textContent = `Apply ${rowStates.filter((s) => s.included && s.chosenPostId).length} rows`;
+    }
+    table.addEventListener('change', refreshApplyCount);
+    refreshApplyCount();
+
+    applyBtn.addEventListener('click', async () => {
+      const decisions = rowStates
+        .filter((s) => s.included && s.chosenPostId)
+        .map((s) => {
+          const row = s.match.row;
+          const metrics = { notes: '' };
+          for (const f of ['impressions', 'comments', 'shares']) {
+            if (row[f] != null && row[f] !== '') metrics[f] = row[f];
+          }
+          const extra = {};
+          for (const f of ['likes', 'clicks', 'reach', 'results', 'engagement_rate']) {
+            if (row[f] != null && row[f] !== '') extra[f] = row[f];
+          }
+          if (Object.keys(extra).length) metrics.extra = extra;
+          return { post_id: s.chosenPostId, metrics };
+        });
+      if (!decisions.length) {
+        applyMsg.innerHTML = '';
+        applyMsg.appendChild(inlineBanner('No confirmed rows to apply - check at least one matched row.', 'error'));
+        return;
+      }
+      applyBtn.disabled = true;
+      try {
+        const res2 = await api('/api/metrics-import/apply', { method: 'POST', body: { decisions } });
+        toast(`Imported ${res2.applied} row(s) of metrics.`);
+        close();
+        if (typeof onApplied === 'function') onApplied();
+      } catch (err) {
+        applyMsg.innerHTML = '';
+        applyMsg.appendChild(inlineBanner(`Could not apply: ${err.message}`, 'error'));
+        applyBtn.disabled = false;
+      }
+    });
+    previewHost.append(el('div', { class: 'toolbar', style: 'margin-top:10px;' }, [applyBtn]), applyMsg);
   }
 }
 
@@ -3816,54 +5825,7 @@ async function renderSettings(view) {
   imagePromptCard.appendChild(
     settingsHint('These instructions are included in every Codex image handoff spec, including Composer, chat agent, and blog redistribution requests.')
   );
-  const promptFields = [
-    ['image_prompt_system', 'System direction', 7],
-    ['image_prompt_negative', 'Negative prompt', 5],
-    ['image_prompt_brand', 'Brand rules', 5],
-    ['image_prompt_layout', 'Layout rules', 5],
-  ];
-  const promptInputs = {};
-  const promptGrid = el('div', { class: 'settings-prompt-grid' });
-  for (const [key, label, rows] of promptFields) {
-    const area = el('textarea', { rows: String(rows), placeholder: label });
-    area.value = settings[key] || '';
-    promptInputs[key] = area;
-    promptGrid.appendChild(el('div', { class: 'field-row' }, [el('label', {}, label), area]));
-  }
-  imagePromptCard.appendChild(promptGrid);
-  const imagePromptMsg = el('div');
-  imagePromptCard.appendChild(
-    el('div', { class: 'toolbar settings-prompt-actions' }, [
-      el('button', {
-        class: 'primary',
-        onclick: async () => {
-          imagePromptMsg.innerHTML = '';
-          try {
-            await api('/api/settings', {
-              method: 'PATCH',
-              body: Object.fromEntries(Object.entries(promptInputs).map(([key, input]) => [key, input.value])),
-            });
-            toast('Image prompt system saved.');
-          } catch (err) {
-            imagePromptMsg.appendChild(inlineBanner(err.message, 'error'));
-          }
-        },
-      }, 'Save image prompts'),
-      el('button', {
-        onclick: async () => {
-          imagePromptMsg.innerHTML = '';
-          try {
-            const fresh = await api('/api/settings');
-            for (const [key] of promptFields) promptInputs[key].value = fresh[key] || '';
-            toast('Reloaded from Settings.');
-          } catch (err) {
-            imagePromptMsg.appendChild(inlineBanner(err.message, 'error'));
-          }
-        },
-      }, 'Reload'),
-    ])
-  );
-  imagePromptCard.appendChild(imagePromptMsg);
+  buildImagePromptEditor(imagePromptCard, settings);
 
   // ---- Per-brand tone tweaks ----
   const brandCard = el('div', { class: 'card settings-section' });
@@ -5070,16 +7032,28 @@ async function renderImages(view) {
     }
     for (const r of reqs) {
       const card = el('div', { class: 'card' });
+      // Item 5 (2026-07-19 feedback): 'requested' is the state right after
+      // firing a request from either composer, before Codex has picked it up
+      // - the raw word "requested" reads as ambiguous/stuck, so it gets a
+      // clearer label here (same wording used in the two composers' success
+      // messages, so the phrase is consistent everywhere it appears).
+      const statusLabel = r.status === 'requested' ? 'Waiting on Codex' : r.status;
       card.appendChild(
         el('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' }, [
           el('strong', {}, `Request #${r.id}`),
-          el('span', { class: `pill status-${r.status}` }, r.status),
+          el('span', { class: `pill status-${r.status}` }, statusLabel),
           el('span', { style: 'color:var(--muted);font-size:12px;' }, (r.platforms || []).join(', ')),
           r.content_type ? el('span', { style: 'color:var(--muted);font-size:12px;' }, r.content_type) : null,
           r.post_id ? el('a', { href: `#/post/${r.post_id}`, style: 'font-size:12px;' }, `→ post #${r.post_id}`) : null,
         ])
       );
       card.appendChild(el('div', { style: 'color:var(--muted);font-size:11px;margin-top:4px;' }, `Created: ${fmtDate(r.created_at)}`));
+      if (r.status === 'requested') {
+        card.appendChild(
+          el('div', { style: 'color:var(--muted);font-size:12px;margin-top:4px;' },
+            'Waiting on Codex - run the image handoff to generate variants for this request (see docs/CODEX_IMAGE_HANDOFF.md).')
+        );
+      }
 
       const brief = r.brief && typeof r.brief === 'object' ? r.brief : null;
       if (brief?.platforms?.length) {
@@ -5388,7 +7362,7 @@ function wireGlobalChrome() {
   const { toggle, close, send, input, fab } = chatEls();
   if (!toggle) return; // defensive - shouldn't happen, index.html always has these
 
-  fab.addEventListener('click', () => { location.hash = '#/composer'; });
+  fab.addEventListener('click', () => { openQuickCompose(); });
   toggle.addEventListener('click', toggleChatDrawer);
   close.addEventListener('click', closeChatDrawer);
   send.addEventListener('click', sendChatMessage);
@@ -5448,5 +7422,258 @@ function wireNavRail() {
   });
 }
 
+// ---------------- F5: keyboard shortcuts + Cmd+K palette ----------------
+
+function isTypingTarget(e) {
+  const t = e.target;
+  if (!t) return false;
+  const tag = t.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
+}
+
+// Subsequence fuzzy match, case-insensitive - a straight substring hit short-
+// circuits (fast path for the common case), a subsequence match covers the
+// rest ("qcp" matching "Quick Compose"). Good enough at CB's post volume;
+// no scoring/sort needed beyond the caller's own ordering.
+function fuzzyMatch(query, text) {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  const t = (text || '').toLowerCase();
+  if (t.includes(q)) return true;
+  let qi = 0;
+  for (let i = 0; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) qi++;
+  }
+  return qi === q.length;
+}
+
+function openShortcutCheatSheet() {
+  const overlay = el('div', { class: 'modal-overlay' });
+  const card = el('div', { class: 'modal-card' });
+  overlay.appendChild(card);
+  function close() {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+
+  card.appendChild(
+    el('div', { class: 'modal-header' }, [
+      el('strong', {}, 'Keyboard shortcuts'),
+      el('button', { class: 'modal-close', type: 'button', title: 'Close', onclick: close }, '✕'),
+    ])
+  );
+  const rows = [
+    ['C', 'New post (Quick Compose)'],
+    ['R', 'Go to Review'],
+    ['1', 'Go to Home'],
+    ['2', 'Go to Calendar / Queue'],
+    ['3', 'Go to Ideas Board'],
+    ['4', 'Go to Analytics'],
+    ['?', 'This cheat sheet'],
+    ['⌘K / Ctrl K', 'Command palette - jump, search posts, run actions'],
+    ['A', 'Review mode: approve & next'],
+    ['S', 'Review mode: skip'],
+    ['E', 'Review mode: focus the copy editor'],
+    ['← / →', 'Review mode: look at prev / next in queue'],
+    ['Esc', 'Close the current modal, popover, or palette'],
+  ];
+  const list = el('div', { class: 'shortcut-list' });
+  for (const [key, desc] of rows) {
+    list.appendChild(
+      el('div', { class: 'shortcut-row' }, [
+        el('span', { class: 'shortcut-key' }, key),
+        el('span', { class: 'shortcut-desc' }, desc),
+      ])
+    );
+  }
+  card.appendChild(list);
+  document.body.appendChild(overlay);
+}
+
+// Cmd+K palette: single module-level flag so the global shortcut handler
+// (and a stray second Cmd+K press) don't spawn two overlays at once.
+let paletteOpen = false;
+
+function closeCommandPalette(state) {
+  if (!state || state.closed) return;
+  state.closed = true;
+  paletteOpen = false;
+  state.overlay.remove();
+  document.removeEventListener('keydown', state.onKey, true);
+}
+
+async function openCommandPalette() {
+  if (paletteOpen) return;
+  paletteOpen = true;
+
+  const overlay = el('div', { class: 'modal-overlay palette-overlay' });
+  const card = el('div', { class: 'modal-card palette-card' });
+  overlay.appendChild(card);
+  const input = el('input', { type: 'text', class: 'palette-input', placeholder: 'Jump to a view, run an action, or search posts by copy…' });
+  const list = el('div', { class: 'palette-list' });
+  const hint = el('div', { class: 'palette-hint' }, '↑↓ navigate · Enter select · Esc close');
+  card.append(input, list, hint);
+  document.body.appendChild(overlay);
+
+  const state = { overlay, closed: false, matches: [], activeIndex: 0, onKey: () => {} };
+  overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeCommandPalette(state); });
+
+  const navEntries = [
+    { type: 'nav', label: 'Home', hash: '#/home' },
+    { type: 'nav', label: 'Calendar / Queue', hash: '#/calendar' },
+    { type: 'nav', label: 'Review drafts', hash: '#/review' },
+    { type: 'nav', label: 'Ideas Board', hash: '#/ideas' },
+    { type: 'nav', label: 'Composer', hash: '#/composer' },
+    { type: 'nav', label: 'Library', hash: '#/library' },
+    { type: 'nav', label: 'Images', hash: '#/images' },
+    { type: 'nav', label: 'Analytics', hash: '#/analytics' },
+    { type: 'nav', label: 'Research', hash: '#/research' },
+    { type: 'nav', label: 'Inspiration', hash: '#/inspiration' },
+    { type: 'nav', label: 'Profiles', hash: '#/profiles' },
+    { type: 'nav', label: 'Settings', hash: '#/settings' },
+    { type: 'nav', label: 'Ops Stats', hash: '#/ops' },
+  ];
+  const actionEntries = [
+    { type: 'action', label: 'New post → Quick Compose', run: () => openQuickCompose() },
+    { type: 'action', label: 'Review drafts', run: () => { location.hash = '#/review'; } },
+    { type: 'action', label: 'Import analytics', run: () => { location.hash = '#/analytics'; } },
+    { type: 'action', label: 'Request image', run: () => { location.hash = '#/images'; } },
+  ];
+
+  let posts = [];
+  try { posts = await api('/api/posts'); } catch { posts = []; }
+  if (state.closed) return; // closed while the fetch was in flight
+
+  function computeMatches(query) {
+    const q = query.trim();
+    const navMatches = navEntries.filter((n) => fuzzyMatch(q, n.label));
+    const actionMatches = actionEntries.filter((a) => fuzzyMatch(q, a.label));
+    let postMatches = [];
+    if (q) {
+      // Plain substring, not fuzzyMatch's subsequence fallback: post copy is
+      // full prose, not a short label, so a subsequence match against a
+      // whole paragraph is nearly always true and floods the list with
+      // irrelevant posts. A real substring hit is what "search by copy
+      // text" means here.
+      const ql = q.toLowerCase();
+      postMatches = posts
+        .filter((p) => (p.copy || '').toLowerCase().includes(ql))
+        .slice(0, 8)
+        .map((p) => ({ type: 'post', label: (p.copy || '(no copy)').split('\n')[0], post: p }));
+    }
+    return [...navMatches, ...actionMatches, ...postMatches].slice(0, 12);
+  }
+
+  function selectMatch(m) {
+    if (!m) return;
+    closeCommandPalette(state);
+    if (m.type === 'nav') location.hash = m.hash;
+    else if (m.type === 'action') m.run();
+    else if (m.type === 'post') openPostModal(m.post.id);
+  }
+
+  function renderList() {
+    list.innerHTML = '';
+    const matches = computeMatches(input.value);
+    state.matches = matches;
+    if (!matches.length) {
+      list.appendChild(el('div', { class: 'palette-empty' }, 'No matches.'));
+      return;
+    }
+    state.activeIndex = Math.min(state.activeIndex, matches.length - 1);
+    matches.forEach((m, i) => {
+      const row = el('div', {
+        class: 'palette-item' + (i === state.activeIndex ? ' active' : ''),
+        onclick: () => selectMatch(m),
+      });
+      if (m.type === 'post') {
+        row.append(
+          platformIcon(m.post.platform, { size: 13 }),
+          el('span', { class: 'palette-item-label' }, ` ${m.label}`),
+          el('span', { class: `pill status-${m.post.status}` }, m.post.status)
+        );
+      } else {
+        row.append(
+          el('span', { class: 'palette-item-label' }, m.label),
+          el('span', { class: 'palette-item-kind' }, m.type === 'nav' ? 'Go to' : 'Action')
+        );
+      }
+      list.appendChild(row);
+    });
+  }
+
+  input.addEventListener('input', () => { state.activeIndex = 0; renderList(); });
+
+  state.onKey = function onKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); closeCommandPalette(state); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); state.activeIndex = Math.min(state.activeIndex + 1, state.matches.length - 1); renderList(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); state.activeIndex = Math.max(state.activeIndex - 1, 0); renderList(); }
+    else if (e.key === 'Enter') { e.preventDefault(); selectMatch(state.matches[state.activeIndex]); }
+  };
+  document.addEventListener('keydown', state.onKey, true);
+
+  renderList();
+  input.focus();
+}
+
+// Global single-key shortcuts. Ignored while the user is typing in a form
+// field (Cmd/Ctrl+K is the one exception - it opens the palette regardless,
+// same as most apps' command palettes). renderReview's own keydown handler
+// (A/S/E/arrows) is view-scoped and only acts while #/review is current, and
+// none of those letters overlap the ones handled here, so the two coexist
+// without stepping on each other.
+function wireGlobalShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      openCommandPalette();
+      return;
+    }
+    if (isTypingTarget(e)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    switch (e.key) {
+      case 'c':
+      case 'C':
+        e.preventDefault();
+        openQuickCompose();
+        break;
+      case 'r':
+      case 'R':
+        e.preventDefault();
+        location.hash = '#/review';
+        break;
+      case '1':
+        e.preventDefault();
+        location.hash = '#/home';
+        break;
+      case '2':
+        e.preventDefault();
+        location.hash = '#/calendar';
+        break;
+      case '3':
+        e.preventDefault();
+        location.hash = '#/ideas';
+        break;
+      case '4':
+        e.preventDefault();
+        location.hash = '#/analytics';
+        break;
+      case '?':
+        e.preventDefault();
+        openShortcutCheatSheet();
+        break;
+      default:
+        break;
+    }
+  });
+
+  const hintBtn = document.getElementById('nav-shortcuts-hint');
+  if (hintBtn) hintBtn.addEventListener('click', () => openShortcutCheatSheet());
+}
+
 wireNavRail();
 wireGlobalChrome();
+wireGlobalShortcuts();

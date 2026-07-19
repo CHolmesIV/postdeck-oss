@@ -3,36 +3,14 @@
 Local-first multi-brand social scheduler + content studio. Full architecture, data model,
 and build plan live in [`SPEC.md`](./SPEC.md) - read that first; current state is in
 [`BUILD_STATUS.md`](./BUILD_STATUS.md) and history in [`CHANGELOG.md`](./CHANGELOG.md).
-Shipped through **D2**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
+Shipped through **B19**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
 analytics, Content Studio, image sizing + Codex handoff, chat agent, brand/profile settings,
-Claude/Codex drafting, editable image prompts, queue slots, tags & campaigns, calendar
-gap-finding, best-time-to-post, redraft-the-winner, per-brand UTM tracking, and a
-full design-system pass - all inside a designed local command-center UI.
-
-## What's in here
-
-- **Queue slots** - define recurring per-brand+platform slots ("3x/week LinkedIn, 9am") and
-  hit "Add to queue" from any idea or draft to drop it into the next open slot instead of
-  hand-picking a date.
-- **Grouped left-nav** - the dashboard's navigation is organized into zones (Plan, Create,
-  Review, Settings) instead of a flat link list, so the app reads like a real product rather
-  than a script's debug UI.
-- **Tags & campaigns** - tag posts, group them into campaigns, filter the calendar by either,
-  and get campaign-scoped analytics (engagement rollups, top posts) instead of only
-  whole-account numbers.
-- **Calendar gap-finding** - a per-brand coverage strip plus per-day platform dots make it
-  obvious at a glance which brands and platforms are under-posted for the week, instead of
-  scanning empty-looking cells one by one.
-- **Best-time-to-post** - a nudge that suggests a publish time from your own historical
-  engagement data once there's enough of it, falling back to sane per-platform defaults
-  until then. No third-party trend data, no guesswork dressed up as science.
-- **Redraft-the-winner** - one click from an analytics top-post row to spin up a new draft
-  using that post's copy as a starting point, instead of re-typing what already worked.
-- **Per-brand UTM tracking** - link tracking parameters auto-append per brand at approve time,
-  so click attribution doesn't depend on remembering to tag links by hand.
-- **Design-system pass** - a real button/input/toggle system, shared `pageHeader` /
-  `formSection` / `toast` / `banner` / `emptyState` primitives, and a full sweep of every
-  view against them, replacing the ad-hoc one-off styling each feature had accumulated.
+Claude/Codex drafting, editable image prompts, a designed local command-center UI, post
+queues, tags/campaigns, best-time suggestions, UTM tagging, and a composer/flow UX wave -
+network post preview with a see-more fold, a review mode, a calendar popover + Upcoming
+agenda view, per-platform icons, a Quick Compose modal, drag-to-triage ideas, duplicate /
+copy-to-brand, keyboard shortcuts + a command palette, a brand setup checklist, CSV
+analytics import, and quick metrics entry.
 
 ## Delivery rule
 
@@ -178,7 +156,8 @@ accidental real post until you deliberately flip the flag.
   `~/Library/LaunchAgents/com.postdeck.plist` (`RunAtLoad` + `KeepAlive`,
   runs `node src/server.js` with `WorkingDirectory` set to the repo, logs to
   `logs/postdeck.{out,err}.log`). Run `--uninstall` to tear it down. This repo
-  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`) - installing it is a standing background process, so run it yourself when
+  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`)
+ - installing it is a standing background process, so run it yourself when
   ready:
   ```bash
   chmod +x scripts/install-launchd.sh   # already executable in the repo

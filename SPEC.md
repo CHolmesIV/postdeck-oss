@@ -690,7 +690,8 @@ APIs, human Approve gate untouched.*
 - **Action-center popover**: ONE corner button (distinct from the + and chat buttons; lives in
   the shell so it's on every view) → a compact popover with quick stats (drafts awaiting,
   scheduled this week, published this month, 30-day engagement) from `/api/usage` +
-  `/api/analytics`. Read-only glance; "Open Ops / Analytics →" links through. No new numbers - reuses existing endpoints.
+  `/api/analytics`. Read-only glance; "Open Ops / Analytics →" links through. No new numbers  - 
+  reuses existing endpoints.
 - The composer's tone dropdown defaults to the brand's saved default tone.
 
 ### Constraints / tests
@@ -746,7 +747,8 @@ Env `POSTDECK_VISION_MODEL` (default the cheap vision model) for the one-time im
   `extractFromImage` ONCE and store the returned text (image_path kept for reference only),
   `deleteExample(db,id)`, `examplesGrounding(db,{brand_id,platform,limit=3})` → a short text
   digest fed into the copy assistant / agent as "match the style/format of these examples."
-- `src/redistribute.js`: `redistributeFromUrl(db,{url,brand_id,platforms,make_images=true})` - `extractFromUrl`, then for each platform draft copy (reuse `copy_assist`/`draft`, grounded
+- `src/redistribute.js`: `redistributeFromUrl(db,{url,brand_id,platforms,make_images=true})`  - 
+  `extractFromUrl`, then for each platform draft copy (reuse `copy_assist`/`draft`, grounded
   in brand voice + the article), create a DRAFT post per platform (status `draft`), and if
   `make_images` create one `image_requests` brief from the article's themes. Returns
   `{ source:{title,url}, drafts:[...], image_requests:[...] }`. Human approves as always.
@@ -836,3 +838,26 @@ discipline, PostDeck's identity (ink/gold kept).
   empty states everywhere (incl. kanban columns), toast/banner feedback, Ops chart
   label-collision fix, Research/Inspiration duplicate brand picker removed, Library title
   aligned to nav.
+
+## Composer UX wave + B19 flow wave (spec'd + BUILT 2026-07-19)
+
+CB hands-on testing feedback + Blotato/Sprout-inspired flow features. Full specs:
+`docs/B19_FLOW_WAVE_SPEC.md`; details in CHANGELOG 2026-07-19 entries. Suite 247 -> 268.
+
+- **Quick Compose modal** on the + button (compose-dialog pattern; AI-first copy box).
+- Full composer: AI up top, per-section collapse + drag-reorder (pd_composer_order),
+  Edit-prompts modal, autosize textareas.
+- **Metrics**: inline quick-entry in metrics-due; CSV analytics import
+  (`src/metrics-import.js`, preview/apply, LinkedIn/Meta header maps).
+- **F1 network preview** (fold line + counter; config platform preview.fold_chars) +
+  `platformIcon()` SVG set.
+- **F2 review mode** `#/review` (A/S/arrow keys; DELETE /api/posts/:id draft/canceled).
+- **F7 calendar popover** (Reschedule / Move to drafts / Delete-or-Cancel / See more;
+  approved|scheduled_local -> draft transition added) + icon sweep (calendar chips
+  icon-only, name in tooltip).
+- **F8 Upcoming agenda view** (third calendar view, day-grouped, 14 days + unscheduled).
+- **F3 idea-drag** to calendar / Use-in-post (idea -> done on save).
+- **F4 duplicate/copy-to-brand** (`POST /api/posts/:id/duplicate`; campaign tag dropped
+  cross-brand; account auto-resolve; AI re-voice through target brand tone).
+- **F5 shortcuts** (C/R/1-4/?) + Cmd+K command palette (nav/actions/post search).
+- **F6 brand setup completeness card** on Home.

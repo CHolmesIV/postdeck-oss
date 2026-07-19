@@ -48,6 +48,7 @@ import {
 } from './tags.js';
 import { bestTimes, daysSinceLastPost } from './besttime.js';
 import { appendUtm, getBrandUtmSettings, setBrandUtmSettings } from './utm.js';
+import { parseMetricsFile, normalizeRows, matchRows, applyImport } from './metrics-import.js';
 import {
   resolveVoice,
   withGlobalVoice,
@@ -113,11 +114,14 @@ const HOST = '127.0.0.1'; // localhost only — never bind 0.0.0.0 (see SPEC.md)
 // draft -> approved -> canceled only, in this phase (no Blotato yet).
 const ALLOWED_POST_TRANSITIONS = {
   draft: ['approved', 'canceled'],
-  approved: ['canceled'],
+  // F7a (calendar popover): "Move to drafts" walks an approved/scheduled_local
+  // post back to draft (+ clears publish_at) as an escape hatch short of a
+  // full cancel - alongside the existing Cancel path.
+  approved: ['canceled', 'draft'],
   // scheduled_local is 'approved' + a publish_at (see merge logic below) — the
   // dashboard already offers Cancel for it (public/app.js renderPostDetail),
-  // so it needs the same escape hatch.
-  scheduled_local: ['canceled'],
+  // so it needs the same escape hatch, plus F7a's Move-to-drafts.
+  scheduled_local: ['canceled', 'draft'],
 };
 
 // B6: publish_at (drag-to-reschedule, or any manual date edit) may only
@@ -600,6 +604,110 @@ function buildServer() {
     return parseJsonColumns(row, ['media', 'platform_fields']);
   });
 
+  // ---------- posts: hard delete (F2 review mode "Trash") ----------
+  // Only ever legal for posts that never left the pipeline's local-only
+  // states — draft (never approved) or canceled (explicitly killed). Once a
+  // post has been approved/scheduled/submitted/published it has externally
+  // visible consequences (UTM already appended, queue slot consumed, or a
+  // live post on the platform) so it must go through the existing
+  // approve/cancel transitions instead of being erased outright.
+  app.delete('/api/posts/:id', async (req, reply) => {
+    const existing = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    if (!['draft', 'canceled'].includes(existing.status)) {
+      reply.code(409);
+      return {
+        error: 'not_deletable',
+        message: `Cannot delete a post in status '${existing.status}'. Only draft/canceled posts can be hard-deleted.`,
+      };
+    }
+    // post_tags has ON DELETE CASCADE (foreign_keys pragma is ON - see
+    // src/db.js), but delete explicitly too so this endpoint's cleanup
+    // behavior doesn't silently depend on that pragma staying on.
+    db.prepare('DELETE FROM post_tags WHERE post_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM posts WHERE id = ?').run(req.params.id);
+    reply.code(204);
+    return null;
+  });
+
+  // ---------- posts: duplicate / copy to brand (F4) ----------
+  // Creates a NEW draft post copying copy/media/platform_fields/content_type/
+  // platform (and tags, minus any campaign tag when the brand changes — a
+  // campaign is scoped to the brand that ran it, so it never survives a
+  // cross-brand copy). publish_at is always cleared and the new row starts
+  // at 'draft' regardless of the source post's status — a duplicate is
+  // always a fresh, unreviewed post. When brand_id is passed and differs
+  // from the source, account_id is resolved to an active account of that
+  // brand+platform when one exists; otherwise the new post's account_id is
+  // null and the response carries account_unresolved:true so the frontend
+  // can prompt the operator to pick one.
+  app.post('/api/posts/:id/duplicate', async (req, reply) => {
+    const existing = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    const b = req.body || {};
+    const targetBrandId = b.brand_id !== undefined && b.brand_id !== null ? b.brand_id : existing.brand_id;
+    const crossBrand = String(targetBrandId) !== String(existing.brand_id);
+
+    let accountId = null;
+    let accountUnresolved = false;
+    if (b.account_id !== undefined && b.account_id !== null) {
+      accountId = b.account_id;
+    } else if (!crossBrand) {
+      accountId = existing.account_id;
+    } else {
+      const match = db
+        .prepare(
+          `SELECT id FROM accounts WHERE brand_id = ? AND platform = ? AND active = 1 ORDER BY id LIMIT 1`
+        )
+        .get(targetBrandId, existing.platform);
+      if (match) accountId = match.id;
+      else accountUnresolved = true;
+    }
+
+    const now = nowIso();
+    const info = db
+      .prepare(
+        `
+        INSERT INTO posts (
+          external_id, idea_id, brand_id, account_id, platform, tone_profile_id,
+          copy, media, platform_fields, content_type, publish_at, status, created_at, updated_at
+        ) VALUES (
+          NULL, NULL, @brand_id, @account_id, @platform, @tone_profile_id,
+          @copy, @media, @platform_fields, @content_type, NULL, 'draft', @now, @now
+        )
+      `
+      )
+      .run({
+        brand_id: targetBrandId,
+        account_id: accountId,
+        platform: existing.platform,
+        tone_profile_id: existing.tone_profile_id,
+        copy: existing.copy,
+        media: existing.media,
+        platform_fields: existing.platform_fields,
+        content_type: existing.content_type,
+        now,
+      });
+    const newId = info.lastInsertRowid;
+
+    const sourceTags = getPostTags(db, existing.id);
+    const tagIds = sourceTags.filter((t) => !crossBrand || t.kind !== 'campaign').map((t) => t.id);
+    if (tagIds.length) setPostTags(db, newId, tagIds);
+
+    const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(newId);
+    const post = parseJsonColumns(row, ['media', 'platform_fields']);
+    post.tags = getPostTags(db, newId);
+    if (accountUnresolved) post.account_unresolved = true;
+    reply.code(201);
+    return post;
+  });
+
   // ---------- posts: manual metrics entry ----------
   app.post('/api/posts/:id/metrics', async (req, reply) => {
     const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
@@ -637,6 +745,79 @@ function buildServer() {
       });
     reply.code(201);
     return db.prepare('SELECT * FROM metrics WHERE id = ?').get(info.lastInsertRowid);
+  });
+
+  // ---------- analytics import: LinkedIn/Facebook CSV export upload ----------
+  // Preview: parse + normalize + match, no writes. multipart field "file" for
+  // the export, plus fields "platform" (required) and "brand_id" (optional) —
+  // mirrors the POST /api/media multipart pattern above.
+  app.post('/api/metrics-import/preview', async (req, reply) => {
+    // Iterate all parts (not just req.file()) so field order in the multipart
+    // body doesn't matter — "file" and the "platform"/"brand_id" fields can
+    // appear in either order.
+    let fileFilename = null;
+    let buffer = null;
+    let platform = null;
+    let brandIdRaw = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'file') {
+        fileFilename = part.filename;
+        buffer = await part.toBuffer();
+      } else if (part.fieldname === 'platform') {
+        platform = part.value;
+      } else if (part.fieldname === 'brand_id') {
+        brandIdRaw = part.value;
+      }
+    }
+    if (!buffer) {
+      reply.code(400);
+      return { error: 'no file uploaded (expected multipart field "file")' };
+    }
+    if (!platform) {
+      reply.code(400);
+      return { error: 'platform is required (multipart field "platform")' };
+    }
+
+    let rawRows;
+    try {
+      rawRows = parseMetricsFile(buffer, fileFilename);
+    } catch (err) {
+      reply.code(400);
+      return { error: err.code || 'parse_failed', message: err.message };
+    }
+
+    const normalized = normalizeRows(rawRows);
+    const brand_id = brandIdRaw !== undefined && brandIdRaw !== '' ? brandIdRaw : undefined;
+    const { matches } = matchRows(db, normalized, { platform, brand_id });
+
+    const skipped = matches.filter((m) => m.row._skipped).length;
+    return {
+      platform,
+      brand_id: brand_id ?? null,
+      total_rows: rawRows.length,
+      skipped_rows: skipped,
+      matches: matches.map((m) => ({
+        row: (({ _raw, ...rest }) => rest)(m.row),
+        post_id: m.post_id,
+        post_copy_snippet: m.post_copy_snippet,
+        confidence: m.confidence,
+        candidates: m.candidates,
+        reason: m.reason,
+      })),
+    };
+  });
+
+  // Apply: writes the confirmed decisions as metrics rows (one per decision,
+  // append-only — same semantics as POST /api/posts/:id/metrics above).
+  app.post('/api/metrics-import/apply', async (req, reply) => {
+    const b = req.body || {};
+    if (!Array.isArray(b.decisions) || b.decisions.length === 0) {
+      reply.code(400);
+      return { error: 'decisions must be a non-empty array' };
+    }
+    const { applied } = applyImport(db, b.decisions);
+    reply.code(201);
+    return { applied };
   });
 
   // ---------- posts: reddit "Post now" manual flow ----------

@@ -1,12 +1,12 @@
 # PostDeck - Build Status
 
-_Last updated: 2026-07-15. One-page state of the build. Full design: `SPEC.md`. History:
+_Last updated: 2026-07-19. One-page state of the build. Full design: `SPEC.md`. History:
 `CHANGELOG.md`._
 
 ## Where it stands
 
 Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:4520`
-(`npm start`). **210/210 tests passing.** Dry-run is the hard default unless deliberately
+(`npm start`). **268/268 tests passing.** Dry-run is the hard default unless deliberately
 flipped.
 
 ## Built (done)
@@ -36,6 +36,8 @@ flipped.
 | B17 | Tags & campaigns (composer picker, calendar filter/colors, scoped analytics) + calendar gap-finding (count dots, empty-day, coverage strip) | ✅ |
 | B18 | Best-time nudge (data-driven + defaults), Redraft-the-winner, per-brand UTM auto-append at approve | ✅ |
 | D2 | Design consistency pass (Seeds-informed): button/input/toggle system, pageHeader/formSection/toast/banner/emptyState primitives, composer reorder, Settings zones, full-view sweep | ✅ |
+| - | Composer UX wave (CB feedback): Quick Compose modal on +, collapsible/drag-reorder sections, Edit-prompts button, Waiting-on-Codex status, metrics quick-entry + CSV analytics import | ✅ |
+| B19 | Flow wave: network post preview w/ fold line, Review mode (#/review), calendar popover + Upcoming agenda view, platform icon set, idea-drag to calendar, duplicate/copy-to-brand w/ re-voice, shortcuts + Cmd+K palette, brand setup card | ✅ |
 
 ## Security posture (reviewed 2026-07-15)
 

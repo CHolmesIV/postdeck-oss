@@ -3,6 +3,69 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-19 - B19 flow wave: preview, review mode, calendar popover/agenda, icons, shortcuts
+
+Eight features from CB's hands-on testing session + Blotato/Sprout inspiration. Spec:
+`docs/B19_FLOW_WAVE_SPEC.md`. Suite 257 -> 268.
+
+- **Network post preview (F1)**: feed-card mockup per platform (avatar, brand, platform
+  icon) with a visible "see more" fold line - LinkedIn ~210 chars, FB ~477, IG ~125,
+  Twitter hard-280 (overflow in red) - plus a live "Fold in N chars" counter while typing.
+  In Quick Compose (Preview toggle), composer variant tabs, and the post modal. Hook-first
+  enforcement: you see what survives above the fold before approving.
+- **Review mode (F2)**: `#/review` - drafts one at a time (preview + editable copy +
+  schedule/queue), Approve & next / Skip / Trash / Open in composer, keyboard-driven
+  (A/S/arrows), progress + session summary. New `DELETE /api/posts/:id` (draft/canceled
+  only). "Review drafts (N)" entry on Home.
+- **Calendar popover (F7a, Blotato-inspired)**: chip click opens a compact anchored
+  popover - time, 3-line copy, Reschedule inline / Move to drafts / Delete-or-Cancel /
+  See more (full modal). Status-gated actions; `approved/scheduled_local -> draft`
+  transition added.
+- **Platform icons (F7b)**: hand-rolled SVG icon set (linkedin/facebook/instagram/x/
+  tiktok/reddit/youtube/blog) across chips, strips, tabs, modals. Calendar/agenda chips
+  are icon-only (platform name moved to tooltip - CB: "if you have the icon, you don't
+  need the name").
+- **Upcoming agenda view (F8)**: third calendar view - Unscheduled drafts group + posts
+  grouped by Today/Tomorrow/day for 14 days; rows open the popover; filters respected.
+- **Ideas -> calendar (F3)**: drag an idea card onto a day (or "Use in post") -> Quick
+  Compose prefilled; on save the idea flips to done.
+- **Duplicate / Copy to brand (F4)**: from popover + modal; `POST /api/posts/:id/duplicate`
+  (tags copied, campaign dropped cross-brand, account auto-resolved); cross-brand copies
+  auto re-voice through the target brand's tone via the AI path when available.
+- **Shortcuts + Cmd+K (F5)**: C compose, R review, 1-4 views, ? cheat sheet; Cmd+K command
+  palette (fuzzy nav/actions + post search by copy). "? shortcuts" in the nav rail.
+- **Brand setup card (F6)**: per-brand Home checklist (account, queue slots, link
+  tracking, profile currency, voice) with click-to-jump; 100% brands collapse to a ✓.
+- Fixes along the way: `[hidden]` vs author-CSS display bug on new components; broad
+  `pkill` in an agent cleanup took down the live app once (restarted; agents now kill by
+  exact PID only).
+
+## 2026-07-19 - Composer UX wave (CB testing feedback): Quick Compose + metrics import
+
+- **Quick Compose modal**: the + button (and Home quick actions) now open a compact
+  compose dialog instead of the full page - brand chips, account toggles, one big copy
+  box with Draft-with-AI + tone directly above it, char counter, media row (library pick +
+  Request image), schedule row (publish-at + Add to queue + best-time chips), Save draft /
+  Save & approve / Open full composer (state carries over). CB: the old flow "doesn't seem
+  like you're about to make a post for social media" - this is the fix.
+- **Full composer**: Draft with AI moved up (AI-first workflow); EVERY section now
+  independently collapsible (root cause: two sections never wired to makeCollapsible, two
+  jammed in one wrapper) + drag-to-reorder via ⠿ handles, order persisted; autosizing
+  textareas everywhere AI output lands.
+- **Edit prompts**: quick-edit button next to Request image (both composers) opening the
+  same image-prompt settings Settings edits.
+- **Image request clarity**: 'requested' now shows "Waiting on Codex - run the image
+  handoff" + pointer to docs/CODEX_IMAGE_HANDOFF.md (requests are fulfilled by Codex
+  externally by design; they are NOT stuck).
+- **Metrics quick-entry**: inline impressions/comments/shares inputs + ✓ right in the
+  metrics-due rows (Enter saves, row clears).
+- **Analytics import**: `src/metrics-import.js` + preview/apply endpoints + Analytics
+  "Import analytics" modal - upload a LinkedIn/Meta CSV export, rows matched to posts by
+  date+platform (exact/adjacent/ambiguous with candidate picker), preview then apply.
+  XLSX intentionally unsupported (export CSV). Extra export fields preserved in notes JSON.
+- Suite 210 -> 257 across this wave (metrics-import 10 + queue/tags/besttime/utm from
+  B16-B18 earlier).
+
 ## 2026-07-18 - D2 design consistency pass (Seeds-informed) shipped
 
 - Adopted Sprout Social's design-system discipline (their public "Seeds" system) while
@@ -120,13 +183,13 @@ current state / what's pending.
 Operational, not code. Documenting the fixes/corrections made while getting PrimeWright's
 first posts out (per CB: log the churn):
 - **Env loading was misdiagnosed.** I wrongly reported the Blotato key "not in .env" - it is
-  in `config/.env`, loaded by `src/env.js` (imported first in server.js). Key +
+  in `Social Media/config/.env`, loaded by `src/env.js` (imported first in server.js). Key +
   live posting were fine all along. Do NOT create `postdeck/.env` (it shadows config/.env).
 - **listAccounts parse bug (my check, not shipped):** Blotato returns accounts under `items`,
-  not `data`. Resolved the real account map: FB `<redacted-id>`, LinkedIn `<redacted-id>`, Twitter `<redacted-id>`,
-  with per-brand page subaccounts.
-- **PrimeWright accounts wired:** LinkedIn #8 -> acct <redacted-id> / page <redacted-id>; Facebook #9 ->
-  acct <redacted-id> / page <redacted-id>; both manual=0 (worker-eligible).
+  not `data`. Resolved the real account map: FB `<redacted-id>`, LinkedIn `<redacted-id>`,
+  Twitter `<redacted-id>`, with per-brand page subaccounts.
+- **PrimeWright accounts wired:** LinkedIn #8 -> acct `<redacted-id>` / page `<redacted-id>`;
+  Facebook #9 -> acct `<redacted-id>` / page `<redacted-id>`; both manual=0 (worker-eligible).
 - **Flipped `BLOTATO_DRY_RUN=0`** in config/.env -> posting is LIVE.
 - **Scheduling window gotcha:** the worker only hands a post to Blotato within 48h of its
   publish_at. Posts scheduled >48h out show NOTHING in Blotato's upcoming until then - which
