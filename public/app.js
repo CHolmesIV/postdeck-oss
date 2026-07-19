@@ -3,6 +3,57 @@
 const API = '';
 const BRAND_COLORS = ['#C8902A', '#3d7ab8', '#4c9a5b', '#c0392b', '#8e6fc4'];
 
+// Per-platform dot color for the calendar's gap-finding indicators (B17b) -
+// distinct from BRAND_COLORS (brand identity) since a day cell can show both.
+const CAL_PLATFORM_COLORS = {
+  twitter: '#3d7ab8',
+  linkedin: '#2f6fa8',
+  facebook: '#4267b2',
+  instagram: '#c0392b',
+  tiktok: '#e4b44e',
+  reddit: '#c0722e',
+  blog: '#6f8b63',
+};
+function platformDotColor(platform) {
+  return CAL_PLATFORM_COLORS[platform] || '#a3a19a';
+}
+
+// ---------------- B17a: tags & campaigns ----------------
+// Small fixed palette for auto-coloring newly created tags/campaigns (the
+// operator never has to pick a color by hand). Cycled by creation order.
+const TAG_COLOR_PALETTE = ['#3d7ab8', '#4c9a5b', '#c0392b', '#e4b44e', '#8e6fc4', '#c0722e', '#2f6fa8', '#6f8b63'];
+let tagColorCursor = 0;
+function nextTagColor() {
+  const c = TAG_COLOR_PALETTE[tagColorCursor % TAG_COLOR_PALETTE.length];
+  tagColorCursor++;
+  return c;
+}
+
+// Module-level cache of all tags (globals + every brand's) - refreshed
+// whenever the calendar or composer needs a current list. Kept simple (no
+// invalidation beyond re-fetch) since tag/campaign volume is low.
+let allTagsCache = [];
+async function loadAllTags() {
+  try {
+    allTagsCache = await api('/api/tags');
+  } catch {
+    // best-effort; calendar/analytics tag features just no-op without it
+  }
+  return allTagsCache;
+}
+function tagById(id) {
+  return allTagsCache.find((t) => String(t.id) === String(id));
+}
+
+// Read-only tag chip for display in the post modal / calendar tooltips.
+function tagDisplayChip(tag) {
+  return el(
+    'span',
+    { class: 'pill tag-pill' + (tag.kind === 'campaign' ? ' campaign-pill' : ''), style: `border-left:3px solid ${tag.color || '#a3a19a'};` },
+    tag.name
+  );
+}
+
 // Fallback limits, used only until GET /api/platform-specs resolves (or if it
 // ever fails) - config/platform-specs.json is the real single source of truth
 // (SPEC.md "Platform lineup"). See textLimitFor()/platformSpec() below.
@@ -334,6 +385,69 @@ function makeCollapsible(card, { open = true, key } = {}) {
   return card;
 }
 
+// =====================================================================
+// D2 — Design consistency pass primitives (2026-07-18)
+// See docs/D2_CONSISTENCY_PASS_SPEC.md. Small, dependency-free helpers in
+// the same style as el()/makeCollapsible - views compose these instead of
+// hand-rolling headers/forms/feedback per view.
+// =====================================================================
+
+// R1 - page header: title (h1) + a fixed-order action row. `actions` is a
+// flat list of elements (buttons/selects/links); callers are responsible
+// for passing them already in the fixed order (date-range left, share/export
+// next, filters rightmost, overflow last) since the order varies per view.
+function pageHeader(title, ...actions) {
+  const flat = actions.flat().filter(Boolean);
+  return el('div', { class: 'page-header' }, [
+    el('h1', {}, title),
+    el('div', { class: 'page-header-actions' }, flat),
+  ]);
+}
+
+// R3 - a labeled group of form rows with an optional one-line hint. `rows`
+// are elements (typically `.field-row`s or `.form-section-row`s); this just
+// gives them a shared label/hint/spacing treatment instead of an ad-hoc div.
+function formSection(label, hint, ...rows) {
+  const flat = rows.flat().filter(Boolean);
+  const kids = [];
+  if (label) kids.push(el('div', { class: 'form-section-label' }, label));
+  if (hint) kids.push(el('div', { class: 'form-section-hint' }, hint));
+  kids.push(el('div', { class: 'form-section-body' }, flat));
+  return el('div', { class: 'form-section' }, kids);
+}
+
+// R5 - toast: transient, one-off outcome (saved/queued/deleted). Only one
+// shows at a time; auto-dismisses. Not for persistent/anchored conditions -
+// use inlineBanner for those.
+let toastHost = null;
+let toastTimer = null;
+function toast(msg, kind = 'ok') {
+  if (typeof document === 'undefined') return;
+  if (!toastHost) {
+    toastHost = el('div', { class: 'toast-host' });
+    document.body.appendChild(toastHost);
+  }
+  toastHost.innerHTML = '';
+  toastHost.appendChild(el('div', { class: `toast toast-${kind}` }, msg));
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastHost.innerHTML = ''; }, 3500);
+}
+
+// R5 - inline banner: persistent condition anchored to the object it
+// describes ("AI not logged in", "no open slot"). Caller appends/removes it
+// in place (same pattern the old ad-hoc `.msg-banner` divs used); this just
+// gives them one shared visual class instead of inline styles per call site.
+function inlineBanner(msg, kind = 'info') {
+  return el('div', { class: `inline-banner inline-banner-${kind}` }, msg);
+}
+
+// R4 - empty state: one reassuring line + at most one clear CTA button.
+function emptyState(msg, ctaLabel, ctaFn) {
+  const kids = [el('div', { class: 'empty-state-msg' }, msg)];
+  if (ctaLabel && ctaFn) kids.push(el('button', { class: 'button secondary sm', type: 'button', onclick: ctaFn }, ctaLabel));
+  return el('div', { class: 'empty-state' }, kids);
+}
+
 // Calendar auto-refresh singleton: the current calendar render assigns its
 // guarded reload here; one global focus/visibility listener calls it so a tab
 // left open re-fetches instead of showing stale data. See renderCalendarInto.
@@ -458,7 +572,7 @@ bootstrap();
 
 async function renderCalendar(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Calendar / Queue'));
+  view.classList.add('view-flush');
   const container = el('div');
   view.appendChild(container);
   await renderCalendarInto(container);
@@ -485,7 +599,6 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
     // worker status is best-effort; don't block the calendar if it 404s
   }
 
-  const toolbar = el('div', { class: 'toolbar' });
   const brandFilter = el('select', { id: 'cal-brand' }, [
     el('option', { value: '' }, 'All brands'),
     ...state.brands.map((b) => el('option', { value: b.id, selected: String(b.id) === String(initialBrand) ? 'selected' : undefined }, b.name)),
@@ -500,6 +613,13 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
     el('option', { value: 'week', selected: defaultMode === 'week' ? 'selected' : undefined }, 'Week'),
     el('option', { value: 'month', selected: defaultMode === 'month' ? 'selected' : undefined }, 'Month'),
   ]);
+  // B17a: tag/campaign filter - populated from GET /api/tags, filtered
+  // client-side against each post's tags[] (same pattern as brand/platform).
+  await loadAllTags();
+  const tagFilter = el('select', { id: 'cal-tag' }, [
+    el('option', { value: '' }, 'All tags/campaigns'),
+    ...allTagsCache.map((t) => el('option', { value: t.id }, `${t.kind === 'campaign' ? '🏷 ' : ''}${t.name}`)),
+  ]);
   // Period nav: prev / label / next / Today. Steps by month (month view) or
   // week (week view). Lets CB move between months without hunting.
   const prevBtn = el('button', { class: 'cal-nav-btn', title: 'Previous' }, '‹');
@@ -507,13 +627,23 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
   const todayBtn = el('button', { class: 'cal-nav-btn' }, 'Today');
   const refreshBtn = el('button', { class: 'cal-nav-btn', title: 'Refresh from server' }, '↻');
   const periodLabel = el('span', { class: 'cal-period-label' }, '');
-  toolbar.append(
-    el('span', {}, 'Brand:'), brandFilter,
-    el('span', {}, 'Platform:'), platformFilter,
-    el('span', {}, 'View:'), viewToggle,
-    prevBtn, todayBtn, nextBtn, refreshBtn, periodLabel
-  );
+
+  // L4: nav (view toggle + prev/today/next + period label) LEFT, refresh
+  // middle-right, filters (brand/platform/tag) RIGHTMOST.
+  const toolbar = el('div', { class: 'cal-toolbar' }, [
+    el('div', { class: 'cal-toolbar-group' }, [viewToggle, prevBtn, todayBtn, nextBtn, periodLabel]),
+    el('div', { class: 'cal-toolbar-group' }, [refreshBtn]),
+    el('div', { class: 'cal-toolbar-group cal-toolbar-filters' }, [
+      el('span', {}, 'Brand:'), brandFilter,
+      el('span', {}, 'Platform:'), platformFilter,
+      el('span', {}, 'Tag:'), tagFilter,
+    ]),
+  ]);
+  view.appendChild(pageHeader('Calendar / Queue'));
   view.appendChild(toolbar);
+
+  const coverageStrip = el('div', { class: 'cal-coverage-strip' });
+  view.appendChild(coverageStrip);
 
   const grid = el('div', { class: 'cal-grid', id: 'cal-grid' });
   view.appendChild(grid);
@@ -530,11 +660,16 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
     const posts = await api('/api/posts');
     const brand = brandFilter.value;
     const platform = platformFilter.value;
+    const tagId = tagFilter.value;
     const mode = viewToggle.value;
     const filtered = posts.filter(
-      (p) => (!brand || String(p.brand_id) === brand) && (!platform || p.platform === platform)
+      (p) =>
+        (!brand || String(p.brand_id) === brand) &&
+        (!platform || p.platform === platform) &&
+        (!tagId || (p.tags || []).some((t) => String(t.id) === tagId))
     );
     updateLabel(mode);
+    renderCoverageStrip(coverageStrip, filtered, state.brands, mode, refDate);
     drawGrid(grid, filtered, mode, refDate);
   }
 
@@ -551,6 +686,7 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
 
   brandFilter.onchange = () => { setStickyBrand(brandFilter.value); reload(); };
   platformFilter.onchange = reload;
+  tagFilter.onchange = reload;
   viewToggle.onchange = reload;
   await reload();
 
@@ -569,8 +705,9 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
     try {
       await api(`/api/posts/${postId}`, { method: 'PATCH', body: { publish_at: newPublishAt } });
       await reload();
+      toast('Post rescheduled.');
     } catch (err) {
-      alert(err.message);
+      toast(`Could not reschedule: ${err.message}`, 'error');
     }
   }
 
@@ -598,11 +735,11 @@ function homeQuickCreateBar(getBrand, onRedistribute) {
   }
 
   return el('div', { class: 'home-quickbar' }, [
-    el('button', { class: 'primary quickbar-primary', onclick: () => goCompose() }, '+ New Post'),
-    el('button', { class: 'quickbar-secondary', onclick: () => goCompose({ focusAI: true }) }, 'Draft with AI'),
-    el('button', { class: 'quickbar-secondary', onclick: () => { location.hash = '#/ideas'; } }, '+ Idea'),
-    el('button', { class: 'quickbar-secondary', onclick: () => { location.hash = '#/images'; } }, 'Request image (Codex)'),
-    el('button', { class: 'quickbar-secondary', onclick: onRedistribute }, 'Redistribute blog post'),
+    el('button', { class: 'button primary md', onclick: () => goCompose() }, '+ New Post'),
+    el('button', { class: 'button secondary md', onclick: () => goCompose({ focusAI: true }) }, 'Draft with AI'),
+    el('button', { class: 'button secondary md', onclick: () => { location.hash = '#/ideas'; } }, '+ Idea'),
+    el('button', { class: 'button secondary md', onclick: () => { location.hash = '#/images'; } }, 'Request image (Codex)'),
+    el('button', { class: 'button secondary md', onclick: onRedistribute }, 'Redistribute blog post'),
   ]);
 }
 
@@ -785,7 +922,7 @@ function buildAttentionSection(container, posts, analyticsData, homeBrand, profi
   }
 
   if (!rows.length) {
-    list.appendChild(el('div', { class: 'attention-empty' }, 'All clear.'));
+    list.appendChild(emptyState('All clear - nothing needs attention right now.'));
   } else {
     rows.forEach((r) => list.appendChild(r));
   }
@@ -836,7 +973,7 @@ function buildPlatformChipsSection(container, posts, homeBrand) {
   const row = el('div', { class: 'platform-chips' });
 
   if (!accounts.length) {
-    row.appendChild(el('div', { class: 'platform-chips-empty' }, 'No connected accounts.'));
+    row.appendChild(emptyState('No connected accounts yet.', 'Go to settings', () => { location.hash = '#/settings'; }));
   }
   for (const acct of accounts) {
     const acctPosts = posts.filter((p) => String(p.account_id) === String(acct.id));
@@ -919,7 +1056,7 @@ function buildMiniAnalyticsSection(container, analyticsData, homeBrand) {
 
 async function renderHome(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Home'));
+  view.classList.add('view-default');
 
   let homeBrand = getStickyBrand();
   const brandSelect = el('select', {}, [
@@ -928,8 +1065,8 @@ async function renderHome(view) {
       el('option', { value: String(b.id), selected: String(b.id) === String(homeBrand) ? 'selected' : undefined }, b.name)
     ),
   ]);
-  const filterRow = el('div', { class: 'toolbar' }, [el('span', {}, 'Brand:'), brandSelect]);
-  view.appendChild(filterRow);
+  // R1: title -> primary context control (brand).
+  view.appendChild(pageHeader('Home', brandSelect));
 
   const redistributeHost = el('div');
   redistributeHost.hidden = true;
@@ -999,6 +1136,87 @@ function dateKeyLocal(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+// ---------------- Calendar gap-finding (B17b) ----------------
+// Pure, DOM-free helpers so the counting/coverage logic is easy to reason
+// about on its own - see docs/B16_B18_COMPETITIVE_WAVE_SPEC.md "B17b". Kept
+// as plain functions inside app.js rather than a separate test module: this
+// file is a non-ESM browser script that runs `bootstrap()` (DOM/fetch calls)
+// at load time, so it isn't import-safe under the node:test harness the way
+// src/*.js modules are.
+
+// posts -> { [YYYY-MM-DD]: { [platform]: count } }. Uses the same
+// `publish_at.slice(0, 10)` key convention as the `byDay` grouping below so
+// the dot counts always match what's actually rendered in the cell.
+function computeDayPlatformCounts(posts) {
+  const byDay = {};
+  for (const p of posts) {
+    if (!p.publish_at) continue;
+    const key = p.publish_at.slice(0, 10);
+    const day = (byDay[key] = byDay[key] || {});
+    day[p.platform] = (day[p.platform] || 0) + 1;
+  }
+  return byDay;
+}
+
+// posts + brands, scoped to the inclusive [startKey, endKey] date-key range ->
+// one row per brand: { brand_id, name, count, zero }. Used for the coverage
+// strip above the grid - "PrimeWright · 5 this week" / zero-coverage warning.
+function computeBrandCoverage(posts, brands, startKey, endKey) {
+  return brands.map((b) => {
+    const count = posts.filter((p) => {
+      if (String(p.brand_id) !== String(b.id) || !p.publish_at) return false;
+      const key = p.publish_at.slice(0, 10);
+      return key >= startKey && key <= endKey;
+    }).length;
+    return { brand_id: b.id, name: b.name, count, zero: count === 0 };
+  });
+}
+
+// Renders the coverage strip into `hostEl` for the given (already
+// brand/platform-filtered) posts, one pill per brand in `brands`. Clicking a
+// zero-coverage pill sticky-sets that brand and hands off to the composer.
+function renderCoverageStrip(hostEl, posts, brands, mode, refDate) {
+  hostEl.innerHTML = '';
+  if (!brands.length) return;
+  let startKey, endKey, label;
+  if (mode === 'month') {
+    const y = refDate.getFullYear();
+    const m = refDate.getMonth();
+    startKey = dateKeyLocal(new Date(y, m, 1));
+    endKey = dateKeyLocal(new Date(y, m + 1, 0));
+    label = 'this month';
+  } else {
+    startKey = dateKeyLocal(refDate);
+    endKey = dateKeyLocal(new Date(refDate.getFullYear(), refDate.getMonth(), refDate.getDate() + 6));
+    label = 'this week';
+  }
+  const coverage = computeBrandCoverage(posts, brands, startKey, endKey);
+  for (const c of coverage) {
+    const pill = el(
+      'span',
+      {
+        class: 'cal-coverage-pill' + (c.zero ? ' cal-coverage-zero' : ''),
+        style: `border-left-color:${brandColor(c.brand_id)}`,
+      },
+      `${c.name} · ${c.count} ${label}${c.zero ? ' ⚠' : ''}`
+    );
+    if (c.zero) {
+      pill.title = 'Nothing scheduled - click to compose one for this brand';
+      pill.setAttribute('role', 'button');
+      pill.setAttribute('tabindex', '0');
+      const goCompose = () => {
+        setStickyBrand(String(c.brand_id));
+        location.hash = '#/composer';
+      };
+      pill.addEventListener('click', goCompose);
+      pill.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goCompose(); }
+      });
+    }
+    hostEl.appendChild(pill);
+  }
+}
+
 function drawGrid(grid, posts, mode, refDate) {
   grid.innerHTML = '';
   const ref = refDate ? new Date(refDate) : new Date();
@@ -1012,6 +1230,7 @@ function drawGrid(grid, posts, mode, refDate) {
     const key = p.publish_at ? p.publish_at.slice(0, 10) : 'unscheduled';
     (byDay[key] = byDay[key] || []).push(p);
   }
+  const dayPlatformCounts = computeDayPlatformCounts(posts);
 
   function makeDropTarget(dayCell, dateKey) {
     dayCell.addEventListener('dragover', (e) => {
@@ -1031,12 +1250,33 @@ function drawGrid(grid, posts, mode, refDate) {
   function dayCellFor(d, { muted = false } = {}) {
     const key = dateKeyLocal(d);
     const dayPosts = byDay[key] || [];
-    const cell = el('div', { class: 'cal-day' + (muted ? ' cal-muted' : '') + (key === todayKey ? ' cal-today' : '') }, [
-      el('div', { class: 'day-label' }, mode === 'month'
-        ? String(d.getDate())
-        : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })),
-      ...dayPosts.map((p) => postChip(p)),
-    ]);
+    const counts = dayPlatformCounts[key] || {};
+    // Empty-day treatment only for real (non-adjacent-month) days at or after
+    // today - past-empty and out-of-month cells are normal/already muted.
+    const isEmpty = !muted && key >= todayKey && dayPosts.length === 0;
+    const countDots = mode === 'month' && Object.keys(counts).length
+      ? el('div', { class: 'cal-day-counts' }, Object.entries(counts).map(([plat, n]) =>
+          el('span', {
+            class: 'cal-count-dot',
+            style: `background:${platformDotColor(plat)}`,
+            title: `${plat}: ${n}`,
+          }, n > 1 ? String(n) : '')
+        ))
+      : '';
+    const cell = el(
+      'div',
+      { class: 'cal-day' + (muted ? ' cal-muted' : '') + (key === todayKey ? ' cal-today' : '') + (isEmpty ? ' cal-day-empty' : '') },
+      [
+        el('div', { class: 'day-label' }, [
+          mode === 'month'
+            ? String(d.getDate())
+            : d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }),
+          mode === 'week' ? el('span', { class: 'cal-week-daycount' }, ` · ${dayPosts.length}`) : '',
+        ]),
+        countDots,
+        ...dayPosts.map((p) => postChip(p)),
+      ]
+    );
     makeDropTarget(cell, key);
     // Click an empty part of a day to schedule a new post on that date. Clicks
     // on a chip fall through to the chip's own link (open post detail).
@@ -1093,13 +1333,20 @@ function drawGrid(grid, posts, mode, refDate) {
 
 function postChip(p) {
   const draggable = RESCHEDULABLE_STATUSES.includes(p.status);
+  // B17a: a post carrying a campaign tag gets its chip's left border colored
+  // by that campaign (falls back to the brand color otherwise), and tag
+  // names join the hover tooltip.
+  const tags = p.tags || [];
+  const campaignTag = tags.find((t) => t.kind === 'campaign');
+  const borderColor = campaignTag ? (campaignTag.color || brandColor(p.brand_id)) : brandColor(p.brand_id);
+  const tagNames = tags.map((t) => t.name).join(', ');
   const chip = el(
     'a',
     {
       href: `#/post/${p.id}`,
-      class: 'chip',
-      style: `border-left-color:${brandColor(p.brand_id)}`,
-      title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}${draggable ? ' (drag to reschedule)' : ''}`,
+      class: 'chip' + (campaignTag ? ' chip-campaign' : ''),
+      style: `border-left-color:${borderColor}`,
+      title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}${draggable ? ' (drag to reschedule)' : ''}${tagNames ? ` - tags: ${tagNames}` : ''}`,
       draggable: draggable ? 'true' : 'false',
     },
     `${p.platform}: ${(p.copy || '(no copy)').slice(0, 24)}`
@@ -1165,6 +1412,13 @@ function openPostModal(postId) {
       );
       card.appendChild(el('div', { class: 'modal-sub' }, `${brandName(post.brand_id)}`));
 
+      // B17a: tags/campaign as read-only chips (post detail view, not editable here)
+      if (post.tags && post.tags.length) {
+        card.appendChild(
+          el('div', { class: 'chip-row', style: 'margin-top:6px;' }, post.tags.map((t) => tagDisplayChip(t)))
+        );
+      }
+
       // Publish at
       let publishInput = null;
       if (editable) {
@@ -1188,50 +1442,56 @@ function openPostModal(postId) {
         card.appendChild(el('div', { style: 'margin-top:8px;' }, [el('a', { href: post.public_url, target: '_blank' }, 'View published post →')]));
       }
       if (post.error_message) {
-        card.appendChild(el('div', { class: 'msg-banner msg-error', style: 'margin-top:8px;' }, post.error_message));
+        card.appendChild(inlineBanner(post.error_message, 'error'));
       }
 
-      const msg = el('div');
       const actions = el('div', { class: 'toolbar', style: 'margin-top:12px;' });
 
       actions.appendChild(
         el('button', {
+          class: 'button secondary md',
+          type: 'button',
           onclick: async () => {
             await navigator.clipboard.writeText((copyArea ? copyArea.value : post.copy) || '');
-            msg.innerHTML = '';
-            msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Copied to clipboard.'));
+            toast('Copied to clipboard.');
           },
         }, 'Copy text')
       );
 
+      let saveBtn = null;
       if (editable) {
-        actions.appendChild(
-          el('button', {
-            class: 'primary',
-            onclick: async () => {
-              const body = { copy: copyArea.value };
-              if (publishInput) body.publish_at = publishInput.value ? new Date(publishInput.value).toISOString() : null;
-              try {
-                await api(`/api/posts/${post.id}`, { method: 'PATCH', body });
-                close();
-                if (typeof currentCalendarReload === 'function') currentCalendarReload();
-              } catch (err) {
-                msg.innerHTML = '';
-                msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
-              }
-            },
-          }, 'Save changes')
-        );
+        saveBtn = el('button', {
+          class: 'button primary md',
+          type: 'button',
+          onclick: async () => {
+            const body = { copy: copyArea.value };
+            if (publishInput) body.publish_at = publishInput.value ? new Date(publishInput.value).toISOString() : null;
+            saveBtn.disabled = true;
+            saveBtn.classList.add('is-pending');
+            saveBtn.textContent = 'Saving…';
+            try {
+              await api(`/api/posts/${post.id}`, { method: 'PATCH', body });
+              toast('Post saved.');
+              close();
+              if (typeof currentCalendarReload === 'function') currentCalendarReload();
+            } catch (err) {
+              toast(`Could not save: ${err.message}`, 'error');
+              saveBtn.disabled = false;
+              saveBtn.classList.remove('is-pending');
+              saveBtn.textContent = 'Save changes';
+            }
+          },
+        }, 'Save changes');
+        actions.appendChild(saveBtn);
       }
 
-      actions.appendChild(el('a', { class: 'button', href: `#/post/${post.id}`, onclick: close }, 'Open full page →'));
+      actions.appendChild(el('a', { class: 'button ghost md', href: `#/post/${post.id}`, onclick: close }, 'Open full page →'));
       card.appendChild(actions);
-      card.appendChild(msg);
     })
     .catch((err) => {
       card.innerHTML = '';
-      card.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load post: ${err.message}`));
-      card.appendChild(el('button', { style: 'margin-top:8px;', onclick: close }, 'Close'));
+      card.appendChild(inlineBanner(`Could not load post: ${err.message}`, 'error'));
+      card.appendChild(el('button', { class: 'button secondary md', style: 'margin-top:8px;', onclick: close }, 'Close'));
     });
 }
 
@@ -1241,8 +1501,8 @@ async function renderPostDetail(view, params) {
   const id = params[0];
   const post = await api(`/api/posts/${id}`);
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, `Post #${post.id} - ${post.platform}`));
-  view.appendChild(el('span', { class: `pill status-${post.status}` }, post.status));
+  view.classList.add('view-default');
+  view.appendChild(pageHeader(`Post #${post.id} - ${post.platform}`, el('span', { class: `pill status-${post.status}` }, post.status)));
 
   const card = el('div', { class: 'card' });
   card.appendChild(el('div', {}, [el('strong', {}, 'Brand: '), brandName(post.brand_id)]));
@@ -1252,7 +1512,7 @@ async function renderPostDetail(view, params) {
     card.appendChild(el('div', { style: 'margin-top:10px;' }, [el('a', { href: post.public_url, target: '_blank' }, post.public_url)]));
   }
   if (post.error_message) {
-    card.appendChild(el('div', { class: 'msg-banner msg-error', style: 'margin-top:10px;' }, post.error_message));
+    card.appendChild(el('div', { style: 'margin-top:10px;' }, inlineBanner(post.error_message, 'error')));
   }
   if (post.media && post.media.length) {
     card.appendChild(el('div', { style: 'margin-top:10px;' }, `Media: ${post.media.map((m) => m.path).join(', ')}`));
@@ -1289,31 +1549,32 @@ async function renderPostDetail(view, params) {
         panel.appendChild(el('div', { style: 'margin-top:6px;white-space:pre-wrap;' }, post.copy || '(no copy)'));
       }
 
-      const msg = el('div');
       const actions = el('div', { class: 'toolbar' });
       if (isReddit) {
         actions.appendChild(
           el('button', {
+            class: 'button secondary md',
+            type: 'button',
             onclick: async () => {
               await navigator.clipboard.writeText(pf.title || '');
-              msg.innerHTML = '';
-              msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Title copied.'));
+              toast('Title copied.');
             },
           }, 'Copy title')
         );
         actions.appendChild(
           el('button', {
+            class: 'button secondary md',
+            type: 'button',
             onclick: async () => {
               await navigator.clipboard.writeText(pf.body || post.copy || '');
-              msg.innerHTML = '';
-              msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Body copied.'));
+              toast('Body copied.');
             },
           }, 'Copy body')
         );
         if (pf.subreddit) {
           actions.appendChild(
             el('a', {
-              class: 'button',
+              class: 'button secondary md',
               href: `https://www.reddit.com/r/${encodeURIComponent(pf.subreddit)}/submit`,
               target: '_blank',
             }, 'Open subreddit →')
@@ -1322,32 +1583,33 @@ async function renderPostDetail(view, params) {
       } else {
         actions.appendChild(
           el('button', {
+            class: 'button secondary md',
+            type: 'button',
             onclick: async () => {
               await navigator.clipboard.writeText(post.copy || '');
-              msg.innerHTML = '';
-              msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Copy copied.'));
+              toast('Copy copied.');
             },
           }, 'Copy')
         );
       }
       actions.appendChild(
         el('button', {
-          class: 'primary',
+          class: 'button primary md',
+          type: 'button',
           onclick: async () => {
             const url = prompt('Paste the published post URL:');
             if (!url) return;
             try {
               await api(`/api/posts/${post.id}/mark-posted`, { method: 'POST', body: { public_url: url } });
+              toast('Marked posted.');
               router();
             } catch (err) {
-              msg.innerHTML = '';
-              msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+              toast(`Could not mark posted: ${err.message}`, 'error');
             }
           },
         }, 'Mark posted')
       );
       panel.appendChild(actions);
-      panel.appendChild(msg);
       view.appendChild(panel);
     }
   }
@@ -1357,7 +1619,8 @@ async function renderPostDetail(view, params) {
   if (post.status === 'draft') {
     actions.appendChild(
       el('button', {
-        class: 'primary',
+        class: 'button primary md',
+        type: 'button',
         onclick: async () => {
           // Soft quiet-hours warning (B6) - confirm, never a hard block.
           if (post.publish_at) {
@@ -1377,20 +1640,22 @@ async function renderPostDetail(view, params) {
         },
       }, 'Approve')
     );
-    actions.appendChild(el('button', { class: 'danger', onclick: () => transition(post.id, 'canceled') }, 'Cancel'));
+    actions.appendChild(el('button', { class: 'button destructive md', type: 'button', onclick: () => transition(post.id, 'canceled') }, 'Cancel'));
   } else if (post.status === 'approved' || post.status === 'scheduled_local') {
-    actions.appendChild(el('button', { class: 'danger', onclick: () => transition(post.id, 'canceled') }, 'Cancel'));
+    actions.appendChild(el('button', { class: 'button destructive md', type: 'button', onclick: () => transition(post.id, 'canceled') }, 'Cancel'));
   }
   if (['approved', 'scheduled_local'].includes(post.status)) {
     actions.appendChild(
       el('button', {
-        class: 'primary',
+        class: 'button primary md',
+        type: 'button',
         onclick: async () => {
           try {
             await api(`/api/posts/${post.id}/submit`, { method: 'POST' });
+            toast('Submitted.');
             router();
           } catch (err) {
-            alert(err.message);
+            toast(`Could not submit: ${err.message}`, 'error');
           }
         },
       }, 'Submit now')
@@ -1401,9 +1666,10 @@ async function renderPostDetail(view, params) {
   async function transition(postId, status) {
     try {
       await api(`/api/posts/${postId}`, { method: 'PATCH', body: { status } });
+      toast(status === 'canceled' ? 'Post canceled.' : 'Post updated.');
       router();
     } catch (err) {
-      alert(err.message);
+      toast(`Could not update: ${err.message}`, 'error');
     }
   }
 
@@ -1428,15 +1694,21 @@ async function renderPostDetail(view, params) {
   form.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'notes'), notes]));
   form.appendChild(
     el('button', {
-      class: 'primary',
+      class: 'button primary md',
+      type: 'button',
       onclick: async () => {
         const body = { notes: notes.value };
         for (const f of fields) {
           const v = inputs[f].value;
           if (v !== '') body[f] = Number(v);
         }
-        await api(`/api/posts/${post.id}/metrics`, { method: 'POST', body });
-        router();
+        try {
+          await api(`/api/posts/${post.id}/metrics`, { method: 'POST', body });
+          toast('Metrics saved.');
+          router();
+        } catch (err) {
+          toast(`Could not save metrics: ${err.message}`, 'error');
+        }
       },
     }, 'Save metrics')
   );
@@ -1475,12 +1747,11 @@ async function renderPostDetail(view, params) {
     if (post.publish_at) publishAtEdit.value = post.publish_at.slice(0, 16);
     editCard.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Publish at'), publishAtEdit]));
 
-    const editMsg = el('div');
     editCard.appendChild(
       el('button', {
-        class: 'primary',
+        class: 'button primary md',
+        type: 'button',
         onclick: async () => {
-          editMsg.innerHTML = '';
           try {
             await api(`/api/posts/${post.id}`, {
               method: 'PATCH',
@@ -1490,14 +1761,14 @@ async function renderPostDetail(view, params) {
                 publish_at: publishAtEdit.value ? new Date(publishAtEdit.value).toISOString() : null,
               },
             });
+            toast('Post saved.');
             router();
           } catch (err) {
-            editMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+            toast(`Could not save: ${err.message}`, 'error');
           }
         },
       }, 'Save changes')
     );
-    editCard.appendChild(editMsg);
     view.appendChild(editCard);
   }
 }
@@ -1508,40 +1779,47 @@ const IDEA_STATUSES = ['idea', 'clustered', 'drafted', 'done'];
 
 async function renderIdeas(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Ideas Board'));
+  view.classList.add('view-default');
+  view.appendChild(pageHeader('Ideas Board'));
 
-  const quickAdd = el('div', { class: 'toolbar' });
   const titleInput = el('input', { placeholder: 'New idea title…', style: 'width:260px' });
   const brandSelect = el('select', {}, [
     el('option', { value: '' }, '(no brand)'),
     ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
   ]);
   const pillarInput = el('input', { placeholder: 'pillar (optional)' });
-  quickAdd.append(
-    titleInput,
-    brandSelect,
-    pillarInput,
-    el('button', {
-      class: 'primary',
-      onclick: async () => {
-        if (!titleInput.value.trim()) return;
-        await api('/api/ideas', {
-          method: 'POST',
-          body: { title: titleInput.value.trim(), brand_id: brandSelect.value || null, pillar: pillarInput.value || null },
-        });
-        renderIdeas(view);
-      },
-    }, '+ Add idea')
+  const addBtn = el('button', {
+    class: 'button primary md',
+    type: 'button',
+    onclick: async () => {
+      if (!titleInput.value.trim()) return;
+      await api('/api/ideas', {
+        method: 'POST',
+        body: { title: titleInput.value.trim(), brand_id: brandSelect.value || null, pillar: pillarInput.value || null },
+      });
+      toast('Idea added.');
+      renderIdeas(view);
+    },
+  }, '+ Add idea');
+  view.appendChild(
+    formSection('Add idea', null,
+      el('div', { class: 'form-section-row', style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;' }, [
+        titleInput, brandSelect, pillarInput, addBtn,
+      ])
+    )
   );
-  view.appendChild(quickAdd);
 
   const ideas = await api('/api/ideas');
   const board = el('div', { class: 'kanban' });
+  const statusLabels = { idea: 'Idea', clustered: 'Clustered', drafted: 'Drafted', done: 'Done' };
   for (const status of IDEA_STATUSES) {
     const col = el('div', { class: 'kanban-col' });
-    col.appendChild(el('h3', {}, status));
-    for (const idea of ideas.filter((i) => i.status === status)) {
-      col.appendChild(ideaCard(idea));
+    col.appendChild(el('h3', {}, statusLabels[status] || status));
+    const colIdeas = ideas.filter((i) => i.status === status);
+    if (!colIdeas.length) {
+      col.appendChild(emptyState('No ideas here yet.'));
+    } else {
+      colIdeas.forEach((idea) => col.appendChild(ideaCard(idea)));
     }
     board.appendChild(col);
   }
@@ -1553,6 +1831,7 @@ async function renderIdeas(view) {
       {
         onchange: async (e) => {
           await api(`/api/ideas/${idea.id}`, { method: 'PATCH', body: { status: e.target.value } });
+          toast('Idea updated.');
           renderIdeas(view);
         },
       },
@@ -1570,26 +1849,34 @@ async function renderIdeas(view) {
 
 async function renderLibrary(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Media Library'));
+  view.classList.add('view-default');
 
-  const uploadRow = el('div', { class: 'toolbar' });
-  const fileInput = el('input', { type: 'file' });
-  uploadRow.append(
-    fileInput,
-    el('button', {
-      class: 'primary',
-      onclick: async () => {
-        if (!fileInput.files.length) return;
-        const fd = new FormData();
-        fd.append('file', fileInput.files[0]);
+  const fileInput = el('input', { type: 'file', class: 'button secondary sm' });
+  const uploadBtn = el('button', {
+    class: 'button primary sm',
+    type: 'button',
+    onclick: async () => {
+      if (!fileInput.files.length) return;
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+      try {
         await api('/api/media', { method: 'POST', body: fd });
+        toast('Uploaded.');
         renderLibrary(view);
-      },
-    }, 'Upload')
-  );
-  view.appendChild(uploadRow);
+      } catch (err) {
+        toast(`Could not upload: ${err.message}`, 'error');
+      }
+    },
+  }, 'Upload');
+  // R1: title -> primary context control -> actions. Library has no brand
+  // context, so the upload control is the sole action row.
+  view.appendChild(pageHeader('Library', fileInput, uploadBtn));
 
   const files = await api('/api/media');
+  if (!files.length) {
+    view.appendChild(emptyState('No media yet - upload your first file above.'));
+    return;
+  }
   const grid = el('div', { class: 'media-grid' });
   for (const f of files) {
     const isImage = /\.(png|jpe?g|gif|webp)$/i.test(f.filename);
@@ -1603,29 +1890,132 @@ async function renderLibrary(view) {
   view.appendChild(grid);
 }
 
+// ---------------- Best-time nudge (B18a) ----------------
+// Shared by the Composer's Schedule card and the Settings Queues editor -
+// both just need "best window for brand+platform" rendered as a compact
+// hint line with click-to-apply chips. Pure fetch + render, no state kept
+// beyond the DOM the caller hands us.
+
+// Client-side mirror of src/besttime.js's nextMatchingDatetime/nextOccurrence -
+// duplicated (not imported) for the same reason parseDimsClient is: this is
+// a plain <script> file, not an ES module, so it can't import src/*.js.
+// Next ISO-local datetime-local value (YYYY-MM-DDTHH:MM) inside `band`
+// ({days:[0-6,...], start_hour}) at/after now, rolling to next week if
+// today's slot for that day has already passed.
+function nextMatchingDatetimeLocal(band) {
+  if (!band || !Array.isArray(band.days) || !band.days.length) return null;
+  const now = new Date();
+  const targetMinutes = (band.start_hour ?? 9) * 60;
+  let best = null;
+  for (const dow of band.days) {
+    let dayDelta = dow - now.getDay();
+    if (dayDelta < 0) dayDelta += 7;
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    if (dayDelta === 0 && targetMinutes < nowMinutes) dayDelta += 7;
+    const candidate = new Date(now);
+    candidate.setHours(0, 0, 0, 0);
+    candidate.setDate(candidate.getDate() + dayDelta);
+    candidate.setHours(Math.floor(targetMinutes / 60), targetMinutes % 60, 0, 0);
+    if (!best || candidate.getTime() < best.getTime()) best = candidate;
+  }
+  return best;
+}
+
+function dateToLocalInputValue(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * Fetches GET /api/best-times?brand_id=&platform= and renders a compact hint
+ * line + click-to-apply band chips into `hostEl`. `onApplyIso(localInputValue)`
+ * is called with a `datetime-local`-ready string when a chip is clicked (the
+ * caller decides what to do with it - set a field, etc). Debounced by the
+ * caller (this function itself just does one fetch+render per call); pass a
+ * `token` object and this bails out if a newer call has since started, so
+ * rapid brand/platform switches never race-render a stale result.
+ */
+async function renderBestTimeHint(hostEl, { brandId, platform, onApplyIso, guard } = {}) {
+  hostEl.innerHTML = '';
+  if (!brandId || !platform) return;
+  let data;
+  try {
+    data = await api(`/api/best-times?brand_id=${brandId}&platform=${platform}`);
+  } catch {
+    return; // best-effort - nudge just doesn't show
+  }
+  if (guard && guard.stale && guard.stale()) return; // a newer request superseded this one
+  hostEl.innerHTML = '';
+  if (!data || !Array.isArray(data.bands) || !data.bands.length) return;
+
+  const line = el('div', { class: 'best-time-hint' });
+  const sourceLabel = data.source === 'data' ? 'from your data' : 'default';
+  line.appendChild(el('span', { class: 'best-time-label' }, `Best window: ${data.bands[0].label} (${sourceLabel})`));
+  if (data.last_post_days_ago !== null && data.last_post_days_ago !== undefined) {
+    line.appendChild(
+      el('span', { class: 'best-time-lastpost' }, ` · Last post to ${platform}: ${data.last_post_days_ago} day${data.last_post_days_ago === 1 ? '' : 's'} ago`)
+    );
+  }
+  hostEl.appendChild(line);
+
+  if (typeof onApplyIso === 'function') {
+    const chipRow = el('div', { class: 'best-time-chips' });
+    for (const band of data.bands) {
+      chipRow.appendChild(
+        el('button', {
+          type: 'button',
+          class: 'chip-btn best-time-chip',
+          title: 'Set publish time to the next slot in this window',
+          onclick: () => {
+            const next = nextMatchingDatetimeLocal(band);
+            if (next) onApplyIso(dateToLocalInputValue(next));
+          },
+        }, band.label)
+      );
+    }
+    hostEl.appendChild(chipRow);
+  }
+}
+
 // ---------------- Composer ----------------
 
 async function renderComposer(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Composer'));
+  view.classList.add('view-default');
 
   // One-off "Publish at" prefill when arriving from a calendar day click
   // (composeOnDate). Consumed once; applied to publishAtInput in loadForBrand.
   let prefillDate = sessionStorage.getItem('pd_composer_prefill_date');
   sessionStorage.removeItem('pd_composer_prefill_date');
 
+  // One-off "Redraft the winner" handoff from Analytics (B18b). Consumed
+  // once; applied in loadForBrand if it matches the brand being loaded -
+  // preselects the matching platform's account, seeds the idea with a
+  // "fresh take on this proven post" framing prompt, stages the original
+  // as an example (existing examples mechanism, best-effort grounding for
+  // future drafts), and auto-runs Draft with AI.
+  let redraftData = null;
+  const redraftRaw = sessionStorage.getItem('pd_composer_redraft');
+  sessionStorage.removeItem('pd_composer_redraft');
+  if (redraftRaw) {
+    try {
+      redraftData = JSON.parse(redraftRaw);
+    } catch {
+      redraftData = null;
+    }
+  }
+
   const brandSelect = el('select', {}, [
     el('option', { value: '' }, 'Select brand…'),
     ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
   ]);
-  const toolbar = el('div', { class: 'toolbar' }, [el('span', {}, 'Brand:'), brandSelect]);
-  view.appendChild(toolbar);
-
   // ---- Redistribute-from-blog (B11) - collapsible, reuses the Home form ----
   const redistributeHost = el('div');
   redistributeHost.hidden = true;
   let redistributeOpen = false;
   const redistributeToggleBtn = el('button', {
+    class: 'button secondary sm',
+    type: 'button',
     onclick: () => {
       redistributeOpen = !redistributeOpen;
       redistributeHost.hidden = !redistributeOpen;
@@ -1633,7 +2023,8 @@ async function renderComposer(view) {
       if (redistributeOpen) redistributeHost.appendChild(redistributeForm(() => brandSelect.value));
     },
   }, 'Redistribute a blog post');
-  view.appendChild(el('div', { class: 'toolbar' }, [redistributeToggleBtn]));
+  // R1: title -> primary context control (brand) -> actions.
+  view.appendChild(pageHeader('Composer', brandSelect, redistributeToggleBtn));
   view.appendChild(redistributeHost);
 
   const body = el('div', {});
@@ -1651,6 +2042,16 @@ async function renderComposer(view) {
     body.innerHTML = '';
     if (!brandId) return;
     const accounts = state.accounts.filter((a) => String(a.brand_id) === String(brandId));
+    // B18b: preselect the matching platform's account when arriving from a
+    // Redraft handoff, so it renders pre-checked (accountRow reads
+    // selectedAccounts.has(a.id) when it builds each row below).
+    const pendingRedraft = redraftData && String(redraftData.brand_id) === String(brandId) ? redraftData : null;
+    let redraftMatchingAcct = null;
+    if (pendingRedraft) {
+      redraftMatchingAcct = accounts.find((a) => a.platform === pendingRedraft.platform) || null;
+      if (redraftMatchingAcct) selectedAccounts.add(redraftMatchingAcct.id);
+      redraftData = null; // consume once - a later brand switch shouldn't repeat it
+    }
     // B12: default the tone dropdown to the brand's saved default tone
     // (settings key brand_<id>_default_tone, set from #/settings) - falls
     // back to 'business' if unset or the settings call fails.
@@ -1692,6 +2093,7 @@ async function renderComposer(view) {
         renderPlatformTabs();
         updateContentTypeSuggestion();
         renderImagePreview();
+        updateBestTimeHint();
       });
       const limit = textLimitFor(a.platform);
       const limitStr = limit == null ? 'no char limit' : `${limit} char limit`;
@@ -1706,7 +2108,7 @@ async function renderComposer(view) {
       renderBadge();
 
       const platformForced = isManualPlatform(a.platform);
-      const manualToggle = el('input', { type: 'checkbox' });
+      const manualToggle = el('input', { type: 'checkbox', class: 'switch' });
       manualToggle.checked = Number(a.manual) === 1;
       if (platformForced) manualToggle.disabled = true; // already assisted-manual by platform, nothing to toggle
       manualToggle.addEventListener('change', async () => {
@@ -1718,7 +2120,7 @@ async function renderComposer(view) {
           renderPlatformTabs(); // re-render in case the current tab's copy/mark-posted affordance changed
         } catch (err) {
           manualToggle.checked = !manualToggle.checked; // revert on failure
-          alert(`Could not update manual flag: ${err.message}`);
+          toast(`Could not update manual flag: ${err.message}`, 'error');
         }
       });
       const manualLabel = el(
@@ -1741,7 +2143,7 @@ async function renderComposer(view) {
             selectedAccounts.delete(a.id);
             await loadForBrand(brandId);
           } catch (err) {
-            alert(`Could not remove account: ${err.message}`);
+            toast(`Could not remove account: ${err.message}`, 'error');
           }
         },
       }, '✕');
@@ -1798,7 +2200,10 @@ async function renderComposer(view) {
         el('div', { class: 'field-row', style: 'margin-top:8px;' }, [addSelect, addBtn, addMsg])
       );
     }
-    body.appendChild(accountsBox);
+    // L3: cards are appended in the canonical order at the end of
+    // loadForBrand (distribution -> content -> media -> metadata ->
+    // scheduling -> AI tools) instead of inline, so their construction order
+    // above can stay as-is. See the "D2 L3 assembly" block near the end.
 
     // ---- Content-type picker + recommender (B8) ----
     const contentTypeBox = el('div', { class: 'card' });
@@ -1816,7 +2221,101 @@ async function renderComposer(view) {
       el('div', { class: 'field-row' }, [el('label', {}, 'Pillar'), pillarInput]),
       suggestionLine
     );
-    body.appendChild(contentTypeBox);
+
+    // ---- Tags & campaign picker (B17a) ----
+    // Tags: multi-select chip toggle. Campaign: single-select chip group (max
+    // one per post, enforced client-side by only ever keeping one active).
+    // Both support create-inline (Enter in the small text input creates the
+    // tag/campaign with an auto color from TAG_COLOR_PALETTE) so the operator
+    // never has to leave the composer to set one up.
+    const selectedTagIds = new Set();
+    let selectedCampaignId = null;
+    let brandTags = [];
+    const tagsCard = el('div', { class: 'card' });
+    tagsCard.appendChild(el('h2', {}, 'Tags & campaign'));
+    const tagChipRow = el('div', { class: 'chip-row' });
+    const tagCreateInput = el('input', { placeholder: '+ tag', style: 'max-width:140px;display:inline-block;' });
+    const campaignChipRow = el('div', { class: 'chip-row', style: 'margin-top:8px;' });
+    const campaignCreateInput = el('input', { placeholder: '+ campaign', style: 'max-width:160px;display:inline-block;' });
+    const tagsMsg = el('div');
+    tagsCard.append(
+      el('div', { class: 'field-row' }, [el('label', {}, 'Tags'), tagChipRow, el('div', { style: 'margin-top:6px;' }, [tagCreateInput])]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Campaign (max one)'), campaignChipRow, el('div', { style: 'margin-top:6px;' }, [campaignCreateInput])]),
+      tagsMsg
+    );
+
+    function renderTagPickers() {
+      tagChipRow.innerHTML = '';
+      campaignChipRow.innerHTML = '';
+      for (const t of brandTags.filter((t) => t.kind === 'tag')) {
+        const active = selectedTagIds.has(t.id);
+        const btn = el(
+          'button',
+          {
+            type: 'button',
+            class: 'chip-btn' + (active ? ' active-tag' : ''),
+            style: `border-left:3px solid ${t.color || '#a3a19a'};${active ? `background:${t.color || 'var(--surface-2)'};color:#1a1200;` : ''}`,
+            onclick: () => { active ? selectedTagIds.delete(t.id) : selectedTagIds.add(t.id); renderTagPickers(); },
+          },
+          t.name
+        );
+        tagChipRow.appendChild(btn);
+      }
+      if (!brandTags.some((t) => t.kind === 'tag')) {
+        tagChipRow.appendChild(el('span', { style: 'color:var(--muted);font-size:12px;' }, 'No tags yet - create one below.'));
+      }
+      for (const t of brandTags.filter((t) => t.kind === 'campaign')) {
+        const active = selectedCampaignId === t.id;
+        const btn = el(
+          'button',
+          {
+            type: 'button',
+            class: 'chip-btn' + (active ? ' active-tag' : ''),
+            style: `border-left:3px solid ${t.color || '#a3a19a'};${active ? `background:${t.color || 'var(--surface-2)'};color:#1a1200;` : ''}`,
+            onclick: () => { selectedCampaignId = active ? null : t.id; renderTagPickers(); },
+          },
+          t.name
+        );
+        campaignChipRow.appendChild(btn);
+      }
+      if (!brandTags.some((t) => t.kind === 'campaign')) {
+        campaignChipRow.appendChild(el('span', { style: 'color:var(--muted);font-size:12px;' }, 'No campaigns yet - create one below.'));
+      }
+    }
+
+    async function loadBrandTags() {
+      try {
+        brandTags = await api(`/api/tags?brand_id=${brandId}`);
+      } catch (err) {
+        brandTags = [];
+        tagsMsg.innerHTML = '';
+        tagsMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load tags: ${err.message}`));
+      }
+      renderTagPickers();
+      loadAllTags(); // best-effort refresh of the calendar/analytics cache too
+    }
+
+    async function createInlineTag(kind, input) {
+      const name = input.value.trim();
+      if (!name) return;
+      tagsMsg.innerHTML = '';
+      try {
+        const row = await api('/api/tags', {
+          method: 'POST',
+          body: { name, kind, color: nextTagColor(), brand_id: Number(brandId) },
+        });
+        brandTags.push(row);
+        if (kind === 'tag') selectedTagIds.add(row.id);
+        else selectedCampaignId = row.id;
+        input.value = '';
+        renderTagPickers();
+      } catch (err) {
+        tagsMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not create ${kind}: ${err.message}`));
+      }
+    }
+    tagCreateInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); createInlineTag('tag', tagCreateInput); } });
+    campaignCreateInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); createInlineTag('campaign', campaignCreateInput); } });
+    await loadBrandTags();
 
     async function updateContentTypeSuggestion() {
       suggestionLine.textContent = '';
@@ -1852,7 +2351,6 @@ async function renderComposer(view) {
     imageBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'From Library'), imageSelect]));
     const previewHost = el('div');
     imageBox.appendChild(previewHost);
-    body.appendChild(imageBox);
 
     function renderImagePreview() {
       previewHost.innerHTML = '';
@@ -1923,7 +2421,7 @@ async function renderComposer(view) {
             await api('/api/ai/login', { method: 'POST', body: { provider } });
             appendHint(`A Terminal window opened to sign you in to ${noun}. Approve in your browser if prompted, then click Recheck.`);
           } catch (err) {
-            alert(`Could not start login: ${err.message}`);
+            toast(`Could not start login: ${err.message}`, 'error');
           }
         };
       }
@@ -1976,6 +2474,13 @@ async function renderComposer(view) {
     refreshAiStatus();
     const ideaInput = el('textarea', { rows: '3', placeholder: 'Idea text…', id: 'ai-idea-input' });
     ideaInput.oninput = () => (ideaText = ideaInput.value);
+    if (pendingRedraft && redraftMatchingAcct) {
+      // B18b: frame the idea as a repurpose of the proven post, not a copy -
+      // the draft pipeline (scrub, hook-first, link-high) still applies.
+      const framing = `Write a fresh take on this proven post - same idea, new angle and hook (don't copy it verbatim):\n\n${pendingRedraft.copy}`;
+      ideaInput.value = framing;
+      ideaText = framing;
+    }
     aiBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Idea'), ideaInput]));
     aiBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Tone'), toneSelect]));
     // B15: provider switch - shared with the copy-assist panel below via the
@@ -1987,37 +2492,35 @@ async function renderComposer(view) {
     aiBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Model'), providerSwitchEl]));
     const aiMsg = el('div');
     aiBox.appendChild(aiMsg);
+    // Named (not inline) so B18b's redraft handoff can trigger the exact
+    // same path programmatically, instead of duplicating the request.
+    async function runAiDraft() {
+      aiMsg.innerHTML = '';
+      compareHost.innerHTML = '';
+      const platforms = [...selectedAccounts]
+        .map((id) => accounts.find((a) => a.id === id)?.platform)
+        .filter(Boolean);
+      if (!ideaText.trim() || !platforms.length) {
+        aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account and enter an idea first.'));
+        return;
+      }
+      try {
+        const tp = await findToneProfileId(brandId, toneSelect.value);
+        const result = await api('/api/draft', {
+          method: 'POST',
+          body: { idea_text: ideaText, brand_id: Number(brandId), tone_profile_id: tp, platforms, provider: currentProvider },
+        });
+        Object.assign(draftsByPlatform, result.drafts);
+        renderPlatformTabs();
+        aiMsg.appendChild(
+          el('div', { class: 'msg-banner msg-ok' }, `Drafts populated. Scrub applied: ${result.scrub_applied.join(', ') || 'none'}`)
+        );
+      } catch (err) {
+        aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `AI drafting unavailable: ${err.message}`));
+      }
+    }
     const draftButtonsRow = el('div', { class: 'toolbar', style: 'margin-top:4px;' });
-    draftButtonsRow.appendChild(
-      el('button', {
-        class: 'primary',
-        onclick: async () => {
-          aiMsg.innerHTML = '';
-          compareHost.innerHTML = '';
-          const platforms = [...selectedAccounts]
-            .map((id) => accounts.find((a) => a.id === id)?.platform)
-            .filter(Boolean);
-          if (!ideaText.trim() || !platforms.length) {
-            aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account and enter an idea first.'));
-            return;
-          }
-          try {
-            const tp = await findToneProfileId(brandId, toneSelect.value);
-            const result = await api('/api/draft', {
-              method: 'POST',
-              body: { idea_text: ideaText, brand_id: Number(brandId), tone_profile_id: tp, platforms, provider: currentProvider },
-            });
-            Object.assign(draftsByPlatform, result.drafts);
-            renderPlatformTabs();
-            aiMsg.appendChild(
-              el('div', { class: 'msg-banner msg-ok' }, `Drafts populated. Scrub applied: ${result.scrub_applied.join(', ') || 'none'}`)
-            );
-          } catch (err) {
-            aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `AI drafting unavailable: ${err.message}`));
-          }
-        },
-      }, 'Draft with AI')
-    );
+    draftButtonsRow.appendChild(el('button', { class: 'primary', onclick: runAiDraft }, 'Draft with AI'));
     const compareHost = el('div');
     draftButtonsRow.appendChild(
       el('button', {
@@ -2092,7 +2595,6 @@ async function renderComposer(view) {
       );
       return col;
     }
-    body.appendChild(aiBox);
 
     const composerBox = el('div', { class: 'card' });
     composerBox.appendChild(el('h2', {}, 'Platform variants'));
@@ -2100,45 +2602,146 @@ async function renderComposer(view) {
     const editorHost = el('div');
     composerBox.appendChild(tabsRow);
     composerBox.appendChild(editorHost);
-    body.appendChild(composerBox);
 
     const publishAtInput = el('input', { type: 'datetime-local' });
     if (prefillDate) { publishAtInput.value = prefillDate; prefillDate = null; } // from a calendar day click, applied once
-    const publishCard = el('div', { class: 'card' }, [el('h2', {}, 'Schedule'), el('div', { class: 'field-row' }, [el('label', {}, 'Publish at'), publishAtInput])]);
-    body.appendChild(publishCard);
+    // ---- Best-time nudge (B18a) - keyed off the first selected account's
+    // platform (the "primary" platform for this draft). Refetches whenever
+    // the selection changes; a bumped token guards against a slow earlier
+    // fetch clobbering a faster later one.
+    const bestTimeHost = el('div', { class: 'best-time-host' });
+    let bestTimeToken = 0;
+    function updateBestTimeHint() {
+      const firstAcct = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).find(Boolean);
+      const myToken = ++bestTimeToken;
+      renderBestTimeHint(bestTimeHost, {
+        brandId,
+        platform: firstAcct?.platform,
+        guard: { stale: () => myToken !== bestTimeToken },
+        onApplyIso: (val) => { publishAtInput.value = val; },
+      });
+    }
+    const publishCard = el('div', { class: 'card' }, [
+      el('h2', {}, 'Schedule'),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Publish at'), publishAtInput]),
+      bestTimeHost,
+    ]);
+    updateBestTimeHint();
 
     const saveRow = el('div', { class: 'toolbar' });
     const savedMsg = el('div');
+
+    // Shared by "Save draft" and "Add to queue" - creates one post per
+    // selected account and returns the created rows (with id + platform) so
+    // callers can chain more actions (e.g. queueing) onto them.
+    async function createPostsForSelection(publishAtOverride) {
+      const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).filter(Boolean);
+      if (!platforms.length) return [];
+      const media = attachedImage ? [{ path: attachedImage.path, altText: attachedImage.altText || '' }] : [];
+      const created = [];
+      for (const acct of platforms) {
+        const fields = platformFieldsByPlatform[acct.platform] || {};
+        // Reddit has no free-text "copy" tab of its own - its body IS the
+        // copy (mirrored so calendar chips/exports show something useful).
+        const copy = acct.platform === 'reddit' ? (fields.body || '') : (draftsByPlatform[acct.platform] || '');
+        const row = await api('/api/posts', {
+          method: 'POST',
+          body: {
+            brand_id: Number(brandId),
+            account_id: acct.id,
+            platform: acct.platform,
+            copy,
+            platform_fields: fields,
+            content_type: contentType || null,
+            media,
+            publish_at: publishAtOverride !== undefined
+              ? publishAtOverride
+              : (publishAtInput.value ? new Date(publishAtInput.value).toISOString() : null),
+          },
+        });
+        created.push(row);
+      }
+      // B17a: apply the selected tags + campaign (if any) to every post just
+      // created for this selection. Best-effort - a tag-set failure shouldn't
+      // block the post itself from having been saved.
+      const tagIds = [...selectedTagIds, ...(selectedCampaignId ? [selectedCampaignId] : [])];
+      if (tagIds.length) {
+        for (const row of created) {
+          try {
+            await api(`/api/posts/${row.id}/tags`, { method: 'PUT', body: { tag_ids: tagIds } });
+          } catch (err) {
+            tagsMsg.innerHTML = '';
+            tagsMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not tag post #${row.id}: ${err.message}`));
+          }
+        }
+      }
+      return created;
+    }
+
     saveRow.appendChild(
       el('button', {
         class: 'primary',
         onclick: async () => {
-          const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).filter(Boolean);
-          if (!platforms.length) return;
           savedMsg.innerHTML = '';
-          const media = attachedImage ? [{ path: attachedImage.path, altText: attachedImage.altText || '' }] : [];
-          for (const acct of platforms) {
-            const fields = platformFieldsByPlatform[acct.platform] || {};
-            // Reddit has no free-text "copy" tab of its own - its body IS the
-            // copy (mirrored so calendar chips/exports show something useful).
-            const copy = acct.platform === 'reddit' ? (fields.body || '') : (draftsByPlatform[acct.platform] || '');
-            await api('/api/posts', {
-              method: 'POST',
-              body: {
-                brand_id: Number(brandId),
-                account_id: acct.id,
-                platform: acct.platform,
-                copy,
-                platform_fields: fields,
-                content_type: contentType || null,
-                media,
-                publish_at: publishAtInput.value ? new Date(publishAtInput.value).toISOString() : null,
-              },
-            });
-          }
+          const created = await createPostsForSelection();
+          if (!created.length) return;
           savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft(s) saved. Go to Calendar to approve.'));
         },
       }, 'Save draft')
+    );
+
+    // ---- Add to queue (B16a) - saves the current draft(s) if not already
+    // saved, then drops each into the next open queue slot for its
+    // brand+platform via POST /api/posts/:id/queue. Shows the computed
+    // time(s); if no slot exists for a platform, points at Settings.
+    const queueMsg = el('div');
+    saveRow.appendChild(
+      el('button', {
+        onclick: async () => {
+          queueMsg.innerHTML = '';
+          if (![...selectedAccounts].length) {
+            queueMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account first.'));
+            return;
+          }
+          let created;
+          try {
+            // publish_at is computed by the queue endpoint, not the input.
+            created = await createPostsForSelection(null);
+          } catch (err) {
+            queueMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not save draft: ${err.message}`));
+            return;
+          }
+          if (!created.length) return;
+          const lines = [];
+          let earliest = null;
+          for (const post of created) {
+            try {
+              const res = await api(`/api/posts/${post.id}/queue`, { method: 'POST', body: {} });
+              const when = fmtDate(res.publish_at);
+              lines.push(el('div', {}, `${post.platform}: queued for ${when}`));
+              if (!earliest || res.publish_at < earliest) earliest = res.publish_at;
+            } catch (err) {
+              if (err.status === 422 && err.data?.error === 'no_open_slot') {
+                lines.push(
+                  el('div', {}, [
+                    `${post.platform}: no active queue slots for this brand — `,
+                    el('a', { href: '#/settings', onclick: () => { location.hash = '#/settings'; } }, 'set one up in Settings'),
+                    '.',
+                  ])
+                );
+              } else {
+                lines.push(el('div', {}, `${post.platform}: ${err.message}`));
+              }
+            }
+          }
+          if (earliest) {
+            publishAtInput.value = new Date(earliest).toISOString().slice(0, 16);
+          }
+          savedMsg.innerHTML = '';
+          savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft(s) saved. Go to Calendar to approve.'));
+          queueMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, lines));
+        },
+      }, 'Add to queue')
     );
     // ---- Image request options (B14) - CB picks how many variants Codex
     // drops + optional size/type hints, seeded per platform-specs.json but
@@ -2176,7 +2779,6 @@ async function renderComposer(view) {
         el('div', { class: 'field-row' }, [el('label', {}, 'Type'), typeHintSelect]),
       ])
     );
-    body.appendChild(imageOptsCard);
 
     const imageReqMsg = el('div');
     saveRow.appendChild(
@@ -2213,9 +2815,10 @@ async function renderComposer(view) {
         },
       }, 'Request image (Codex)')
     );
-    body.appendChild(saveRow);
-    body.appendChild(savedMsg);
-    body.appendChild(imageReqMsg);
+    // NOTE: actual DOM assembly/ordering happens in one place further down
+    // ("D2 L3 assembly" below) - a pre-existing reorg block already lived
+    // there (from an earlier wave) and re-appends these same nodes, so this
+    // is where the canonical order is decided, not here.
 
     // ---- Copy-assist panel (B8) - Headlines / Hashtags / Alt text buttons,
     // shared across platform editors. Results insert into the copy field the
@@ -2375,7 +2978,7 @@ async function renderComposer(view) {
                     await api(`/api/examples/${ex.id}`, { method: 'DELETE' });
                     reloadExamples();
                   } catch (err) {
-                    alert(err.message);
+                    toast(err.message, 'error');
                   }
                 },
               }, '×'),
@@ -2539,24 +3142,53 @@ async function renderComposer(view) {
       return wrap;
     }
 
-    // ---- Reorganize into collapsible, reordered sections ----
-    // Images are the primary output, so they sit near the top; secondary
-    // inputs (content type, schedule) collapse by default. Re-appending an
-    // existing node moves it in the DOM, so this only reorders what's already
-    // been built above - no re-creation, no lost handlers.
+    // ---- D2 L3 assembly: distribution -> content -> media -> metadata ->
+    // scheduling -> AI tools (grouped in one collapsible). Re-appending an
+    // existing node moves it in the DOM, so this only reorders what's
+    // already been built above - no re-creation, no lost handlers. This
+    // replaces an earlier ad-hoc reorder (images-first, ai/content-type
+    // each separately collapsible) with the Sprout-style compose order from
+    // docs/D2_CONSISTENCY_PASS_SPEC.md L3.
     makeCollapsible(accountsBox, { open: true, key: 'acct' });
     makeCollapsible(imageBox, { open: true, key: 'img' });
-    makeCollapsible(imageOptsCard, { open: true, key: 'imgreq' });
-    makeCollapsible(aiBox, { open: true, key: 'ai' });
-    makeCollapsible(composerBox, { open: true, key: 'variants' });
     makeCollapsible(contentTypeBox, { open: false, key: 'ctype' });
     makeCollapsible(publishCard, { open: false, key: 'sched' });
-    body.append(accountsBox, imageBox, imageOptsCard, aiBox, composerBox, contentTypeBox, publishCard);
+    const aiToolsCard = el('div', { class: 'card ai-tools-group' }, [
+      el('h2', {}, 'AI tools'),
+      aiBox,
+      imageOptsCard,
+    ]);
+    makeCollapsible(aiToolsCard, { open: false, key: 'composer-ai-tools' });
+    body.append(
+      accountsBox,     // distribution
+      composerBox,      // content (copy editor + per-platform variants)
+      imageBox,         // media
+      contentTypeBox,   // metadata (content type)
+      tagsCard,         // metadata (tags & campaign)
+      publishCard,      // scheduling
+      aiToolsCard       // AI tools, grouped + collapsible
+    );
     // Sticky action bar so Save/Request are always reachable without scrolling.
     saveRow.classList.add('composer-actionbar');
-    body.append(savedMsg, imageReqMsg, saveRow);
+    body.append(savedMsg, queueMsg, imageReqMsg, saveRow);
 
     renderPlatformTabs();
+
+    // ---- B18b: finish the redraft handoff - stage the original as an
+    // example (best-effort grounding for future drafts; failure shouldn't
+    // block the auto-draft) then run Draft with AI.
+    if (pendingRedraft && redraftMatchingAcct) {
+      aiMsg.appendChild(el('div', { class: 'msg-banner', style: 'color:var(--muted);' }, 'Redrafting your top post - fresh angle incoming…'));
+      try {
+        await api('/api/examples', {
+          method: 'POST',
+          body: { brand_id: Number(brandId), platform: pendingRedraft.platform, source: 'redraft', text: pendingRedraft.copy },
+        });
+      } catch {
+        // best-effort only - the framing prompt already carries the original
+      }
+      await runAiDraft();
+    }
   }
 
   brandSelect.onchange = () => {
@@ -2610,15 +3242,23 @@ function deltaBadge(direction) {
 
 // Hand-rolled inline SVG bar chart - no chart library (SPEC.md "Analytics
 // portal" keeps the no-dependency rule). `bars` = [{label, value}].
+// R6 fix: with many/long category labels (e.g. Ops "Posts by status", 8
+// status names), horizontal centered labels collide with their neighbors.
+// Past ~5 bars, or when any label is long, rotate the axis labels -40deg
+// (anchor 'end') and truncate long ones with an SVG <title> tooltip carrying
+// the full text - readable without overlap, full label still discoverable.
 function svgBarChart(bars, { width = 420, height = 140, color = '#C8902A' } = {}) {
   const pad = 24;
+  const maxLabelLen = Math.max(0, ...bars.map((b) => String(b.label).length));
+  const rotateLabels = bars.length > 5 || maxLabelLen > 8;
+  const bottomPad = rotateLabels ? 46 : pad;
   const max = Math.max(1, ...bars.map((b) => b.value));
   const barWidth = bars.length ? (width - pad * 2) / bars.length : 0;
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('viewBox', `0 0 ${width} ${height + (rotateLabels ? bottomPad - pad : 0)}`);
   svg.setAttribute('width', '100%');
-  svg.setAttribute('height', height);
+  svg.setAttribute('height', height + (rotateLabels ? bottomPad - pad : 0));
 
   bars.forEach((b, i) => {
     const barH = ((height - pad * 2) * b.value) / max;
@@ -2644,13 +3284,28 @@ function svgBarChart(bars, { width = 420, height = 140, color = '#C8902A' } = {}
     valueLabel.textContent = String(b.value);
     svg.appendChild(valueLabel);
 
+    const fullLabel = String(b.label);
     const label = document.createElementNS(ns, 'text');
-    label.setAttribute('x', x + w / 2);
-    label.setAttribute('y', height - pad + 12);
-    label.setAttribute('text-anchor', 'middle');
     label.setAttribute('font-size', '10');
     label.setAttribute('fill', 'var(--muted, #888)');
-    label.textContent = b.label;
+    if (rotateLabels) {
+      const shown = fullLabel.length > 12 ? fullLabel.slice(0, 11) + '…' : fullLabel;
+      label.setAttribute('x', x + w / 2);
+      label.setAttribute('y', height - pad + 10);
+      label.setAttribute('text-anchor', 'end');
+      label.setAttribute('transform', `rotate(-40 ${x + w / 2} ${height - pad + 10})`);
+      label.textContent = shown;
+      if (shown !== fullLabel) {
+        const title = document.createElementNS(ns, 'title');
+        title.textContent = fullLabel;
+        label.appendChild(title);
+      }
+    } else {
+      label.setAttribute('x', x + w / 2);
+      label.setAttribute('y', height - pad + 12);
+      label.setAttribute('text-anchor', 'middle');
+      label.textContent = fullLabel;
+    }
     svg.appendChild(label);
   });
 
@@ -2720,10 +3375,60 @@ function statRow(totals) {
 
 async function renderAnalytics(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Analytics'));
+  view.classList.add('view-default');
 
-  const data = await api('/api/analytics');
+  // B17a: campaign selector - re-fetches the whole rollup scoped to a single
+  // campaign tag via ?tag_id=, so every section below (totals, WoW, top10)
+  // reads as "this campaign's numbers" rather than the account-wide ones.
+  await loadAllTags();
+  const campaigns = allTagsCache.filter((t) => t.kind === 'campaign');
+  const campaignSelect = el('select', {}, [
+    el('option', { value: '' }, 'All (no campaign filter)'),
+    ...campaigns.map((c) => el('option', { value: c.id }, c.name)),
+  ]);
+  const analyticsBody = el('div');
+  // R1: title -> actions; campaign filter is the only action, rightmost.
+  view.appendChild(pageHeader('Analytics', el('span', {}, 'Campaign:'), campaignSelect));
+  view.appendChild(analyticsBody);
+  campaignSelect.onchange = () => renderAnalyticsBody(campaignSelect.value);
+  await renderAnalyticsBody('');
 
+  async function renderAnalyticsBody(tagId) {
+    analyticsBody.innerHTML = '';
+    const qs = tagId ? `?tag_id=${encodeURIComponent(tagId)}` : '';
+    const data = await api(`/api/analytics${qs}`);
+    if (tagId) {
+      const campaign = tagById(tagId);
+      const banner = inlineBanner([el('strong', {}, 'Campaign performance'), ` — scoped to "${campaign?.name || tagId}"`], 'info');
+      banner.style.borderLeft = `4px solid ${campaign?.color || 'var(--gold)'}`;
+      analyticsBody.appendChild(banner);
+    }
+    renderAnalyticsSections(analyticsBody, data);
+  }
+}
+
+// ---- Redraft-the-winner (B18b) ----
+// Stashes the original post's copy + brand/platform in sessionStorage and
+// hands off to the Composer (same sessionStorage-handoff pattern as B9's
+// Home quick-create bar), which auto-runs Draft with AI with a "fresh take
+// on this proven post" framing prompt through the existing /api/draft path.
+function redraftButton(p) {
+  return el('button', {
+    class: 'button ghost sm redraft-btn',
+    type: 'button',
+    title: 'Draft a fresh take on this proven post',
+    onclick: () => {
+      sessionStorage.setItem(
+        'pd_composer_redraft',
+        JSON.stringify({ brand_id: p.brand_id, platform: p.platform, copy: p.copy || '' })
+      );
+      setStickyBrand(String(p.brand_id));
+      location.hash = '#/composer';
+    },
+  }, 'Redraft');
+}
+
+function renderAnalyticsSections(view, data) {
   if (data.metrics_due.length) {
     const due = el('div', { class: 'card' });
     due.appendChild(el('h2', {}, `Metrics due (${data.metrics_due.length})`));
@@ -2731,12 +3436,13 @@ async function renderAnalytics(view) {
       'Published posts older than 48h with no metrics entered yet.'));
     for (const p of data.metrics_due) {
       due.appendChild(
-        el('div', { class: 'card' }, [
+        el('div', { style: 'display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border);' }, [
           el('a', { href: `#/post/${p.id}` }, `#${p.id} - ${brandName(p.brand_id)} - ${p.platform}`),
-          el('span', { style: 'color:var(--muted);margin-left:8px;' }, `published ${fmtDate(p.updated_at)}`),
+          el('span', { style: 'color:var(--muted);white-space:nowrap;' }, `published ${fmtDate(p.updated_at)}`),
         ])
       );
     }
+    due.appendChild(el('div', { style: 'color:var(--muted);font-size:11px;margin-top:8px;text-align:center;' }, `— end of list (${data.metrics_due.length}) —`));
     view.appendChild(due);
   }
 
@@ -2795,13 +3501,13 @@ async function renderAnalytics(view) {
       const impCol = el('div', {}, [el('h3', {}, 'Top 10 by impressions')]);
       for (const p of brand.top10_by_impressions) {
         impCol.appendChild(
-          el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_impressions} impressions`])
+          el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_impressions} impressions`, redraftButton(p)])
         );
       }
       const leadCol = el('div', {}, [el('h3', {}, 'Top 10 by leads')]);
       for (const p of brand.top10_by_leads) {
         leadCol.appendChild(
-          el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_leads} leads`])
+          el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_leads} leads`, redraftButton(p)])
         );
       }
       top10.append(impCol, leadCol);
@@ -2856,13 +3562,16 @@ function platformImageDimsRaw(platform, contentType) {
 
 async function renderOps(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Ops Stats'));
+  view.classList.add('view-default');
+  // R1: no filters/date-range on this view by design - it's a read-only,
+  // whole-account stats glance, not scoped per-brand.
+  view.appendChild(pageHeader('Ops Stats'));
 
   let data;
   try {
     data = await api('/api/usage');
   } catch (err) {
-    view.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load usage stats: ${err.message}`));
+    view.appendChild(inlineBanner(`Could not load usage stats: ${err.message}`, 'error'));
     return;
   }
 
@@ -2880,33 +3589,18 @@ async function renderOps(view) {
     ))
   );
 
-  view.appendChild(
-    el('div', { class: 'card' }, [
-      el('h2', {}, 'Posts by status'),
-      svgBarChart(Object.entries(data.posts_by_status || {}).map(([label, value]) => ({ label, value }))),
-    ])
-  );
+  function barCard(title, bars) {
+    const hasData = bars.some((b) => b.value > 0);
+    return el('div', { class: 'card' }, [
+      el('h2', {}, title),
+      hasData ? svgBarChart(bars) : emptyState('No data yet.'),
+    ]);
+  }
 
-  view.appendChild(
-    el('div', { class: 'card' }, [
-      el('h2', {}, 'Posts by brand'),
-      svgBarChart((data.posts_by_brand || []).map((b) => ({ label: b.brand_name || `brand ${b.brand_id}`, value: b.count }))),
-    ])
-  );
-
-  view.appendChild(
-    el('div', { class: 'card' }, [
-      el('h2', {}, 'Posts by platform'),
-      svgBarChart((data.posts_by_platform || []).map((p) => ({ label: p.platform, value: p.count }))),
-    ])
-  );
-
-  view.appendChild(
-    el('div', { class: 'card' }, [
-      el('h2', {}, 'Content-type mix'),
-      svgBarChart((data.content_type_mix || []).map((c) => ({ label: c.content_type, value: c.count }))),
-    ])
-  );
+  view.appendChild(barCard('Posts by status', Object.entries(data.posts_by_status || {}).map(([label, value]) => ({ label, value }))));
+  view.appendChild(barCard('Posts by brand', (data.posts_by_brand || []).map((b) => ({ label: b.brand_name || `brand ${b.brand_id}`, value: b.count }))));
+  view.appendChild(barCard('Posts by platform', (data.posts_by_platform || []).map((p) => ({ label: p.platform, value: p.count }))));
+  view.appendChild(barCard('Content-type mix', (data.content_type_mix || []).map((c) => ({ label: c.content_type, value: c.count }))));
 
   const usageCard = el('div', { class: 'card' });
   usageCard.appendChild(el('h2', {}, 'Usage - all-time vs last 7 days'));
@@ -2950,14 +3644,14 @@ function parseGlobalHardRules(raw) {
   };
 }
 
-// Renders a checkbox as a clear on/off toggle row (SPEC.md: "rules as visible
-// checkmark toggles" - the ON/OFF pill makes the active state obvious at a
-// glance, not just a bare checkbox).
+// Renders a checkbox as a real styled toggle switch (D2 R8: one switch
+// pattern for every on/off setting, not a bare checkbox). The ON/OFF text
+// stays alongside the switch (color is never the only state signal, R7).
 function settingsToggleRow(checked, label) {
-  const cb = el('input', { type: 'checkbox' });
+  const cb = el('input', { type: 'checkbox', class: 'switch' });
   cb.checked = checked;
-  const stateEl = el('span', { class: `settings-toggle-state ${checked ? 'on' : 'off'}` }, checked ? 'ON' : 'OFF');
-  const row = el('label', { class: 'settings-toggle-row' }, [
+  const stateEl = el('span', { class: `switch-state ${checked ? 'on' : 'off'}` }, checked ? 'ON' : 'OFF');
+  const row = el('label', { class: 'settings-toggle-row switch-row' }, [
     cb,
     el('span', { class: 'settings-toggle-label' }, label),
     stateEl,
@@ -2976,15 +3670,28 @@ function settingsHint(text) {
 
 async function renderSettings(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Settings'));
+  view.classList.add('view-narrow');
+  view.appendChild(pageHeader('Settings'));
 
   let settings = {};
   try {
     settings = await api('/api/settings');
   } catch (err) {
-    view.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load settings: ${err.message}`));
+    view.appendChild(inlineBanner(`Could not load settings: ${err.message}`, 'error'));
     return;
   }
+
+  // L2: three labeled zones (Workspace / Brands / Integrations & ops) with
+  // anchor links at top. Individual cards below are unchanged; they're just
+  // routed into the right zone container at the bottom of this function
+  // instead of appended straight to `view` as they're built.
+  view.appendChild(
+    el('nav', { class: 'settings-zone-nav' }, [
+      el('a', { href: '#settings-zone-workspace' }, 'Workspace'),
+      el('a', { href: '#settings-zone-brands' }, 'Brands'),
+      el('a', { href: '#settings-zone-ops' }, 'Integrations & ops'),
+    ])
+  );
 
   // ---- Personality ----
   const personalityCard = el('div', { class: 'card settings-section' });
@@ -3004,15 +3711,14 @@ async function renderSettings(view) {
         voiceMsg.innerHTML = '';
         try {
           await api('/api/settings', { method: 'PATCH', body: { global_voice: voiceArea.value } });
-          voiceMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved.'));
+          toast('Voice saved.');
         } catch (err) {
-          voiceMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+          voiceMsg.appendChild(inlineBanner(err.message, 'error'));
         }
       },
     }, 'Save voice')
   );
   personalityCard.appendChild(voiceMsg);
-  view.appendChild(personalityCard);
 
   // ---- Global rules (visible on/off toggles) ----
   const rules = parseGlobalHardRules(settings.global_hard_rules);
@@ -3044,15 +3750,14 @@ async function renderSettings(view) {
         };
         try {
           await api('/api/settings', { method: 'PATCH', body: { global_hard_rules: JSON.stringify(body) } });
-          rulesMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved.'));
+          toast('Saved.');
         } catch (err) {
-          rulesMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+          rulesMsg.appendChild(inlineBanner(err.message, 'error'));
         }
       },
     }, 'Save rules')
   );
   rulesCard.appendChild(rulesMsg);
-  view.appendChild(rulesCard);
 
   // ---- Agent publish authority (B14) - armed, default OFF. When off the
   // assistant can only draft; when on it can approve/publish live (dry-run
@@ -3070,13 +3775,12 @@ async function renderSettings(view) {
     publishMsg.innerHTML = '';
     try {
       await api('/api/settings', { method: 'PATCH', body: { agent_can_publish: publishToggle.cb.checked ? '1' : '0' } });
-      publishMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved.'));
+      toast('Saved.');
     } catch (err) {
-      publishMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+      publishMsg.appendChild(inlineBanner(err.message, 'error'));
     }
   });
   publishCard.appendChild(publishMsg);
-  view.appendChild(publishCard);
 
   // ---- Default drafting model (B15) ----
   const providerCard = el('div', { class: 'card settings-section' });
@@ -3099,13 +3803,12 @@ async function renderSettings(view) {
     try {
       await api('/api/settings', { method: 'PATCH', body: { draft_provider: providerSelect.value } });
       sessionDraftProvider = providerSelect.value;
-      providerMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved.'));
+      toast('Saved.');
     } catch (err) {
-      providerMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+      providerMsg.appendChild(inlineBanner(err.message, 'error'));
     }
   };
   providerCard.appendChild(providerMsg);
-  view.appendChild(providerCard);
 
   // ---- Image prompt system ----
   const imagePromptCard = el('div', { class: 'card settings-section settings-prompt-card' });
@@ -3140,9 +3843,9 @@ async function renderSettings(view) {
               method: 'PATCH',
               body: Object.fromEntries(Object.entries(promptInputs).map(([key, input]) => [key, input.value])),
             });
-            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Image prompt system saved.'));
+            toast('Image prompt system saved.');
           } catch (err) {
-            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+            imagePromptMsg.appendChild(inlineBanner(err.message, 'error'));
           }
         },
       }, 'Save image prompts'),
@@ -3152,24 +3855,32 @@ async function renderSettings(view) {
           try {
             const fresh = await api('/api/settings');
             for (const [key] of promptFields) promptInputs[key].value = fresh[key] || '';
-            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Reloaded from Settings.'));
+            toast('Reloaded from Settings.');
           } catch (err) {
-            imagePromptMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+            imagePromptMsg.appendChild(inlineBanner(err.message, 'error'));
           }
         },
       }, 'Reload'),
     ])
   );
   imagePromptCard.appendChild(imagePromptMsg);
-  view.appendChild(imagePromptCard);
 
   // ---- Per-brand tone tweaks ----
   const brandCard = el('div', { class: 'card settings-section' });
   brandCard.appendChild(el('h2', {}, 'Per-brand'));
 
   if (!state.brands.length) {
-    brandCard.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'No brands yet.'));
-    view.appendChild(brandCard);
+    brandCard.appendChild(emptyState('No brands yet.'));
+    view.append(
+      el('section', { id: 'settings-zone-workspace', class: 'settings-zone' }, [
+        el('h2', { class: 'settings-zone-title' }, 'Workspace'),
+        personalityCard, rulesCard, publishCard, providerCard, imagePromptCard,
+      ]),
+      el('section', { id: 'settings-zone-brands', class: 'settings-zone' }, [
+        el('h2', { class: 'settings-zone-title' }, 'Brands'),
+        brandCard,
+      ])
+    );
     return;
   }
 
@@ -3193,9 +3904,9 @@ async function renderSettings(view) {
             method: 'PATCH',
             body: { [`brand_${brandId}_default_tone`]: defaultToneSelect.value },
           });
-          defaultToneMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Default tone saved.'));
+          toast('Default tone saved.');
         } catch (err) {
-          defaultToneMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+          defaultToneMsg.appendChild(inlineBanner(err.message, 'error'));
         }
       },
     }, 'Save default tone')
@@ -3204,7 +3915,6 @@ async function renderSettings(view) {
 
   const tonesHost = el('div');
   brandCard.appendChild(tonesHost);
-  view.appendChild(brandCard);
 
   // ---- Branding (B14) - logo upload/preview, color pickers, voice-doc
   // path, per selected brand. Feeds the image brief (logo + colors) so
@@ -3217,7 +3927,6 @@ async function renderSettings(view) {
   );
   const brandingHost = el('div');
   brandingCard.appendChild(brandingHost);
-  view.appendChild(brandingCard);
 
   function parseBrandColors(raw) {
     let parsed = {};
@@ -3235,7 +3944,7 @@ async function renderSettings(view) {
       brand = fresh.find((b) => String(b.id) === String(brandId));
     } catch (err) {
       brandingHost.innerHTML = '';
-      brandingHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load brand: ${err.message}`));
+      brandingHost.appendChild(inlineBanner(`Could not load brand: ${err.message}`, 'error'));
       return;
     }
     if (!brand) {
@@ -3268,7 +3977,7 @@ async function renderSettings(view) {
           onclick: async () => {
             logoMsg.innerHTML = '';
             if (!logoFileInput.files.length) {
-              logoMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Choose a logo file first.'));
+              logoMsg.appendChild(inlineBanner('Choose a logo file first.', 'error'));
               return;
             }
             const fd = new FormData();
@@ -3278,9 +3987,9 @@ async function renderSettings(view) {
               brand.logo_path = updated?.logo_path || brand.logo_path;
               renderLogoPreview();
               logoFileInput.value = '';
-              logoMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Logo uploaded.'));
+              toast('Logo uploaded.');
             } catch (err) {
-              logoMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+              logoMsg.appendChild(inlineBanner(err.message, 'error'));
             }
           },
         }, 'Upload logo'),
@@ -3300,9 +4009,9 @@ async function renderSettings(view) {
           method: 'PATCH',
           body: { colors: JSON.stringify({ primary: primaryColorInput.value, accent: accentColorInput.value }) },
         });
-        colorsMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Colors saved.'));
+        toast('Colors saved.');
       } catch (err) {
-        colorsMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+        colorsMsg.appendChild(inlineBanner(err.message, 'error'));
       }
     }
     primaryColorInput.addEventListener('change', saveColors);
@@ -3330,14 +4039,48 @@ async function renderSettings(view) {
           voiceDocMsg.innerHTML = '';
           try {
             await api(`/api/brands/${brandId}`, { method: 'PATCH', body: { voice_doc_path: voiceDocInput.value } });
-            voiceDocMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved.'));
+            toast('Saved.');
           } catch (err) {
-            voiceDocMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+            voiceDocMsg.appendChild(inlineBanner(err.message, 'error'));
           }
         },
       }, 'Save voice-doc path')
     );
     brandingHost.appendChild(voiceDocMsg);
+
+    // ---- Link tracking / UTM (B18c) - applied automatically at the
+    // approve transition (never on draft, so drafts stay clean). Brands
+    // round-trip utm_enabled/utm_template via PATCH /api/brands/:id.
+    const utmToggle = settingsToggleRow(Boolean(brand.utm_enabled), 'Link tracking (UTM)');
+    const utmTemplateInput = el('input', {
+      placeholder: 'utm_source={platform}&utm_medium=social&utm_campaign={campaign}',
+      value: brand.utm_template || '',
+    });
+    const utmMsg = el('div');
+    brandingHost.appendChild(utmToggle.row);
+    brandingHost.appendChild(
+      el('div', { class: 'field-row' }, [el('label', {}, 'UTM template'), utmTemplateInput])
+    );
+    brandingHost.appendChild(settingsHint('Applied when a post is approved.'));
+    brandingHost.appendChild(
+      el('button', {
+        onclick: async () => {
+          utmMsg.innerHTML = '';
+          try {
+            const updated = await api(`/api/brands/${brandId}`, {
+              method: 'PATCH',
+              body: { utm_enabled: utmToggle.cb.checked, utm_template: utmTemplateInput.value || null },
+            });
+            brand.utm_enabled = updated?.utm_enabled;
+            brand.utm_template = updated?.utm_template;
+            toast('Saved.');
+          } catch (err) {
+            utmMsg.appendChild(inlineBanner(err.message, 'error'));
+          }
+        },
+      }, 'Save link tracking')
+    );
+    brandingHost.appendChild(utmMsg);
   }
 
   // Per-tone editor: voice_rules textarea + Save + Reset-to-global, plus a
@@ -3369,10 +4112,10 @@ async function renderSettings(view) {
           msg.innerHTML = '';
           try {
             await api(`/api/tone-profiles/${profile.id}`, { method: 'PATCH', body: { voice_rules: area.value } });
-            msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved.'));
+            toast('Saved.');
             loadPreview();
           } catch (err) {
-            msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+            msg.appendChild(inlineBanner(err.message, 'error'));
           }
         },
       }, 'Save'),
@@ -3382,10 +4125,10 @@ async function renderSettings(view) {
           try {
             const reset = await api(`/api/tone-profiles/${profile.id}/reset`, { method: 'POST' });
             area.value = reset?.voice_rules || '';
-            msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Reset to global.'));
+            toast('Reset to global.');
             loadPreview();
           } catch (err) {
-            msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+            msg.appendChild(inlineBanner(err.message, 'error'));
           }
         },
       }, 'Reset to global'),
@@ -3416,8 +4159,177 @@ async function renderSettings(view) {
       tonesHost.appendChild(grid);
     } catch (err) {
       tonesHost.innerHTML = '';
-      tonesHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load tone profiles: ${err.message}`));
+      tonesHost.appendChild(inlineBanner(`Could not load tone profiles: ${err.message}`, 'error'));
     }
+  }
+
+  // ---- Queues (B16a) - recurring weekly slots per brand+platform. "Add to
+  // queue" (composer action bar) drops a post into the next open one. ----
+  const QUEUE_DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const ALL_PLATFORMS = ['linkedin', 'facebook', 'twitter', 'instagram', 'reddit', 'tiktok', 'youtube', 'threads', 'blog'];
+
+  const queuesCard = el('div', { class: 'card settings-section' });
+  queuesCard.appendChild(el('h2', {}, 'Queues'));
+  queuesCard.appendChild(
+    settingsHint('Recurring weekly time slots per platform. "Add to queue" in the Composer drops a post into the next open one.')
+  );
+  const queuesHost = el('div');
+  queuesCard.appendChild(queuesHost);
+
+  async function loadQueues() {
+    queuesHost.innerHTML = '<p style="color:var(--muted);">Loading queue slots…</p>';
+    let slots;
+    try {
+      slots = await api(`/api/queue-slots?brand_id=${brandId}`);
+    } catch (err) {
+      queuesHost.innerHTML = '';
+      queuesHost.appendChild(inlineBanner(`Could not load queue slots: ${err.message}`, 'error'));
+      return;
+    }
+
+    // Limit the platform picker to platforms this brand actually has an
+    // account for, when that's derivable; otherwise offer all platforms.
+    const brandPlatforms = [...new Set(
+      state.accounts.filter((a) => String(a.brand_id) === String(brandId)).map((a) => a.platform)
+    )];
+    const platformOptions = brandPlatforms.length ? brandPlatforms : ALL_PLATFORMS;
+
+    queuesHost.innerHTML = '';
+
+    const listMsg = el('div');
+    if (!slots.length) {
+      queuesHost.appendChild(emptyState('No queue slots yet - add your first slot below.'));
+    } else {
+      const list = el('div', { class: 'queue-slot-list' });
+      for (const slot of slots) {
+        const activeToggle = el('input', { type: 'checkbox', class: 'switch' });
+        activeToggle.checked = Number(slot.active) === 1;
+        activeToggle.addEventListener('change', async () => {
+          try {
+            await api(`/api/queue-slots/${slot.id}`, { method: 'PATCH', body: { active: activeToggle.checked ? 1 : 0 } });
+          } catch (err) {
+            activeToggle.checked = !activeToggle.checked;
+            toast(`Could not update slot: ${err.message}`, 'error');
+          }
+        });
+        const removeBtn = el('button', {
+          class: 'account-remove',
+          type: 'button',
+          title: 'Delete this slot',
+          onclick: async () => {
+            // Destructive - kept as a native confirm() rather than a custom
+            // confirmation UI (judgment call per D2 spec R5).
+            if (!confirm(`Delete the ${QUEUE_DAY_NAMES[slot.day_of_week]} ${slot.time_local} ${slot.platform} slot?`)) return;
+            try {
+              await api(`/api/queue-slots/${slot.id}`, { method: 'DELETE' });
+              loadQueues();
+            } catch (err) {
+              toast(`Could not delete slot: ${err.message}`, 'error');
+            }
+          },
+        }, '✕');
+        list.appendChild(
+          el('div', { class: 'queue-slot-row', style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;' }, [
+            el('span', { class: 'pill' }, slot.platform),
+            el('span', {}, `${QUEUE_DAY_NAMES[slot.day_of_week]} ${slot.time_local}`),
+            el('label', { style: 'display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);' }, [activeToggle, 'active']),
+            removeBtn,
+          ])
+        );
+      }
+      queuesHost.appendChild(list);
+    }
+
+    // ---- Add-slot row ----
+    const daySelect = el('select', {}, QUEUE_DAY_NAMES.map((name, i) => el('option', { value: String(i) }, name)));
+    const timeInput = el('input', { type: 'time', value: '12:00' });
+    const platformSelect = el('select', {}, platformOptions.map((p) => el('option', { value: p }, p)));
+    const addMsg = el('div');
+    const addBtn = el('button', {
+      class: 'primary',
+      onclick: async () => {
+        addMsg.innerHTML = '';
+        try {
+          await api('/api/queue-slots', {
+            method: 'POST',
+            body: {
+              brand_id: Number(brandId),
+              platform: platformSelect.value,
+              day_of_week: Number(daySelect.value),
+              time_local: timeInput.value,
+            },
+          });
+          loadQueues();
+        } catch (err) {
+          addMsg.appendChild(inlineBanner(err.message, 'error'));
+        }
+      },
+    }, 'Add slot');
+    queuesHost.appendChild(
+      formSection('Add a slot', null,
+        el('div', { class: 'form-section-row' }, [daySelect, timeInput, platformSelect, addBtn])
+      )
+    );
+    queuesHost.appendChild(addMsg);
+    queuesHost.appendChild(listMsg);
+
+    // ---- Best-time hint (B18a #4) - cheap reuse of the composer's fetch,
+    // one line, updates whenever the platform dropdown changes.
+    const queueBestTimeHost = el('div', { style: 'margin-top:4px;' });
+    queuesHost.appendChild(queueBestTimeHost);
+    let queueBestTimeToken = 0;
+    async function updateQueueBestTimeHint() {
+      const platform = platformSelect.value;
+      const myToken = ++queueBestTimeToken;
+      queueBestTimeHost.innerHTML = '';
+      if (!platform) return;
+      let data;
+      try {
+        data = await api(`/api/best-times?brand_id=${brandId}&platform=${platform}`);
+      } catch {
+        return;
+      }
+      if (myToken !== queueBestTimeToken) return; // superseded by a later platform switch
+      if (!data || !Array.isArray(data.bands) || !data.bands.length) return;
+      queueBestTimeHost.appendChild(
+        el('div', { class: 'best-time-hint' }, `Best window for ${platform}: ${data.bands[0].label}`)
+      );
+    }
+    platformSelect.addEventListener('change', updateQueueBestTimeHint);
+    updateQueueBestTimeHint();
+
+    // ---- One-click seed: Daily 12:00 LinkedIn + Facebook (7 x 2 slots,
+    // skips any that already exist for that day/time/platform). ----
+    const seedMsg = el('div');
+    const seedBtn = el('button', {
+      onclick: async () => {
+        seedMsg.innerHTML = '';
+        const seedPlatforms = platformOptions.filter((p) => p === 'linkedin' || p === 'facebook');
+        if (!seedPlatforms.length) {
+          seedMsg.appendChild(inlineBanner('This brand has no LinkedIn or Facebook account.', 'error'));
+          return;
+        }
+        const fresh = await api(`/api/queue-slots?brand_id=${brandId}`);
+        let created = 0;
+        for (let dow = 0; dow < 7; dow++) {
+          for (const platform of seedPlatforms) {
+            const exists = fresh.some((s) => s.day_of_week === dow && s.time_local === '12:00' && s.platform === platform);
+            if (exists) continue;
+            try {
+              await api('/api/queue-slots', {
+                method: 'POST',
+                body: { brand_id: Number(brandId), platform, day_of_week: dow, time_local: '12:00' },
+              });
+              created++;
+            } catch { /* skip on failure, keep seeding the rest */ }
+          }
+        }
+        toast(`Seeded ${created} slot(s).`);
+        loadQueues();
+      },
+    }, 'Daily 12:00 LinkedIn + Facebook');
+    queuesHost.appendChild(el('div', { class: 'toolbar', style: 'margin-top:10px;' }, [seedBtn]));
+    queuesHost.appendChild(seedMsg);
   }
 
   brandSelect.onchange = () => {
@@ -3425,8 +4337,31 @@ async function renderSettings(view) {
     setStickyBrand(brandId);
     loadBrand();
     loadBranding();
+    loadQueues();
   };
-  await Promise.all([loadBrand(), loadBranding()]);
+
+  // ---- L2 assembly: Workspace / Brands / Integrations & ops zones ----
+  view.append(
+    el('section', { id: 'settings-zone-workspace', class: 'settings-zone' }, [
+      el('h2', { class: 'settings-zone-title' }, 'Workspace'),
+      personalityCard, rulesCard, publishCard, providerCard, imagePromptCard,
+    ]),
+    el('section', { id: 'settings-zone-brands', class: 'settings-zone' }, [
+      el('h2', { class: 'settings-zone-title' }, 'Brands'),
+      brandCard, brandingCard, queuesCard,
+    ]),
+    el('section', { id: 'settings-zone-ops', class: 'settings-zone' }, [
+      el('h2', { class: 'settings-zone-title' }, 'Integrations & ops'),
+      el('div', { class: 'card settings-section' }, [
+        el('h2', {}, 'Status'),
+        el('div', { style: 'color:var(--muted);font-size:12px;margin-bottom:10px;' },
+          'Blotato connection, dry-run mode, and worker state live on the Ops Stats view - nothing to configure here yet.'),
+        el('button', { class: 'button secondary sm', type: 'button', onclick: () => { location.hash = '#/ops'; } }, 'Open Ops Stats'),
+      ]),
+    ])
+  );
+
+  await Promise.all([loadBrand(), loadBranding(), loadQueues()]);
 }
 
 // ---------------- Brand profiles (B13) ----------------
@@ -3500,9 +4435,7 @@ function profileCard(row, onChanged) {
     fieldsHost.innerHTML = '';
     const keys = Object.keys(fields);
     if (!keys.length) {
-      fieldsHost.appendChild(
-        el('div', { style: 'color:var(--muted);font-size:12px;' }, 'No fields yet - hit Generate to draft them.')
-      );
+      fieldsHost.appendChild(emptyState('No fields yet - hit Generate to draft them.'));
       return;
     }
     for (const key of keys) {
@@ -3512,7 +4445,7 @@ function profileCard(row, onChanged) {
       input.value = value;
       input.addEventListener('input', () => { fields[key] = input.value; });
 
-      const copyBtn = el('button', { class: 'profile-copy-btn' }, 'Copy');
+      const copyBtn = el('button', { class: 'button ghost sm profile-copy-btn', type: 'button' }, 'Copy');
       copyBtn.addEventListener('click', () => copyToClipboardWithConfirm(copyBtn, fields[key]));
 
       fieldsHost.appendChild(
@@ -3525,13 +4458,10 @@ function profileCard(row, onChanged) {
   }
   renderFields();
 
-  const msg = el('div');
-  card.appendChild(msg);
-
-  const generateBtn = el('button', {}, 'Generate');
+  const generateBtn = el('button', { class: 'button secondary md', type: 'button' }, 'Generate');
   generateBtn.addEventListener('click', async () => {
-    msg.innerHTML = '';
     generateBtn.disabled = true;
+    generateBtn.classList.add('is-pending');
     const originalText = generateBtn.textContent;
     generateBtn.textContent = 'Generating…';
     try {
@@ -3545,54 +4475,52 @@ function profileCard(row, onChanged) {
       row.last_generated_at = updated.last_generated_at || row.last_generated_at;
       refreshHeader();
       renderFields();
-      msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Drafted - review before you copy-paste it anywhere.'));
+      toast('Drafted - review before you copy-paste it anywhere.');
     } catch (err) {
       if (err.status === 503 || err.data?.error === 'ai_unavailable') {
-        msg.appendChild(el('div', { class: 'msg-banner msg-error' }, "AI unavailable - the claude CLI isn't reachable."));
+        toast("AI unavailable - the claude CLI isn't reachable.", 'error');
       } else if (err.status === 404) {
-        msg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Generate endpoint not available yet on this server.'));
+        toast('Generate endpoint not available yet on this server.', 'error');
       } else {
-        msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+        toast(err.message, 'error');
       }
     } finally {
       generateBtn.disabled = false;
+      generateBtn.classList.remove('is-pending');
       generateBtn.textContent = originalText;
     }
   });
 
-  const saveBtn = el('button', { class: 'primary' }, 'Save');
+  const saveBtn = el('button', { class: 'button primary md', type: 'button' }, 'Save');
   saveBtn.addEventListener('click', async () => {
-    msg.innerHTML = '';
     try {
       await api(`/api/profiles/${row.id}`, { method: 'PATCH', body: { fields } });
-      msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved.'));
+      toast('Saved.');
       onChanged();
     } catch (err) {
-      msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+      toast(err.message, 'error');
     }
   });
 
-  const reviewedBtn = el('button', {}, 'Mark reviewed');
+  const reviewedBtn = el('button', { class: 'button secondary md', type: 'button' }, 'Mark reviewed');
   reviewedBtn.addEventListener('click', async () => {
-    msg.innerHTML = '';
     try {
       await api(`/api/profiles/${row.id}`, { method: 'PATCH', body: { status: 'current' } });
-      msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Marked current.'));
+      toast('Marked current.');
       onChanged();
     } catch (err) {
-      msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+      toast(err.message, 'error');
     }
   });
 
-  const staleBtn = el('button', { class: 'danger' }, 'Mark stale');
+  const staleBtn = el('button', { class: 'button destructive md', type: 'button' }, 'Mark stale');
   staleBtn.addEventListener('click', async () => {
-    msg.innerHTML = '';
     try {
       await api(`/api/profiles/${row.id}`, { method: 'PATCH', body: { status: 'stale' } });
-      msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Marked stale.'));
+      toast('Marked stale.');
       onChanged();
     } catch (err) {
-      msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+      toast(err.message, 'error');
     }
   });
 
@@ -3604,14 +4532,11 @@ function profileCard(row, onChanged) {
 
 async function renderProfiles(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Brand profiles'));
-  view.appendChild(
-    el('div', { style: 'color:var(--muted);font-size:12px;margin:-6px 0 14px;' },
-      "The source of truth for each platform's profile - heading, bio, and the platform-standard fields. Generate drafts them in your voice; copy-paste is the whole point, nothing here posts anything.")
-  );
+  view.classList.add('view-default');
 
   if (!state.brands.length) {
-    view.appendChild(el('div', { style: 'color:var(--muted);' }, 'No brands yet.'));
+    view.appendChild(pageHeader('Brand profiles'));
+    view.appendChild(emptyState('No brands yet.'));
     return;
   }
 
@@ -3621,7 +4546,11 @@ async function renderProfiles(view) {
   const brandSelect = el('select', {}, state.brands.map((b) =>
     el('option', { value: String(b.id), selected: String(b.id) === brandId ? 'selected' : undefined }, b.name)
   ));
-  view.appendChild(el('div', { class: 'toolbar' }, [el('span', {}, 'Brand:'), brandSelect]));
+  view.appendChild(pageHeader('Brand profiles', brandSelect));
+  view.appendChild(
+    el('div', { style: 'color:var(--muted);font-size:12px;margin:-6px 0 14px;' },
+      "The source of truth for each platform's profile - heading, bio, and the platform-standard fields. Generate drafts them in your voice; copy-paste is the whole point, nothing here posts anything.")
+  );
 
   const cardsHost = el('div', { class: 'profile-cards' });
   view.appendChild(cardsHost);
@@ -3635,20 +4564,16 @@ async function renderProfiles(view) {
     } catch (err) {
       cardsHost.innerHTML = '';
       if (err.status === 404) {
-        cardsHost.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Profiles endpoint not available yet on this server.'));
+        cardsHost.appendChild(inlineBanner('Profiles endpoint not available yet on this server.', 'error'));
       } else {
-        cardsHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load profiles: ${err.message}`));
+        cardsHost.appendChild(inlineBanner(`Could not load profiles: ${err.message}`, 'error'));
       }
       return;
     }
     cardsHost.innerHTML = '';
     if (!rows.length) {
       cardsHost.appendChild(
-        el('div', { class: 'card' }, [
-          el('div', {}, 'No profiles yet for this brand.'),
-          el('div', { style: 'color:var(--muted);font-size:12px;margin-top:6px;' },
-            'Generate creates one per platform once it has an account/platform to draft for - check back after the first run, or ask the agent to draft one.'),
-        ])
+        emptyState('No profiles yet for this brand - Generate creates one per platform once it has an account/platform to draft for.')
       );
       return;
     }
@@ -3672,7 +4597,7 @@ const RESEARCH_SOURCES = ['google_trends', 'reddit', 'best_practice', 'web', 'ma
 
 async function renderResearch(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Research'));
+  view.classList.add('view-default');
 
   const stickyBrandInit = getStickyBrand();
   const brandFilter = el('select', {}, [
@@ -3681,7 +4606,9 @@ async function renderResearch(view) {
       el('option', { value: b.id, selected: String(b.id) === String(stickyBrandInit) ? 'selected' : undefined }, b.name)
     ),
   ]);
-  view.appendChild(el('div', { class: 'toolbar' }, [el('span', {}, 'Brand:'), brandFilter]));
+  // R1: title -> primary context control (brand, drives both the list filter
+  // and the add-note form below - single source of truth, no duplicate picker).
+  view.appendChild(pageHeader('Research', brandFilter));
 
   const listHost = el('div');
   view.appendChild(listHost);
@@ -3693,11 +4620,11 @@ async function renderResearch(view) {
     try {
       notes = await api(`/api/research${qs}`);
     } catch (err) {
-      listHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load research notes: ${err.message}`));
+      listHost.appendChild(inlineBanner(`Could not load research notes: ${err.message}`, 'error'));
       return;
     }
     if (!notes.length) {
-      listHost.appendChild(el('div', { style: 'color:var(--muted);' }, 'No research notes yet.'));
+      listHost.appendChild(emptyState('No research notes yet - add one below.'));
       return;
     }
     for (const n of notes) {
@@ -3724,13 +4651,15 @@ async function renderResearch(view) {
       card.appendChild(
         el('div', { class: 'toolbar', style: 'margin-top:8px;' }, [
           el('button', {
-            class: 'danger',
+            class: 'button destructive sm',
+            type: 'button',
             onclick: async () => {
               try {
                 await api(`/api/research/${n.id}`, { method: 'DELETE' });
+                toast('Note deleted.');
                 reload();
               } catch (err) {
-                alert(err.message);
+                toast(`Could not delete: ${err.message}`, 'error');
               }
             },
           }, 'Delete'),
@@ -3742,102 +4671,100 @@ async function renderResearch(view) {
   brandFilter.onchange = () => { setStickyBrand(brandFilter.value); reload(); };
   await reload();
 
-  const addCard = el('div', { class: 'card' });
-  addCard.appendChild(el('h2', {}, 'Add note'));
-  const addBrand = el('select', {}, [
-    el('option', { value: '' }, '(no brand)'),
-    ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
-  ]);
+  // R1 fix: no second/duplicate brand picker here - the add-note form uses
+  // the page-level brandFilter above as its brand context (falls back to
+  // "no brand" when the filter is "All brands").
   const addSource = el('select', {}, RESEARCH_SOURCES.map((s) => el('option', { value: s }, s)));
   const addTitle = el('input', { placeholder: 'Title' });
   const addUrl = el('input', { placeholder: 'URL (optional)' });
   const addTags = el('input', { placeholder: 'tags, comma, separated' });
   const addBody = el('textarea', { rows: '5', placeholder: 'Body / notes' });
-  addCard.append(
-    el('div', { class: 'field-row' }, [el('label', {}, 'Brand'), addBrand]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Source'), addSource]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Title'), addTitle]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'URL'), addUrl]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Tags'), addTags]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Body'), addBody])
-  );
   const addMsg = el('div');
-  addCard.appendChild(addMsg);
-  addCard.appendChild(
-    el('button', {
-      class: 'primary',
-      onclick: async () => {
-        addMsg.innerHTML = '';
-        try {
-          await api('/api/research', {
-            method: 'POST',
-            body: {
-              brand_id: addBrand.value || null,
-              source: addSource.value,
-              title: addTitle.value || null,
-              url: addUrl.value || null,
-              tags: addTags.value.split(',').map((t) => t.trim()).filter(Boolean),
-              body: addBody.value || null,
-            },
-          });
-          addTitle.value = '';
-          addUrl.value = '';
-          addTags.value = '';
-          addBody.value = '';
-          reload();
-        } catch (err) {
-          addMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
-        }
-      },
-    }, '+ Add note')
+  const addBtn = el('button', {
+    class: 'button primary md',
+    type: 'button',
+    onclick: async () => {
+      addMsg.innerHTML = '';
+      try {
+        await api('/api/research', {
+          method: 'POST',
+          body: {
+            brand_id: brandFilter.value || null,
+            source: addSource.value,
+            title: addTitle.value || null,
+            url: addUrl.value || null,
+            tags: addTags.value.split(',').map((t) => t.trim()).filter(Boolean),
+            body: addBody.value || null,
+          },
+        });
+        addTitle.value = '';
+        addUrl.value = '';
+        addTags.value = '';
+        addBody.value = '';
+        toast('Note added.');
+        reload();
+      } catch (err) {
+        addMsg.appendChild(inlineBanner(err.message, 'error'));
+      }
+    },
+  }, '+ Add note');
+  view.appendChild(
+    formSection('Add note', null,
+      el('div', { class: 'field-row' }, [el('label', {}, 'Source'), addSource]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Title'), addTitle]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'URL'), addUrl]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Tags'), addTags]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Body'), addBody]),
+      addBtn,
+      addMsg
+    )
   );
-  view.appendChild(addCard);
 
-  const importCard = el('div', { class: 'card' });
-  importCard.appendChild(el('h2', {}, 'Paste / import'));
   const importSource = el('select', {}, RESEARCH_SOURCES.map((s) => el('option', { value: s }, s)));
   const importFilename = el('input', { placeholder: 'filename (optional)' });
   const importContent = el('textarea', { rows: '6', placeholder: 'Paste CSV/text content here…' });
-  importCard.append(
-    el('div', { class: 'field-row' }, [el('label', {}, 'Source'), importSource]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Filename'), importFilename]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Content'), importContent])
-  );
   const importMsg = el('div');
-  importCard.appendChild(importMsg);
-  importCard.appendChild(
-    el('button', {
-      class: 'primary',
-      onclick: async () => {
-        importMsg.innerHTML = '';
-        if (!importContent.value.trim()) return;
-        try {
-          await api('/api/research/import', {
-            method: 'POST',
-            body: {
-              brand_id: brandFilter.value || null,
-              source: importSource.value,
-              filename: importFilename.value || null,
-              content: importContent.value,
-            },
-          });
-          importContent.value = '';
-          importFilename.value = '';
-          reload();
-        } catch (err) {
-          importMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
-        }
-      },
-    }, 'Import')
+  const importBtn = el('button', {
+    class: 'button primary md',
+    type: 'button',
+    onclick: async () => {
+      importMsg.innerHTML = '';
+      if (!importContent.value.trim()) return;
+      try {
+        await api('/api/research/import', {
+          method: 'POST',
+          body: {
+            brand_id: brandFilter.value || null,
+            source: importSource.value,
+            filename: importFilename.value || null,
+            content: importContent.value,
+          },
+        });
+        importContent.value = '';
+        importFilename.value = '';
+        toast('Imported.');
+        reload();
+      } catch (err) {
+        importMsg.appendChild(inlineBanner(err.message, 'error'));
+      }
+    },
+  }, 'Import');
+  view.appendChild(
+    formSection('Paste / import', null,
+      el('div', { class: 'field-row' }, [el('label', {}, 'Source'), importSource]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Filename'), importFilename]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Content'), importContent]),
+      importBtn,
+      importMsg
+    )
   );
-  view.appendChild(importCard);
 }
 
 // ---------------- Inspiration board (B8) ----------------
 
 async function renderInspiration(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Inspiration'));
+  view.classList.add('view-default');
 
   const stickyBrandInit = getStickyBrand();
   const brandFilter = el('select', {}, [
@@ -3846,7 +4773,7 @@ async function renderInspiration(view) {
       el('option', { value: b.id, selected: String(b.id) === String(stickyBrandInit) ? 'selected' : undefined }, b.name)
     ),
   ]);
-  view.appendChild(el('div', { class: 'toolbar' }, [el('span', {}, 'Brand:'), brandFilter]));
+  view.appendChild(pageHeader('Inspiration', brandFilter));
 
   const gridHost = el('div');
   view.appendChild(gridHost);
@@ -3865,8 +4792,8 @@ async function renderInspiration(view) {
     if (p.url) card.appendChild(el('div', { style: 'margin-top:6px;' }, [el('a', { href: p.url, target: '_blank' }, p.url)]));
     card.appendChild(el('div', { style: 'margin-top:6px;' }, [el('span', { class: 'pill source-pill' }, p.source || 'manual')]));
     const actions = el('div', { class: 'toolbar', style: 'margin-top:8px;' });
-    if (onAdd) actions.appendChild(el('button', { class: 'primary', onclick: onAdd }, '+ Add to board'));
-    if (onDelete) actions.appendChild(el('button', { class: 'danger', onclick: onDelete }, 'Delete'));
+    if (onAdd) actions.appendChild(el('button', { class: 'button primary sm', type: 'button', onclick: onAdd }, '+ Add to board'));
+    if (onDelete) actions.appendChild(el('button', { class: 'button destructive sm', type: 'button', onclick: onDelete }, 'Delete'));
     card.appendChild(actions);
     return card;
   }
@@ -3878,11 +4805,11 @@ async function renderInspiration(view) {
     try {
       profiles = await api(`/api/inspiration${qs}`);
     } catch (err) {
-      gridHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load inspiration board: ${err.message}`));
+      gridHost.appendChild(inlineBanner(`Could not load inspiration board: ${err.message}`, 'error'));
       return;
     }
     if (!profiles.length) {
-      gridHost.appendChild(el('div', { style: 'color:var(--muted);' }, 'No profiles yet - add one below, or ask AI to suggest some.'));
+      gridHost.appendChild(emptyState('No profiles yet - add one below, or ask AI to suggest some.'));
       return;
     }
     const grid = el('div', { class: 'inspiration-grid' });
@@ -3892,9 +4819,10 @@ async function renderInspiration(view) {
           onDelete: async () => {
             try {
               await api(`/api/inspiration/${p.id}`, { method: 'DELETE' });
+              toast('Profile deleted.');
               reload();
             } catch (err) {
-              alert(err.message);
+              toast(`Could not delete: ${err.message}`, 'error');
             }
           },
         })
@@ -3905,12 +4833,8 @@ async function renderInspiration(view) {
   brandFilter.onchange = () => { setStickyBrand(brandFilter.value); reload(); };
   await reload();
 
-  const addCard = el('div', { class: 'card' });
-  addCard.appendChild(el('h2', {}, 'Add profile'));
-  const addBrand = el('select', {}, [
-    el('option', { value: '' }, '(no brand)'),
-    ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
-  ]);
+  // R1 fix: no second/duplicate brand picker here - both forms below use the
+  // page-level brandFilter as their brand context (same fix as Research).
   const addPlatform = el('select', {}, ['twitter', 'linkedin', 'facebook', 'instagram', 'tiktok', 'reddit', 'blog', 'other'].map((p) => el('option', { value: p }, p)));
   const addName = el('input', { placeholder: 'Name' });
   const addHandle = el('input', { placeholder: 'Handle (no @)' });
@@ -3918,129 +4842,125 @@ async function renderInspiration(view) {
   const addNiche = el('input', { placeholder: 'Niche' });
   const addWhy = el('textarea', { rows: '2', placeholder: 'Why relevant' });
   const addTags = el('input', { placeholder: 'tags, comma, separated' });
-  addCard.append(
-    el('div', { class: 'field-row' }, [el('label', {}, 'Brand'), addBrand]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Platform'), addPlatform]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Name'), addName]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Handle'), addHandle]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'URL'), addUrl]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Niche'), addNiche]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Why relevant'), addWhy]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Tags'), addTags])
-  );
   const addMsg = el('div');
-  addCard.appendChild(addMsg);
-  addCard.appendChild(
-    el('button', {
-      class: 'primary',
-      onclick: async () => {
-        addMsg.innerHTML = '';
-        try {
-          await api('/api/inspiration', {
-            method: 'POST',
-            body: {
-              brand_id: addBrand.value || null,
-              platform: addPlatform.value,
-              name: addName.value || null,
-              handle: addHandle.value || null,
-              url: addUrl.value || null,
-              niche: addNiche.value || null,
-              why_relevant: addWhy.value || null,
-              tags: addTags.value.split(',').map((t) => t.trim()).filter(Boolean),
-              source: 'manual',
-            },
-          });
-          addName.value = '';
-          addHandle.value = '';
-          addUrl.value = '';
-          addNiche.value = '';
-          addWhy.value = '';
-          addTags.value = '';
-          reload();
-        } catch (err) {
-          addMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
-        }
-      },
-    }, '+ Add profile')
+  const addBtn = el('button', {
+    class: 'button primary md',
+    type: 'button',
+    onclick: async () => {
+      addMsg.innerHTML = '';
+      try {
+        await api('/api/inspiration', {
+          method: 'POST',
+          body: {
+            brand_id: brandFilter.value || null,
+            platform: addPlatform.value,
+            name: addName.value || null,
+            handle: addHandle.value || null,
+            url: addUrl.value || null,
+            niche: addNiche.value || null,
+            why_relevant: addWhy.value || null,
+            tags: addTags.value.split(',').map((t) => t.trim()).filter(Boolean),
+            source: 'manual',
+          },
+        });
+        addName.value = '';
+        addHandle.value = '';
+        addUrl.value = '';
+        addNiche.value = '';
+        addWhy.value = '';
+        addTags.value = '';
+        toast('Profile added.');
+        reload();
+      } catch (err) {
+        addMsg.appendChild(inlineBanner(err.message, 'error'));
+      }
+    },
+  }, '+ Add profile');
+  view.appendChild(
+    formSection('Add profile', null,
+      el('div', { class: 'field-row' }, [el('label', {}, 'Platform'), addPlatform]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Name'), addName]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Handle'), addHandle]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'URL'), addUrl]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Niche'), addNiche]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Why relevant'), addWhy]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Tags'), addTags]),
+      addBtn,
+      addMsg
+    )
   );
-  view.appendChild(addCard);
 
-  const suggestCard = el('div', { class: 'card' });
-  suggestCard.appendChild(el('h2', {}, 'Suggest profiles (AI)'));
-  const suggestBrand = el('select', {}, [
-    el('option', { value: '' }, '(no brand)'),
-    ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
-  ]);
   const suggestNiche = el('input', { placeholder: 'Niche (optional)' });
   const suggestPlatforms = el('input', { placeholder: 'Platforms, comma separated (optional)' });
-  suggestCard.append(
-    el('div', { class: 'field-row' }, [el('label', {}, 'Brand'), suggestBrand]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Niche'), suggestNiche]),
-    el('div', { class: 'field-row' }, [el('label', {}, 'Platforms'), suggestPlatforms])
-  );
   const suggestResults = el('div');
   const suggestMsg = el('div');
-  suggestCard.appendChild(suggestMsg);
-  suggestCard.appendChild(
-    el('button', {
-      class: 'primary',
-      onclick: async () => {
-        suggestMsg.innerHTML = '';
-        suggestResults.innerHTML = '';
-        try {
-          const brand = suggestBrand.value ? brandName(Number(suggestBrand.value)) : undefined;
-          const platforms = suggestPlatforms.value.split(',').map((p) => p.trim()).filter(Boolean);
-          const res = await api('/api/inspiration/suggest', {
-            method: 'POST',
-            body: { brand_id: suggestBrand.value || null, brand, niche: suggestNiche.value || undefined, platforms },
-          });
-          if (!res.suggestions || !res.suggestions.length) {
-            suggestResults.appendChild(el('div', { style: 'color:var(--muted);' }, 'No suggestions returned.'));
-            return;
-          }
-          const grid = el('div', { class: 'inspiration-grid' });
-          for (const s of res.suggestions) {
-            grid.appendChild(
-              profileCard(
-                { ...s, source: 'ai_suggested' },
-                {
-                  onAdd: async () => {
-                    try {
-                      await api('/api/inspiration', {
-                        method: 'POST',
-                        body: {
-                          brand_id: suggestBrand.value || null,
-                          platform: s.platform || null,
-                          name: s.name || null,
-                          handle: s.handle || null,
-                          url: s.url || null,
-                          niche: suggestNiche.value || null,
-                          why_relevant: s.why_relevant || null,
-                          source: 'ai_suggested',
-                        },
-                      });
-                      reload();
-                    } catch (err) {
-                      alert(err.message);
-                    }
-                  },
-                }
-              )
-            );
-          }
-          suggestResults.appendChild(grid);
-        } catch (err) {
-          if (err.status === 503) {
-            suggestMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'AI unavailable (claude CLI not found). Add profiles manually below.'));
-          } else {
-            suggestMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
-          }
+  const suggestBtn = el('button', {
+    class: 'button primary md',
+    type: 'button',
+    onclick: async () => {
+      suggestMsg.innerHTML = '';
+      suggestResults.innerHTML = '';
+      try {
+        const brand = brandFilter.value ? brandName(Number(brandFilter.value)) : undefined;
+        const platforms = suggestPlatforms.value.split(',').map((p) => p.trim()).filter(Boolean);
+        const res = await api('/api/inspiration/suggest', {
+          method: 'POST',
+          body: { brand_id: brandFilter.value || null, brand, niche: suggestNiche.value || undefined, platforms },
+        });
+        if (!res.suggestions || !res.suggestions.length) {
+          suggestResults.appendChild(emptyState('No suggestions returned.'));
+          return;
         }
-      },
-    }, 'Suggest profiles')
+        const grid = el('div', { class: 'inspiration-grid' });
+        for (const s of res.suggestions) {
+          grid.appendChild(
+            profileCard(
+              { ...s, source: 'ai_suggested' },
+              {
+                onAdd: async () => {
+                  try {
+                    await api('/api/inspiration', {
+                      method: 'POST',
+                      body: {
+                        brand_id: brandFilter.value || null,
+                        platform: s.platform || null,
+                        name: s.name || null,
+                        handle: s.handle || null,
+                        url: s.url || null,
+                        niche: suggestNiche.value || null,
+                        why_relevant: s.why_relevant || null,
+                        source: 'ai_suggested',
+                      },
+                    });
+                    toast('Added to board.');
+                    reload();
+                  } catch (err) {
+                    toast(`Could not add: ${err.message}`, 'error');
+                  }
+                },
+              }
+            )
+          );
+        }
+        suggestResults.appendChild(grid);
+      } catch (err) {
+        if (err.status === 503) {
+          suggestMsg.appendChild(inlineBanner('AI unavailable (claude CLI not found). Add profiles manually above.', 'error'));
+        } else {
+          suggestMsg.appendChild(inlineBanner(err.message, 'error'));
+        }
+      }
+    },
+  }, 'Suggest profiles');
+  view.appendChild(
+    formSection('Suggest profiles (AI)', null,
+      el('div', { class: 'field-row' }, [el('label', {}, 'Niche'), suggestNiche]),
+      el('div', { class: 'field-row' }, [el('label', {}, 'Platforms'), suggestPlatforms]),
+      suggestBtn,
+      suggestMsg,
+      suggestResults
+    )
   );
-  suggestCard.appendChild(suggestResults);
-  view.appendChild(suggestCard);
 }
 
 // ---------------- Images / Codex handoff (B8) ----------------
@@ -4056,7 +4976,7 @@ function imagePlatformsWithSpecs() {
 
 function resizeControl(variant, request) {
   const wrap = el('div', { class: 'resize-box' });
-  const toggleBtn = el('button', { style: 'margin-top:6px;width:100%;' }, 'Resize for platforms');
+  const toggleBtn = el('button', { class: 'button secondary sm', type: 'button', style: 'margin-top:6px;width:100%;' }, 'Resize for platforms');
   const panel = el('div', { class: 'resize-panel', hidden: true });
   wrap.appendChild(toggleBtn);
   wrap.appendChild(panel);
@@ -4072,18 +4992,17 @@ function resizeControl(variant, request) {
     panel.appendChild(el('div', { style: 'color:var(--muted);font-size:11px;' }, 'No platform image specs loaded.'));
   }
 
-  const msg = el('div');
   const resultHost = el('div');
   panel.appendChild(
     el('button', {
-      class: 'primary',
+      class: 'button primary sm',
+      type: 'button',
       style: 'margin-top:6px;width:100%;',
       onclick: async () => {
-        msg.innerHTML = '';
         resultHost.innerHTML = '';
         const chosen = checks.filter((c) => c.cb.checked).map((c) => c.platform);
         if (!chosen.length) {
-          msg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one platform.'));
+          toast('Pick at least one platform.', 'error');
           return;
         }
         try {
@@ -4098,23 +5017,20 @@ function resizeControl(variant, request) {
               list.appendChild(el('li', {}, `${f.platform || ''}: ${f.path || f.url || ''}`));
             }
             resultHost.appendChild(list);
+            toast('Resized.');
           } else {
             resultHost.appendChild(el('div', { style: 'color:var(--muted);font-size:11px;' }, 'Resize ran - no files returned.'));
           }
         } catch (err) {
           if (err.data?.error === 'resize_unavailable') {
-            resultHost.appendChild(
-              el('div', { class: 'msg-banner', style: 'background:var(--ink-3);color:var(--muted);border:1px solid var(--border);' },
-                'Resize needs macOS sips - not available here.')
-            );
+            resultHost.appendChild(inlineBanner('Resize needs macOS sips - not available here.', 'warn'));
           } else {
-            msg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+            toast(err.message, 'error');
           }
         }
       },
     }, 'Resize')
   );
-  panel.appendChild(msg);
   panel.appendChild(resultHost);
 
   toggleBtn.addEventListener('click', () => { panel.hidden = !panel.hidden; });
@@ -4123,17 +5039,17 @@ function resizeControl(variant, request) {
 
 async function renderImages(view) {
   view.innerHTML = '';
-  view.appendChild(el('h1', {}, 'Images'));
-  view.appendChild(
-    el('div', { class: 'msg-banner', style: 'background:var(--ink-3);color:var(--muted);border:1px solid var(--border);' },
-      'Codex drops generated variants into image-requests/generated/ - see docs/CODEX_IMAGE_HANDOFF.md for the handoff contract.')
-  );
+  view.classList.add('view-default');
 
   const statusFilter = el('select', {}, [
     el('option', { value: '' }, 'All statuses'),
     ...['requested', 'generated', 'picked', 'canceled'].map((s) => el('option', { value: s }, s)),
   ]);
-  view.appendChild(el('div', { class: 'toolbar' }, [el('span', {}, 'Status:'), statusFilter]));
+  // R1: title -> actions; status filter rightmost (only filter on this view).
+  view.appendChild(pageHeader('Images', el('span', {}, 'Status:'), statusFilter));
+  view.appendChild(
+    inlineBanner('Codex drops generated variants into image-requests/generated/ - see docs/CODEX_IMAGE_HANDOFF.md for the handoff contract.', 'info')
+  );
 
   const listHost = el('div');
   view.appendChild(listHost);
@@ -4145,11 +5061,11 @@ async function renderImages(view) {
     try {
       reqs = await api(`/api/image-requests${qs}`);
     } catch (err) {
-      listHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load image requests: ${err.message}`));
+      listHost.appendChild(inlineBanner(`Could not load image requests: ${err.message}`, 'error'));
       return;
     }
     if (!reqs.length) {
-      listHost.appendChild(el('div', { style: 'color:var(--muted);' }, 'No image requests yet. Use "Request image (Codex)" in the Composer.'));
+      listHost.appendChild(emptyState('No image requests yet - use "Request image (Codex)" in the Composer.'));
       return;
     }
     for (const r of reqs) {
@@ -4182,14 +5098,16 @@ async function renderImages(view) {
             el('img', { src: v.url, alt: v.notes || v.platform || 'variant' }),
             el('div', { style: 'font-size:11px;color:var(--muted);margin-top:4px;' }, `${v.platform || ''} ${v.dims || ''}`),
             el('button', {
-              class: 'primary',
+              class: 'button primary sm',
+              type: 'button',
               style: 'margin-top:6px;width:100%;',
               onclick: async () => {
                 try {
                   await api(`/api/image-requests/${r.id}/pick`, { method: 'POST', body: { chosen_path: v.path } });
+                  toast('Variant picked.');
                   reload();
                 } catch (err) {
-                  alert(err.message);
+                  toast(`Could not pick: ${err.message}`, 'error');
                 }
               },
             }, 'Pick'),
@@ -4204,12 +5122,15 @@ async function renderImages(view) {
         card.appendChild(
           el('div', { class: 'toolbar', style: 'margin-top:8px;' }, [
             el('button', {
+              class: 'button secondary sm',
+              type: 'button',
               onclick: async () => {
                 try {
                   await api(`/api/image-requests/${r.id}/regenerate`, { method: 'POST' });
+                  toast('Regenerating variants.');
                   reload();
                 } catch (err) {
-                  alert(err.message);
+                  toast(`Could not regenerate: ${err.message}`, 'error');
                 }
               },
             }, 'Regenerate / more variants'),
@@ -4225,13 +5146,15 @@ async function renderImages(view) {
         card.appendChild(
           el('div', { class: 'toolbar', style: 'margin-top:8px;' }, [
             el('button', {
-              class: 'danger',
+              class: 'button destructive sm',
+              type: 'button',
               onclick: async () => {
                 try {
                   await api(`/api/image-requests/${r.id}/cancel`, { method: 'POST' });
+                  toast('Request canceled.');
                   reload();
                 } catch (err) {
-                  alert(err.message);
+                  toast(`Could not cancel: ${err.message}`, 'error');
                 }
               },
             }, 'Cancel'),
@@ -4487,4 +5410,43 @@ function wireGlobalChrome() {
   }
 }
 
+// ---------------- Nav rail (B16b) ----------------
+// Persistent grouped left rail lives outside #view (in index.html); active-route
+// highlight is already handled generically in router() via #sidebar a[data-route].
+// This just wires the collapsible group headers, persisting each group's
+// expanded/collapsed state per-group in localStorage.
+function navGroupStorageKey(group) {
+  return `pd_nav_${group}`;
+}
+
+function setNavGroupExpanded(groupEl, expanded) {
+  const header = groupEl.querySelector('.nav-group-header');
+  const links = groupEl.querySelector('.nav-group-links');
+  if (!header || !links) return;
+  groupEl.classList.toggle('collapsed', !expanded);
+  header.setAttribute('aria-expanded', String(expanded));
+  links.hidden = !expanded;
+}
+
+function wireNavRail() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  sidebar.querySelectorAll('.nav-group').forEach((groupEl) => {
+    const group = groupEl.dataset.group;
+    const stored = localStorage.getItem(navGroupStorageKey(group));
+    // Default: expanded, unless the user previously collapsed it.
+    setNavGroupExpanded(groupEl, stored !== 'collapsed');
+
+    const header = groupEl.querySelector('.nav-group-header');
+    if (!header) return;
+    header.addEventListener('click', () => {
+      const expandedNow = header.getAttribute('aria-expanded') === 'true';
+      const next = !expandedNow;
+      setNavGroupExpanded(groupEl, next);
+      localStorage.setItem(navGroupStorageKey(group), next ? 'expanded' : 'collapsed');
+    });
+  });
+}
+
+wireNavRail();
 wireGlobalChrome();

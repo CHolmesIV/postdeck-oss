@@ -13,7 +13,7 @@ function isoDaysAgo(days) {
  * Sum metrics for a brand (optionally scoped to a platform and/or a
  * captured_at window). engagement = comments + shares + saves (SPEC.md).
  */
-function rollupFor(db, { brandId, platform, sinceIso, untilIso } = {}) {
+function rollupFor(db, { brandId, platform, sinceIso, untilIso, tagId } = {}) {
   const clauses = [];
   const params = [];
   if (brandId != null) {
@@ -31,6 +31,10 @@ function rollupFor(db, { brandId, platform, sinceIso, untilIso } = {}) {
   if (untilIso) {
     clauses.push('m.captured_at < ?');
     params.push(untilIso);
+  }
+  if (tagId != null) {
+    clauses.push('p.id IN (SELECT post_id FROM post_tags WHERE tag_id = ?)');
+    params.push(tagId);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const row = db
@@ -68,13 +72,17 @@ function postsPublishedCount(db, { brandId, sinceIso } = {}) {
   return db.prepare(`SELECT COUNT(*) c FROM posts p WHERE ${clauses.join(' AND ')}`).get(...params).c;
 }
 
-function topPosts(db, { brandId, orderBy = 'impressions', limit = 10 } = {}) {
+function topPosts(db, { brandId, orderBy = 'impressions', limit = 10, tagId } = {}) {
   const col = orderBy === 'leads' ? 'total_leads' : 'total_impressions';
   const clauses = [];
   const params = [];
   if (brandId != null) {
     clauses.push('p.brand_id = ?');
     params.push(brandId);
+  }
+  if (tagId != null) {
+    clauses.push('p.id IN (SELECT post_id FROM post_tags WHERE tag_id = ?)');
+    params.push(tagId);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   return db
@@ -124,28 +132,28 @@ function deltaArrow(current, previous) {
 
 const ROLLUP_PLATFORMS = ['facebook', 'instagram', 'tiktok', 'reddit', 'twitter', 'linkedin', 'blog'];
 
-function buildBrandAnalytics(db, brand) {
+function buildBrandAnalytics(db, brand, { tagId } = {}) {
   const windows = { '7d': 7, '30d': 30, '90d': 90 };
   const totals = {};
   for (const [key, days] of Object.entries(windows)) {
     const sinceIso = isoDaysAgo(days);
     totals[key] = {
-      ...rollupFor(db, { brandId: brand.id, sinceIso }),
+      ...rollupFor(db, { brandId: brand.id, sinceIso, tagId }),
       posts_published: postsPublishedCount(db, { brandId: brand.id, sinceIso }),
     };
   }
   totals.all_time = {
-    ...rollupFor(db, { brandId: brand.id }),
+    ...rollupFor(db, { brandId: brand.id, tagId }),
     posts_published: postsPublishedCount(db, { brandId: brand.id }),
   };
 
   const by_platform = {};
   for (const platform of ROLLUP_PLATFORMS) {
-    by_platform[platform] = rollupFor(db, { brandId: brand.id, platform, sinceIso: isoDaysAgo(30) });
+    by_platform[platform] = rollupFor(db, { brandId: brand.id, platform, sinceIso: isoDaysAgo(30), tagId });
   }
 
-  const last7 = rollupFor(db, { brandId: brand.id, sinceIso: isoDaysAgo(7) });
-  const prior7 = rollupFor(db, { brandId: brand.id, sinceIso: isoDaysAgo(14), untilIso: isoDaysAgo(7) });
+  const last7 = rollupFor(db, { brandId: brand.id, sinceIso: isoDaysAgo(7), tagId });
+  const prior7 = rollupFor(db, { brandId: brand.id, sinceIso: isoDaysAgo(14), untilIso: isoDaysAgo(7), tagId });
   const week_over_week = {
     impressions: deltaArrow(last7.impressions, prior7.impressions),
     engagement: deltaArrow(last7.engagement, prior7.engagement),
@@ -161,17 +169,21 @@ function buildBrandAnalytics(db, brand) {
     totals,
     by_platform,
     week_over_week,
-    top10_by_impressions: topPosts(db, { brandId: brand.id, orderBy: 'impressions' }),
-    top10_by_leads: topPosts(db, { brandId: brand.id, orderBy: 'leads' }),
+    top10_by_impressions: topPosts(db, { brandId: brand.id, orderBy: 'impressions', tagId }),
+    top10_by_leads: topPosts(db, { brandId: brand.id, orderBy: 'leads', tagId }),
   };
 }
 
-/** Full analytics payload for the dashboard's #/analytics view. */
-function buildAnalytics(db = getDb()) {
+/** Full analytics payload for the dashboard's #/analytics view. Pass
+ * `tagId` (B17a) to scope every rollup + top-posts list to posts carrying
+ * that tag/campaign — same shape as the unfiltered payload. */
+function buildAnalytics(db = getDb(), { tagId } = {}) {
+  const normalizedTagId = tagId != null && tagId !== '' ? Number(tagId) : null;
   const brands = db.prepare('SELECT * FROM brands ORDER BY id').all();
   return {
     generated_at: new Date().toISOString(),
-    brands: brands.map((b) => buildBrandAnalytics(db, b)),
+    tag_id: normalizedTagId,
+    brands: brands.map((b) => buildBrandAnalytics(db, b, { tagId: normalizedTagId })),
     metrics_due: metricsDue(db),
   };
 }

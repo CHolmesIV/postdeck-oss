@@ -32,6 +32,10 @@ flipped.
 | B15 | AI provider switcher (Claude/Codex) for copy drafting + compare-both button; both via subscription CLIs | ✅ (Codex path verify-on-signin) |
 | - | Editable image prompt system + settings UI + design pass refresh | ✅ |
 | - | PrimeWright design guidelines persisted in `docs/PRIMEWRIGHT_DESIGN_GUIDELINES.md` | ✅ |
+| B16 | Queue slots (recurring brand+platform slots, "Add to queue", Settings editor) + grouped left nav rail | ✅ |
+| B17 | Tags & campaigns (composer picker, calendar filter/colors, scoped analytics) + calendar gap-finding (count dots, empty-day, coverage strip) | ✅ |
+| B18 | Best-time nudge (data-driven + defaults), Redraft-the-winner, per-brand UTM auto-append at approve | ✅ |
+| D2 | Design consistency pass (Seeds-informed): button/input/toggle system, pageHeader/formSection/toast/banner/emptyState primitives, composer reorder, Settings zones, full-view sweep | ✅ |
 
 ## Security posture (reviewed 2026-07-15)
 
@@ -44,6 +48,14 @@ flipped.
   is ever exposed beyond localhost, add auth + CSRF/Origin checks first.
 
 ## Pending / open loops
+
+- **B16–B18 ALL SHIPPED 2026-07-18** (suite 247). Parking lot from the competitive spec
+  (list view, streams-lite, queue re-flow, ICS export) remains in
+  `docs/B16_B18_COMPETITIVE_WAVE_SPEC.md`. Queues + UTM start OFF/empty - CB defines slots
+  in Settings → Queues and flips Link tracking per brand when ready.
+- **D2 SHIPPED 2026-07-18** (rules R1–R8 + layout moves; see CHANGELOG). Leftover polish
+  candidates: fold remaining `.msg-banner` divs onto `inlineBanner`, custom confirm dialog
+  to replace native confirm() on destructive actions, L1 icon-rail hover-expand polish.
 
 - **Run PostDeck in your logged-in session, not as a background service** (resolved 2026-07-15).
   Root cause of the AI-features 503: Claude Code stores its subscription login in the macOS

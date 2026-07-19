@@ -10,7 +10,8 @@
     "image": { "feed": "1080x1350 (4:5) preferred, 1080x1080 ok", "story": "1080x1920", "formats": ["jpg", "png"], "max_mb": 30 },
     "video": { "reels": "1080x1920 9:16 MP4/MOV H.264", "best_length_s": [15, 30], "max_size_mb": 1024, "_uncertain": ["max size: 1GB vs 4GB conflicting — verify Meta dev docs"] },
     "notes": "All FB video shares as Reels since mid-2025. Native video > link posts for reach.",
-    "cadence": "3-5 feed posts/week"
+    "cadence": "3-5 feed posts/week",
+    "best_times": { "bands": [{ "days": [3, 4, 5], "start_hour": 9, "end_hour": 13, "label": "Wed-Fri 9am-1pm" }] }
   },
   "instagram": {
     "blotato": true,
@@ -18,7 +19,8 @@
     "image": { "square": "1080x1080", "portrait": "1080x1350 (best real estate)", "story": "1080x1920", "carousel_max_slides": 10, "_uncertain": ["10-slide max is long-standing, not re-confirmed 2026"] },
     "video": { "reels": "1080x1920 9:16 MP4/MOV <1GB", "best_length_s": [5, 25], "max_length_s": 90 },
     "notes": "Reels = non-follower reach; carousels = saves/comments. Mix both. Carousel slides crop to first image's ratio.",
-    "cadence": "3-4 feed posts/week + 2-3 reels/week"
+    "cadence": "3-4 feed posts/week + 2-3 reels/week",
+    "best_times": { "bands": [{ "days": [2, 3, 4], "start_hour": 11, "end_hour": 14, "label": "Tue-Thu 11am-2pm" }] }
   },
   "tiktok": {
     "blotato": true,
@@ -26,7 +28,8 @@
     "video": { "dims": "1080x1920 9:16 MP4/MOV 30fps", "best_length_s": [21, 34], "max_length_min": 10, "max_size_mb_desktop": 4096, "max_size_mb_mobile": 288 },
     "required_fields": ["privacyLevel", "disabledComments", "disabledDuet", "disabledStitch", "isBrandedContent", "isYourBrand", "isAiGenerated"],
     "notes": "Native-spec video favored; native-shot beats repurposed. Photo/slideshow reach boost claimed but unverified.",
-    "cadence": "3-5x/week"
+    "cadence": "3-5x/week",
+    "best_times": { "bands": [{ "days": [2, 3, 4], "start_hour": 14, "end_hour": 18, "label": "Tue-Thu 2-6pm" }] }
   },
   "reddit": {
     "blotato": false,
@@ -39,7 +42,8 @@
     },
     "api": { "rate_limit_qpm": 100, "_uncertain": ["60 vs 100 QPM conflicting — verify Reddit Data API terms if native adapter is ever built"] },
     "notes": "Deliberately assisted-manual in PostDeck: compose + validate + copy&open + track. Automation is an anti-pattern here.",
-    "cadence": "sparse + organic; not a scheduled-daily platform"
+    "cadence": "sparse + organic; not a scheduled-daily platform",
+    "best_times": { "bands": [{ "days": [1, 2, 3], "start_hour": 6, "end_hour": 9, "label": "Mon-Wed 6-9am" }] }
   },
   "twitter": {
     "blotato": true,
@@ -47,19 +51,22 @@
     "image": { "dims": ["1080x1080", "1080x1920", "1920x1080"] },
     "video": { "free_max_s": 140, "free_max_mb": 512, "premium_max": "4h/16GB", "format": "MP4/MOV H.264 <=60fps", "best_length_s": [0, 60] },
     "notes": "Premium gets non-follower distribution boost; threads + embedded video with watch-time favored.",
-    "cadence": "1-3x/day; frequency rewarded"
+    "cadence": "1-3x/day; frequency rewarded",
+    "best_times": { "bands": [{ "days": [1, 2, 3, 4], "start_hour": 9, "end_hour": 11, "label": "Mon-Thu 9-11am" }] }
   },
   "linkedin": {
     "blotato": true,
     "text": { "max": 3000, "truncation_preview": 210, "hashtags_best": [3, 5] },
     "image": { "feed": "1200x627 or 1080x1080", "carousel": "2-10 images (Blotato native)" },
     "notes": "Kept wired (accounts exist); not in CB's current top-5 focus.",
-    "cadence": "2-3x/week"
+    "cadence": "2-3x/week",
+    "best_times": { "bands": [{ "days": [2, 3, 4], "start_hour": 9, "end_hour": 11, "label": "Tue-Thu 9-11am" }] }
   },
   "blog": {
     "blotato": false,
     "mode": "render_and_deploy",
     "text": { "max": null },
-    "notes": "Rendered via the target site's own template helpers into the site repo; published through the existing Tier-3 gated deploy (see SPEC.md Blog channel). Never via Blotato."
+    "notes": "Rendered via the target site's own template helpers into the site repo; published through the existing Tier-3 gated deploy (see SPEC.md Blog channel). Never via Blotato.",
+    "best_times": { "bands": [{ "days": [1, 2, 3, 4, 5], "start_hour": 9, "end_hour": 17, "label": "Weekdays 9am-5pm" }] }
   }
 }

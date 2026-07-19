@@ -143,6 +143,45 @@ nav#sidebar a.active .nav-icon {
   color: var(--gold-2);
 }
 
+/* ---------- Nav rail groups (B16b) ---------- */
+.nav-group + .nav-group {
+  margin-top: 6px;
+}
+
+.nav-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: calc(100% - 20px);
+  margin: 0 10px 2px;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: color var(--t-fast), background var(--t-fast);
+}
+.nav-group-header:hover { color: var(--white); background: rgba(255,255,255,0.03); }
+
+.nav-group-chevron {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: transform var(--t-fast);
+}
+.nav-group.collapsed .nav-group-chevron { transform: rotate(-90deg); }
+
+.nav-group-links {
+  display: flex;
+  flex-direction: column;
+}
+
 main#view {
   flex: 1;
   padding: 30px 38px 96px;
@@ -293,6 +332,9 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
 .chip:hover { background: var(--surface-hi); transform: translateY(-1px); }
 .chip[draggable="true"] { cursor: grab; }
 .chip[draggable="true"]:active { cursor: grabbing; }
+/* B17a: campaign-tagged chips get a thicker colored left border (color set
+   inline per-campaign via style=) so they read distinctly at a glance. */
+.chip.chip-campaign { border-left-width: 5px; }
 
 /* ---------- Kanban ---------- */
 .kanban {
@@ -351,7 +393,16 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
 .field-row label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 12px; font-weight: 500; }
 .field-row input, .field-row select, .field-row textarea { width: 100%; }
 .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-.tabs button.active { background: var(--grad-gold); color: #1a1200; border-color: transparent; font-weight: 700; box-shadow: var(--glow-gold); }
+/* D2 R8: tabs get a distinct "selected" treatment (steel, not gold) so a
+   selected platform tab never reads as the same priority as a primary CTA
+   (button.primary / gold is reserved for the main submit action). */
+.tabs button.active {
+  background: var(--surface-hi);
+  color: var(--steel);
+  border-color: var(--steel);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px rgba(110,143,168,0.35);
+}
 .char-count { font-size: 11px; color: var(--muted); text-align: right; margin-top: 5px; }
 .char-count.over { color: var(--red); font-weight: 700; }
 
@@ -437,6 +488,9 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
 /* ---------- Source / tag badges ---------- */
 .pill.source-pill { background: #5b4a1e; color: var(--gold-2); }
 .pill.tag-pill { background: var(--ink-3); color: var(--muted); font-weight: 500; text-transform: none; margin-right: 4px; }
+/* B17a: campaign chips reuse .tag-pill but read a touch bolder so they're
+   visually distinct from plain tags in the modal/composer displays. */
+.pill.tag-pill.campaign-pill { color: var(--gold-2); font-weight: 700; }
 .status-requested { background: #3a3a3a; color: var(--muted); }
 .status-generated { background: #2f4a63; color: #9cc7f0; }
 .status-picked { background: #244a2c; color: #7fd08e; }
@@ -516,28 +570,10 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
 .home-quickbar {
   display: flex;
   gap: 12px;
-  align-items: stretch;
+  align-items: center;
   flex-wrap: wrap;
   margin-bottom: 24px;
 }
-.home-quickbar button {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 18px;
-  font-size: 13px;
-  font-weight: 600;
-}
-.home-quickbar .quickbar-primary {
-  font-size: 14px;
-  padding: 13px 24px;
-  background: var(--grad-gold);
-  color: #1a1200;
-  border-color: transparent;
-  font-weight: 700;
-  box-shadow: var(--glow-gold);
-}
-.home-quickbar .quickbar-primary:hover { filter: brightness(1.06); box-shadow: var(--glow-gold), var(--sh-2); }
 
 .home-section { margin-bottom: 18px; }
 
@@ -653,6 +689,9 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
 .chip-btn:hover { border-color: var(--gold); color: var(--gold-2); transform: translateY(-1px); }
 .copy-assist-box { margin-top: 4px; }
 
+/* ---------- B17a: tag/campaign picker chips (composer) ---------- */
+.chip-btn.active-tag { font-weight: 700; box-shadow: var(--sh-2); transform: translateY(-1px); }
+
 /* ---------- B15: AI provider switch + compare-both ---------- */
 .provider-switch {
   display: inline-flex;
@@ -714,7 +753,8 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
   color: var(--muted);
   margin-left: 8px;
 }
-.manual-toggle-label input[type="checkbox"] { width: auto; padding: 0; }
+.manual-toggle-label input[type="checkbox"]:not(.switch) { width: auto; padding: 0; }
+.manual-toggle-label input.switch { margin: 0 6px 0 0; }
 .pill.manual-pill { background: #3a2f1a; color: var(--gold-2); }
 
 /* ---------- Examples panel (B11) ---------- */
@@ -984,7 +1024,7 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   cursor: pointer;
 }
 .settings-toggle-row:last-of-type { border-bottom: none; }
-.settings-toggle-row input[type="checkbox"] { width: auto; flex-shrink: 0; }
+.settings-toggle-row input[type="checkbox"]:not(.switch) { width: auto; flex-shrink: 0; }
 .settings-toggle-label { flex: 1; font-size: 13px; }
 .settings-toggle-state {
   flex-shrink: 0;
@@ -1185,6 +1225,7 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
     width: 100%;
     height: auto;
     display: flex;
+    align-items: center;
     gap: 2px;
     overflow-x: auto;
     padding: 10px;
@@ -1197,13 +1238,38 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
     padding: 9px 10px;
     white-space: nowrap;
   }
+  /* Icon-only compact rail: groups flatten into one horizontal scroller,
+     headers hide (collapse state is meaningless in this layout), and
+     labels hide so only the icon (with a title tooltip) is shown. */
+  .nav-group {
+    display: flex;
+    flex-shrink: 0;
+  }
+  .nav-group + .nav-group { margin-top: 0; }
+  .nav-group-header { display: none; }
+  .nav-group-links {
+    flex-direction: row;
+    gap: 2px;
+    /* Always show icons in the compact rail regardless of collapsed state
+       stored from the full-height layout. */
+    display: flex !important;
+  }
   nav#sidebar a {
+    position: relative;
     margin: 0;
     white-space: nowrap;
     border-left: 0;
     border-bottom: 2px solid transparent;
   }
   nav#sidebar a.active { border-bottom-color: var(--gold); }
+  nav#sidebar a .nav-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
   main#view { padding: 22px 16px 96px; }
   .composer-grid,
   .compare-grid,
@@ -1264,6 +1330,16 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
 .cal-day.cal-today .day-label { color: var(--gold-2); font-weight: 700; }
 .cal-day.cal-muted { opacity: 0.45; }
 .cal-day.cal-unscheduled { grid-column: 1 / -1; min-height: auto; }
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.cal-toolbar-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cal-toolbar-filters { margin-left: auto; }
 .cal-nav-btn { padding: 6px 11px; font-size: 13px; line-height: 1; }
 .cal-period-label { font-weight: 700; margin-left: 4px; letter-spacing: 0.01em; }
 
@@ -1282,6 +1358,52 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   pointer-events: none;
 }
 .cal-day.cal-clickable:hover::after { opacity: 0.8; }
+
+/* Gap-finding (B17b): per-day platform-count dots, empty-day treatment,
+   week-header counts, and the brand coverage strip above the grid. */
+.cal-day.cal-day-empty {
+  background: var(--ink-2);
+  border-style: dashed;
+  border-color: var(--border);
+}
+.cal-day-counts { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: -3px 0 7px; }
+.cal-count-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1;
+}
+.cal-count-dot:empty { padding: 0; }
+.cal-count-dot:not(:empty) { min-width: 13px; height: 13px; padding: 0 2px; }
+.cal-week-daycount { color: var(--muted); font-weight: 500; }
+
+.cal-coverage-strip { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 14px; }
+.cal-coverage-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: var(--r-pill);
+  border-left: 3px solid var(--gold);
+  background: var(--ink-3);
+  color: var(--white);
+  font-size: 11.5px;
+  font-weight: 500;
+  box-shadow: var(--sh-1);
+}
+.cal-coverage-pill.cal-coverage-zero {
+  border-left-color: var(--red);
+  background: #241512;
+  color: #e9b4ac;
+  cursor: pointer;
+  transition: transform var(--t-fast), box-shadow var(--t-fast);
+}
+.cal-coverage-pill.cal-coverage-zero:hover { transform: translateY(-1px); box-shadow: var(--sh-2); }
 
 /* ---- Collapsible composer sections ---- */
 .card.collapsible { padding: 0; overflow: hidden; }
@@ -1347,6 +1469,11 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
 }
 .account-remove:hover { color: #e79b8f; border-color: var(--red); }
 
+/* ---- Queue slots (Settings) ---- */
+.queue-slot-list { display: flex; flex-direction: column; }
+.queue-slot-row { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.queue-slot-row:last-child { border-bottom: none; }
+
 /* ---- Quick-view post modal (from calendar chips) ---- */
 .modal-overlay {
   position: fixed;
@@ -1408,3 +1535,277 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   font-size: 13px;
 }
 .modal-card a.button:hover { border-color: var(--border-hi); background: var(--surface-hi); }
+
+/* ---------- B18a: best-time nudge (composer schedule + settings queues) ---------- */
+.best-time-host { margin-top: 8px; }
+.best-time-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.best-time-label { color: var(--gold-2); }
+.best-time-lastpost { color: var(--muted); }
+.best-time-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.best-time-chip { padding: 3px 10px; font-size: 11px; }
+
+/* ---------- B18b: redraft-the-winner button (analytics top-10 rows) ---------- */
+.redraft-btn {
+  margin-left: 8px;
+  padding: 2px 10px;
+  font-size: 11px;
+  min-height: 24px;
+}
+
+/* =====================================================================
+   D2 — Design consistency pass (2026-07-18)
+   Canonical primitives: button/input size tiers, width tiers, form
+   sections, toast/banner, empty state, toggle switch, focus-visible.
+   See docs/D2_CONSISTENCY_PASS_SPEC.md. Existing hand-rolled component
+   classes below are ALIASED onto the tier scale rather than renamed at
+   every call site (R8's own guidance) - see the "component aliasing"
+   sub-section near the bottom of this block.
+   ===================================================================== */
+
+:root {
+  --btn-h-sm: 28px;
+  --btn-h-md: 36px;
+  --btn-h-lg: 44px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+}
+
+/* ---------- Width tiers (R2) ---------- */
+.view-default { max-width: 1400px; margin: 0 auto; padding: 0 var(--sp-4); }
+.view-narrow { max-width: 736px; margin: 0 auto; padding: 0 var(--sp-4); }
+.view-flush { max-width: none; }
+
+/* ---------- Focus-visible floor (R7) - every interactive element ---------- */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--gold-2);
+  outline-offset: 2px;
+}
+
+/* ---------- Button system (R8): .button base + size + variant modifiers ----------
+   Existing bare `button`/`button.primary`/`button.danger` calls keep working
+   unchanged (they alias onto md/primary/destructive below); `.button` is the
+   explicit class for new call sites (pageHeader/formSection/toast actions). */
+.button,
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--btn-h-md);
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.button.sm, button.sm { height: var(--btn-h-sm); padding: 0 10px; font-size: 12px; }
+.button.md, button.md { height: var(--btn-h-md); padding: 0 14px; font-size: 13px; }
+.button.lg, button.lg { height: var(--btn-h-lg); padding: 0 20px; font-size: 14px; }
+
+.button.secondary, .btn-secondary {
+  background: var(--surface-2);
+  color: var(--white);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+.button.secondary:hover, .btn-secondary:hover { background: var(--surface-hi); border-color: var(--border-hi); }
+
+.button.ghost, button.ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+.button.ghost:hover { color: var(--gold-2); background: var(--surface-2); border-color: var(--border); }
+
+.button.destructive, button.destructive { border-color: var(--red); color: #e79b8f; background: linear-gradient(180deg, #2a1c1c, #211616); }
+.button.destructive:hover { border-color: var(--red); background: #331d1d; }
+
+button:disabled, .button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+button.is-pending, .button.is-pending {
+  opacity: 0.75;
+  cursor: progress;
+  position: relative;
+}
+button:active:not(:disabled), .button:active:not(:disabled) { transform: translateY(0); }
+
+/* Icon-only buttons - min 24px hit area (R7/R8), padding not glyph size */
+.icon-btn {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Input system tiers (R8) - match button heights so form rows
+   line up; base rule already gives one consistent border/focus treatment
+   app-wide (kept), this just adds explicit size tiers for new call sites. */
+select.sm, input.sm, textarea.sm { min-height: var(--btn-h-sm); }
+select.md, input.md, textarea.md { min-height: var(--btn-h-md); }
+select.lg, input.lg, textarea.lg { min-height: var(--btn-h-lg); }
+select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height: var(--btn-h-md); }
+
+/* ---------- Toggle switch (R8) - one styled on/off control ---------- */
+.switch-row { display: flex; align-items: center; gap: 10px; }
+.switch {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+  width: 38px;
+  height: 22px;
+  margin: 0 6px 0 0;
+  flex-shrink: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--ink-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+  min-height: 0;
+}
+.switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform var(--t-fast), background var(--t-fast);
+}
+.switch:checked { background: rgba(76,154,91,0.22); border-color: var(--green); }
+.switch:checked::before { transform: translateX(16px); background: var(--green); }
+.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch-state { font-size: 11px; color: var(--muted); }
+.switch-state.on { color: var(--green); font-weight: 700; }
+
+/* ---------- Page header primitive (R1) ---------- */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.page-header h1 { margin: 0; }
+.page-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- Form section primitive (R3) ---------- */
+.form-section { margin-bottom: 18px; }
+.form-section-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--gold-2); margin-bottom: 4px; }
+.form-section-hint { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.form-section-body { display: flex; flex-direction: column; gap: 10px; }
+.form-section-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- Toast (R5, transient) ---------- */
+.toast-host {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--surface-hi);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-sm);
+  padding: 10px 16px;
+  font-size: 13px;
+  box-shadow: var(--sh-3);
+  color: var(--white);
+  animation: toast-in var(--t-med);
+}
+.toast.toast-error { border-color: var(--red); color: #e79b8f; }
+.toast.toast-ok { border-color: var(--green); color: #a4d6ab; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ---------- Inline banner (R5, persistent - anchored to the object) ---------- */
+.inline-banner {
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  margin-bottom: 12px;
+  font-size: 13px;
+  box-shadow: var(--sh-1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.inline-banner-error { background: #3a1e1e; color: #e79b8f; border: 1px solid var(--red); }
+.inline-banner-ok { background: #1e3a24; color: #a4d6ab; border: 1px solid var(--green); }
+.inline-banner-warn { background: #3a2e14; color: var(--gold-2); border: 1px solid var(--gold); }
+.inline-banner-info { background: var(--ink-3); color: var(--muted); border: 1px solid var(--border); }
+
+/* ---------- Empty state (R4) ---------- */
+.empty-state {
+  padding: 22px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.empty-state-msg { margin-bottom: 10px; }
+
+/* ---------- Component aliasing onto the size/variant tiers (R8) ----------
+   Sweeps existing hand-rolled control classes onto the 3-size scale without
+   touching their call sites. Worst outliers (20-47px) collapse to sm/md/lg. */
+.home-quickbar button { height: var(--btn-h-md); padding: 0 16px; }
+.home-quickbar .quickbar-primary { height: var(--btn-h-lg); padding: 0 22px; }
+.cal-nav-btn { height: var(--btn-h-sm); padding: 0 11px; }
+.provider-switch { border-radius: var(--r-sm); }
+.provider-switch button { height: var(--btn-h-sm); border-radius: 0; }
+.profile-copy-btn { height: var(--btn-h-sm); min-height: var(--btn-h-sm); padding: 0 11px; }
+.account-remove { min-width: 24px; min-height: 24px; padding: 2px 9px; }
+.modal-close { min-width: 24px; min-height: 24px; }
+.best-time-chip { min-height: 24px; }
+
+/* ---------- Settings zones (L2) ---------- */
+.settings-zone-nav {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-zone-nav a { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); text-decoration: none; }
+.settings-zone-nav a:hover { color: var(--gold-2); }
+.settings-zone { margin-bottom: 32px; scroll-margin-top: 16px; }
+.settings-zone-title { font-size: 18px; margin: 0 0 14px; color: #faf8f1; font-weight: 800; letter-spacing: 0; text-transform: none; }
+
+/* ---------- Composer AI-tools collapsible group (L3) ---------- */
+.ai-tools-group > h2 { cursor: default; }
+.ai-tools-group .card { box-shadow: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast, .switch, .switch::before { animation: none !important; transition: none !important; }
+}

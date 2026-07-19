@@ -1,11 +1,38 @@
 # PostDeck
 
 Local-first multi-brand social scheduler + content studio. Full architecture, data model,
-and build plan live in [`SPEC.md`](./SPEC.md) — read that first; current state is in
+and build plan live in [`SPEC.md`](./SPEC.md) - read that first; current state is in
 [`BUILD_STATUS.md`](./BUILD_STATUS.md) and history in [`CHANGELOG.md`](./CHANGELOG.md).
-Shipped through **B15**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
+Shipped through **D2**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
 analytics, Content Studio, image sizing + Codex handoff, chat agent, brand/profile settings,
-Claude/Codex drafting, editable image prompts, and a designed local command-center UI.
+Claude/Codex drafting, editable image prompts, queue slots, tags & campaigns, calendar
+gap-finding, best-time-to-post, redraft-the-winner, per-brand UTM tracking, and a
+full design-system pass - all inside a designed local command-center UI.
+
+## What's in here
+
+- **Queue slots** - define recurring per-brand+platform slots ("3x/week LinkedIn, 9am") and
+  hit "Add to queue" from any idea or draft to drop it into the next open slot instead of
+  hand-picking a date.
+- **Grouped left-nav** - the dashboard's navigation is organized into zones (Plan, Create,
+  Review, Settings) instead of a flat link list, so the app reads like a real product rather
+  than a script's debug UI.
+- **Tags & campaigns** - tag posts, group them into campaigns, filter the calendar by either,
+  and get campaign-scoped analytics (engagement rollups, top posts) instead of only
+  whole-account numbers.
+- **Calendar gap-finding** - a per-brand coverage strip plus per-day platform dots make it
+  obvious at a glance which brands and platforms are under-posted for the week, instead of
+  scanning empty-looking cells one by one.
+- **Best-time-to-post** - a nudge that suggests a publish time from your own historical
+  engagement data once there's enough of it, falling back to sane per-platform defaults
+  until then. No third-party trend data, no guesswork dressed up as science.
+- **Redraft-the-winner** - one click from an analytics top-post row to spin up a new draft
+  using that post's copy as a starting point, instead of re-typing what already worked.
+- **Per-brand UTM tracking** - link tracking parameters auto-append per brand at approve time,
+  so click attribution doesn't depend on remembering to tag links by hand.
+- **Design-system pass** - a real button/input/toggle system, shared `pageHeader` /
+  `formSection` / `toast` / `banner` / `emptyState` primitives, and a full sweep of every
+  view against them, replacing the ad-hoc one-off styling each feature had accumulated.
 
 ## Delivery rule
 
@@ -27,11 +54,11 @@ full workflow, GitHub/source-of-truth rule, and parallel worktree hygiene.
 ```bash
 npm install
 
-# 1. real Blotato account IDs — copy the example and fill it in (gitignored)
+# 1. real Blotato account IDs - copy the example and fill it in (gitignored)
 cp config/accounts.seed.example.json config/accounts.seed.json
 # edit config/accounts.seed.json with real IDs
 
-# 2. env — copy and fill in at least BLOTATO_API_KEY, ANTHROPIC_API_KEY
+# 2. env - copy and fill in at least BLOTATO_API_KEY, ANTHROPIC_API_KEY
 cp .env.example .env
 
 # 3. create the DB + tables (runs automatically on first use, or explicitly:)
@@ -40,7 +67,7 @@ npm run migrate
 # 4. seed brands, accounts, tone profiles
 node src/seed.js
 
-# 5. import existing brand-system CSVs (repeatable — matches on external_id)
+# 5. import existing brand-system CSVs (repeatable - matches on external_id)
 node src/import.js clusters "/path/to/brand-system/content_clusters.csv"
 node src/import.js posts    "/path/to/brand-system/posts.csv"
 node src/import.js leads    "/path/to/brand-system/lead_signals.csv"
@@ -97,7 +124,7 @@ node --test test/*.test.js
 ```
 
 Covers: hard-rules scrub (`scrub.test.js`), the Blotato worker against a local
-mock server (`blotato.mock.test.js` — never hits the real API), the Agentic OS
+mock server (`blotato.mock.test.js` - never hits the real API), the Agentic OS
 export shape (`export.test.js`), TikTok cosmetic-field validation
 (`validate.test.js`), and the Approve-gate/reschedule-guard/quiet-hours API
 surface end-to-end via Fastify `.inject()` (`server.approve-gate.test.js`).
@@ -106,14 +133,14 @@ surface end-to-end via Fastify `.inject()` (`server.approve-gate.test.js`).
 
 | Flag | Default | What it does |
 |---|---|---|
-| `BLOTATO_DRY_RUN` | `1` (ON) | **Hard safety default.** Only `0`/`false` makes the worker place real create-post/media-upload calls against Blotato. In dry-run, handoff logs what it *would* submit and marks the post `submitted_dry` instead of `submitted` — nothing ever touches the real API. |
+| `BLOTATO_DRY_RUN` | `1` (ON) | **Hard safety default.** Only `0`/`false` makes the worker place real create-post/media-upload calls against Blotato. In dry-run, handoff logs what it *would* submit and marks the post `submitted_dry` instead of `submitted` - nothing ever touches the real API. |
 | `POSTDECK_WORKER` | `1` (ON) | Only `0`/`false` stops the in-process worker (handoff + verify + export, every 5 min) from starting with the server. |
 | `POSTDECK_SYNC_ENABLED` | `1` (ON) | Only `0`/`false` disables the rsync of `state/social-state.json` to the Agentic OS VPS. |
-| `BLOTATO_API_BASE` | `https://backend.blotato.com` | REST base — never the MCP server (see SPEC.md Decision 2). |
+| `BLOTATO_API_BASE` | `https://backend.blotato.com` | REST base - never the MCP server (see SPEC.md Decision 2). |
 | `POSTDECK_CAPTURE_DIR` | `./capture-inbox/` | Watched once per worker cycle for `.md`/`.txt` idea drops (see below). |
 
 `handoff_window_hours` (default 48) and the new **quiet hours** (`quiet_start`
-`22:00`, `quiet_end` `07:00`) are NOT env vars — they live in the `settings`
+`22:00`, `quiet_end` `07:00`) are NOT env vars - they live in the `settings`
 table, readable/writable via `GET`/`PATCH /api/settings`.
 
 ### Dry-run explained
@@ -121,7 +148,7 @@ table, readable/writable via `GET`/`PATCH /api/settings`.
 Every worker cycle runs HANDOFF (submit posts inside the handoff window) then
 VERIFY (poll submitted posts for publish status) then EXPORT (write + rsync
 `social-state.json`). With `BLOTATO_DRY_RUN=1` (the default, and what ships in
-`.env.example`), HANDOFF never calls `POST /v2/media` or `POST /v2/posts` — it
+`.env.example`), HANDOFF never calls `POST /v2/media` or `POST /v2/posts` - it
 logs the exact payload it would send and flips the post to `submitted_dry`.
 VERIFY is a no-op for `submitted_dry` posts (nothing to poll). This lets you
 run the whole app, including real scheduling UI flows, with zero risk of an
@@ -144,15 +171,14 @@ accidental real post until you deliberately flip the flag.
   `submitted`+ with `409 not_reschedulable` (`src/server.js`).
 - **Quiet hours**: `GET/PATCH /api/settings` exposes `quiet_start`/`quiet_end`
   (default `22:00`/`07:00`, wraps midnight). Approving a post scheduled inside
-  that window shows a `confirm()` dialog in the dashboard — a soft warning,
+  that window shows a `confirm()` dialog in the dashboard - a soft warning,
   never a hard block. `GET /api/settings/quiet-hours-check?publish_at=<iso>`
   backs it.
 - **launchd agent**: `scripts/install-launchd.sh` installs
   `~/Library/LaunchAgents/com.postdeck.plist` (`RunAtLoad` + `KeepAlive`,
   runs `node src/server.js` with `WorkingDirectory` set to the repo, logs to
   `logs/postdeck.{out,err}.log`). Run `--uninstall` to tear it down. This repo
-  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`)
-  — installing it is a standing background process, so run it yourself when
+  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`) - installing it is a standing background process, so run it yourself when
   ready:
   ```bash
   chmod +x scripts/install-launchd.sh   # already executable in the repo
@@ -161,7 +187,7 @@ accidental real post until you deliberately flip the flag.
   ./scripts/install-launchd.sh --uninstall
   ```
 
-## Going live with real Blotato calls — checklist
+## Going live with real Blotato calls - checklist
 
 1. **Regenerate the Blotato API key.** The one on file currently 401s.
    Generate a fresh one in the Blotato dashboard and drop it into `.env` as
@@ -173,7 +199,7 @@ accidental real post until you deliberately flip the flag.
    your least-visible page), watch the worker log the HANDOFF, and confirm in
    Blotato's own dashboard that it actually went out before trusting anything
    else through the pipe.
-4. **Restart the server** after any `.env` change — dry-run/worker/sync flags
+4. **Restart the server** after any `.env` change - dry-run/worker/sync flags
    are read at process start (mostly; `isDryRun()`/`workerEnabled()` do
    re-read `process.env` per-call, but a full restart is the reliable way to
    pick up `.env` file edits since nothing auto-reloads the file itself).
@@ -181,7 +207,7 @@ accidental real post until you deliberately flip the flag.
 
 ## Idea capture from the road (usage)
 
-No new plumbing — CB texts the Agentic OS Telegram bot ("idea: ..."), AOS
+No new plumbing - CB texts the Agentic OS Telegram bot ("idea: ..."), AOS
 drops a `.md`/`.txt` file into `capture-inbox/` (path configurable via
 `POSTDECK_CAPTURE_DIR`), and the worker's `importCapturedIdeas` step
 (`src/capture.js`) picks it up on the next 5-minute cycle, creating an

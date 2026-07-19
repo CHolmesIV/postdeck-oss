@@ -242,6 +242,44 @@ const MIGRATIONS = [
   `
   ALTER TABLE brands ADD COLUMN logo_path TEXT;
   `,
+  // v8 — B16a queue slots: recurring weekly brand+platform slots ("Add to
+  // queue" drops a post into the next open one instead of hand-picking
+  // publish_at). See src/queue.js.
+  `
+  CREATE TABLE IF NOT EXISTS queue_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    day_of_week INTEGER NOT NULL,  -- 0 (Sunday) - 6 (Saturday)
+    time_local TEXT NOT NULL,      -- 'HH:MM', 24hr, local time
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_queue_slots_brand_platform ON queue_slots(brand_id, platform);
+  `,
+  // v9 — B17a tags & campaigns: `tags` (kind 'tag'|'campaign', brand_id
+  // nullable = global) + `post_tags` join. See src/tags.js.
+  `
+  CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'tag',  -- 'tag' | 'campaign'
+    color TEXT,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE CASCADE,  -- NULL = global
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS post_tags (
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    UNIQUE(post_id, tag_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tags_brand_kind ON tags(brand_id, kind);
+  CREATE INDEX IF NOT EXISTS idx_post_tags_post ON post_tags(post_id);
+  CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+  `,
 ];
 
 function applyMigrations(db) {

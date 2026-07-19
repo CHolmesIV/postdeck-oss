@@ -29,6 +29,26 @@ import { listExamples, createExample, deleteExample, examplesGrounding } from '.
 import { redistributeFromUrl } from './redistribute.js';
 import { listProfiles, getProfile, getProfileById, upsertProfile, generateProfile } from './profiles.js';
 import {
+  listQueueSlots,
+  getQueueSlot,
+  createQueueSlot,
+  updateQueueSlot,
+  deleteQueueSlot,
+  nextOpenSlot,
+} from './queue.js';
+import {
+  listTags,
+  getTag,
+  createTag,
+  updateTag,
+  deleteTag,
+  setPostTags,
+  getPostTags,
+  getTagsForPosts,
+} from './tags.js';
+import { bestTimes, daysSinceLastPost } from './besttime.js';
+import { appendUtm, getBrandUtmSettings, setBrandUtmSettings } from './utm.js';
+import {
   resolveVoice,
   withGlobalVoice,
   getGlobalVoice,
@@ -151,9 +171,17 @@ function buildServer() {
   });
 
   // ---------- brands ----------
+  // B18c: per-brand UTM settings (utm_enabled/utm_template) live on the
+  // generic settings table (src/utm.js), not a brands column — merged onto
+  // every brand row here so the dashboard gets them for free off GET /api/brands.
+  function withUtmSettings(row) {
+    const utm = getBrandUtmSettings(db, row.id);
+    return { ...row, utm_enabled: utm.enabled, utm_template: utm.template };
+  }
+
   app.get('/api/brands', async () => {
     const rows = db.prepare('SELECT * FROM brands ORDER BY id').all();
-    return rows.map((r) => parseJsonColumns(r, ['colors']));
+    return rows.map((r) => withUtmSettings(parseJsonColumns(r, ['colors'])));
   });
 
   // ---------- B14: branding (logo/colors/voice-doc) in Settings ----------
@@ -178,8 +206,13 @@ function buildServer() {
       `UPDATE brands SET name = @name, colors = @colors, logo_path = @logo_path, voice_doc_path = @voice_doc_path,
        updated_at = @now WHERE id = @id`
     ).run(merged);
+    // B18c: link-tracking toggle + template override (settings-table backed,
+    // not a brands column — see withUtmSettings above).
+    if (b.utm_enabled !== undefined || b.utm_template !== undefined) {
+      setBrandUtmSettings(db, req.params.id, { enabled: b.utm_enabled, template: b.utm_template });
+    }
     const row = db.prepare('SELECT * FROM brands WHERE id = ?').get(req.params.id);
-    return parseJsonColumns(row, ['colors']);
+    return withUtmSettings(parseJsonColumns(row, ['colors']));
   });
 
   // Multipart logo upload — mirrors POST /api/media, but also stamps
@@ -385,7 +418,11 @@ function buildServer() {
     if (clauses.length) sql += ' AND ' + clauses.join(' AND ');
     sql += ' ORDER BY p.publish_at IS NULL, p.publish_at';
     const rows = db.prepare(sql).all(...params);
-    return rows.map((r) => parseJsonColumns(r, ['media', 'platform_fields']));
+    const posts = rows.map((r) => parseJsonColumns(r, ['media', 'platform_fields']));
+    // Batch-fetch tags for the whole page in one query (avoid N+1).
+    const tagsByPost = getTagsForPosts(db, posts.map((p) => p.id));
+    for (const p of posts) p.tags = tagsByPost.get(p.id) || [];
+    return posts;
   });
 
   app.get('/api/posts/:id', async (req, reply) => {
@@ -398,6 +435,7 @@ function buildServer() {
     post.metrics = db
       .prepare('SELECT * FROM metrics WHERE post_id = ? ORDER BY captured_at DESC')
       .all(req.params.id);
+    post.tags = getPostTags(db, req.params.id);
     return post;
   });
 
@@ -523,6 +561,30 @@ function buildServer() {
       now,
       id: req.params.id,
     };
+
+    // ---- B18c: UTM auto-append on the Approve gate (never on draft) ----
+    // Rewrites bare links in the copy field once, when the post first crosses
+    // into approved/scheduled_local, if the post's brand has utm_enabled.
+    if (enteringApprovedGate && existing.brand_id != null) {
+      const { enabled, template } = getBrandUtmSettings(db, existing.brand_id);
+      if (enabled) {
+        const brandRow = db.prepare('SELECT slug FROM brands WHERE id = ?').get(existing.brand_id);
+        // {campaign} resolves to the post's campaign tag when one is assigned,
+        // else appendUtm falls back to the brand slug.
+        const campaignRow = db
+          .prepare(
+            `SELECT t.name FROM tags t JOIN post_tags pt ON pt.tag_id = t.id
+             WHERE pt.post_id = ? AND t.kind = 'campaign' LIMIT 1`
+          )
+          .get(existing.id);
+        merged.copy = appendUtm(merged.copy, {
+          platform: existing.platform,
+          campaign: campaignRow?.name,
+          brand: brandRow?.slug,
+          template: template || undefined,
+        });
+      }
+    }
 
     db.prepare(
       `
@@ -889,7 +951,7 @@ ${bodyHtml}
   app.get('/api/platform-specs', async () => loadPlatformSpecs());
 
   // ---------- analytics (B7) ----------
-  app.get('/api/analytics', async () => buildAnalytics(db));
+  app.get('/api/analytics', async (req) => buildAnalytics(db, { tagId: req.query.tag_id }));
 
   // ---------- B8: copy assistant ----------
   app.post('/api/copy-assist', async (req, reply) => {
@@ -1472,6 +1534,172 @@ ${bodyHtml}
       quiet_start: settings.quiet_start,
       quiet_end: settings.quiet_end,
     };
+  });
+
+  // ---------- B18a: best-time nudge ----------
+  app.get('/api/best-times', async (req, reply) => {
+    const { brand_id, platform } = req.query;
+    if (!brand_id || !platform) {
+      reply.code(400);
+      return { error: 'brand_id and platform are required' };
+    }
+    const payload = bestTimes(db, brand_id, platform);
+    return {
+      ...payload,
+      last_post_days_ago: daysSinceLastPost(db, brand_id, platform),
+    };
+  });
+
+  // ---------- B16a: queue slots ("Add to queue") ----------
+  app.get('/api/queue-slots', async (req) => {
+    const { brand_id, platform } = req.query;
+    return listQueueSlots(db, {
+      brand_id: brand_id !== undefined ? brand_id : undefined,
+      platform,
+    });
+  });
+
+  app.post('/api/queue-slots', async (req, reply) => {
+    const b = req.body || {};
+    const { row, error } = createQueueSlot(db, b);
+    if (error) {
+      reply.code(400);
+      return { error: 'bad_request', message: error };
+    }
+    reply.code(201);
+    return row;
+  });
+
+  app.patch('/api/queue-slots/:id', async (req, reply) => {
+    const { row, error } = updateQueueSlot(db, req.params.id, req.body || {});
+    if (error === 'not_found') {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    if (error) {
+      reply.code(400);
+      return { error: 'bad_request', message: error };
+    }
+    return row;
+  });
+
+  app.delete('/api/queue-slots/:id', async (req, reply) => {
+    const { error } = deleteQueueSlot(db, req.params.id);
+    if (error === 'not_found') {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    reply.code(204);
+    return null;
+  });
+
+  // "Add to queue" — computes the next open slot for the post's brand +
+  // platform(s) and sets publish_at to the earliest across them. A post row
+  // is single-platform (posts.platform); an optional body.platforms array
+  // lets a caller check multiple candidate platforms (e.g. a multi-platform
+  // composer batch) and use the earliest, but the common case is just the
+  // post's own platform.
+  app.post('/api/posts/:id/queue', async (req, reply) => {
+    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+    if (!post) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    if (post.brand_id === null || post.brand_id === undefined) {
+      reply.code(422);
+      return { error: 'no_brand', message: 'Post has no brand_id — cannot resolve queue slots.' };
+    }
+    if (!RESCHEDULABLE_STATUSES.includes(post.status)) {
+      reply.code(409);
+      return {
+        error: 'not_reschedulable',
+        message: `Cannot queue a post in status '${post.status}'.`,
+      };
+    }
+
+    const b = req.body || {};
+    const platforms = Array.isArray(b.platforms) && b.platforms.length ? b.platforms : [post.platform];
+    const from = b.from || undefined;
+
+    const candidates = platforms
+      .map((platform) => nextOpenSlot(db, post.brand_id, platform, from))
+      .filter(Boolean);
+
+    if (!candidates.length) {
+      reply.code(422);
+      return {
+        error: 'no_open_slot',
+        message: 'No active queue slots configured for this brand/platform.',
+      };
+    }
+
+    const publish_at = candidates.sort()[0];
+    const now = nowIso();
+    let nextStatus = post.status;
+    if (['draft', 'approved'].includes(nextStatus)) nextStatus = 'scheduled_local';
+
+    db.prepare(
+      `UPDATE posts SET publish_at = @publish_at, status = @status, updated_at = @now WHERE id = @id`
+    ).run({ publish_at, status: nextStatus, now, id: post.id });
+
+    return { publish_at };
+  });
+
+  // ---------- B17a: tags & campaigns ----------
+  app.get('/api/tags', async (req) => {
+    const { kind, brand_id } = req.query;
+    return listTags(db, {
+      kind,
+      brand_id: brand_id !== undefined ? brand_id : undefined,
+    });
+  });
+
+  app.post('/api/tags', async (req, reply) => {
+    const { row, error } = createTag(db, req.body || {});
+    if (error) {
+      reply.code(400);
+      return { error: 'bad_request', message: error };
+    }
+    reply.code(201);
+    return row;
+  });
+
+  app.patch('/api/tags/:id', async (req, reply) => {
+    const { row, error } = updateTag(db, req.params.id, req.body || {});
+    if (error === 'not_found') {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    if (error) {
+      reply.code(400);
+      return { error: 'bad_request', message: error };
+    }
+    return row;
+  });
+
+  app.delete('/api/tags/:id', async (req, reply) => {
+    const { error } = deleteTag(db, req.params.id);
+    if (error === 'not_found') {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    reply.code(204);
+    return null;
+  });
+
+  app.put('/api/posts/:id/tags', async (req, reply) => {
+    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+    if (!post) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    const b = req.body || {};
+    const { row, error } = setPostTags(db, req.params.id, b.tag_ids || []);
+    if (error) {
+      reply.code(400);
+      return { error: 'bad_request', message: error };
+    }
+    return { tags: row };
   });
 
   return app;

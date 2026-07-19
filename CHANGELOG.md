@@ -3,6 +3,92 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-18 - D2 design consistency pass (Seeds-informed) shipped
+
+- Adopted Sprout Social's design-system discipline (their public "Seeds" system) while
+  keeping PostDeck's ink/gold identity. Spec: `docs/D2_CONSISTENCY_PASS_SPEC.md`; full
+  view-by-view audit that drove the work: `docs/D2_AUDIT.md`.
+- **Component system**: one button system (sm 28px / md 36px / lg 44px x primary /
+  secondary / ghost / destructive) with hover/active/focus-visible/disabled/pending states -
+  collapsed 8 ad-hoc button heights onto 3; defined the dead `.btn-secondary` class; inputs/
+  selects matched to button tiers; real toggle switches for all on/off settings; global
+  focus ring; 24px minimum touch targets.
+- **Shared primitives**: `pageHeader` (title + fixed action order, filters always
+  rightmost), `formSection` (single-column labeled groups), `toast` (transient feedback),
+  `inlineBanner` (persistent conditions), `emptyState` (message + one CTA) - swept across
+  all views.
+- **Composer**: reordered to Sprout's compose flow (distribution -> content -> media ->
+  metadata -> scheduling -> AI tools in one collapsible); browser alert()s replaced with
+  toasts; platform-tab selected style no longer collides with primary CTA gold.
+- **Settings**: reorganized into three zones with anchor nav - Workspace / Brands
+  (selector-driven: accounts, tones, branding, queues, link tracking) / Integrations & Ops.
+- **Sweep fixes**: calendar toolbar to canonical order (nav left, filters rightmost); empty
+  states everywhere incl. each kanban column; Ops "posts by status" chart x-label collision
+  fixed (rotate + truncate + tooltip); Research/Inspiration duplicate brand pickers removed;
+  Library title matches nav; analytics lists right-align numbers + end-of-list line.
+- Suite 247/247 throughout; every view browser-walked after the sweep.
+
+## 2026-07-18 - B17 + B18 shipped: tags/campaigns, gap-finding, best-time, redraft, UTM
+
+- **Tags & campaigns (B17a)**: migration v9 (`tags` + `post_tags`), `src/tags.js`, CRUD
+  routes + `PUT /api/posts/:id/tags` (max one campaign per post), tags included in all
+  post payloads (batched, no N+1), analytics rollups accept `?tag_id=`. Composer gains a
+  Tags & campaign card (chip pickers + create-inline); calendar chips get campaign-colored
+  borders + a Tag filter; post modal shows tag chips; Analytics gains a campaign selector
+  with scoped "Campaign performance" view.
+- **Calendar gap-finding (B17b)**: month cells show per-platform count dots and future
+  empty days get a dashed "gap" treatment; week headers show day counts; a brand coverage
+  strip above the grid flags brands with zero scheduled posts (click -> composer with that
+  brand). Pure frontend over existing data.
+- **Best-time nudge (B18a)**: `src/besttime.js` + `GET /api/best-times` - engagement
+  bucketing by day/hour band from YOUR metrics when >=8 published posts exist, else
+  research-backed static defaults per platform (new `best_times` in platform-specs).
+  Composer schedule section shows "Best window" + "last post N days ago" with
+  click-to-apply chips; queue editor shows the window for the selected platform.
+- **Redraft the winner (B18b)**: Analytics top-10 rows gain a Redraft button - opens the
+  composer on that brand, stages the original as grounding + example, auto-runs Draft with
+  AI framed as "fresh take, same idea, new hook". House content standards apply.
+- **UTM auto-append (B18c)**: `src/utm.js` - per-brand Link tracking toggle + template in
+  Settings (default `utm_source={platform}&utm_medium=social&utm_campaign={campaign}`),
+  applied once at the approve gate (never drafts), idempotent, skips links that already
+  carry utm_, `{campaign}` resolves to the post's campaign tag else brand slug. Strong
+  review caught + fixed: the approve hook wasn't passing the post's campaign tag.
+- Suite 219 -> 247 (tags 6, besttime 11, utm 16 incl. a trailing-`?` URL parsing bug found
+  and fixed during testing). All features browser-verified; smoke-test data cleaned from
+  the live DB.
+
+## 2026-07-18 - B16 shipped: queue slots + left navigation rail
+
+- **Queue slots (B16a)**: recurring weekly brand+platform posting slots. Migration v8
+  (`queue_slots`), `src/queue.js` (slot CRUD + `nextOpenSlot` - walks active slots up to 2
+  weeks out, skipping taken datetimes, quiet hours, and past same-day slots),
+  `GET/POST/PATCH/DELETE /api/queue-slots`, and `POST /api/posts/:id/queue` (computes the
+  next open slot, sets publish_at, transitions draft/approved -> scheduled_local; 422
+  `no_open_slot` when no active slots). Settings gains a per-brand Queues editor (slot list
+  with active toggle/delete, add-slot row, "Daily 12:00 LinkedIn + Facebook" seed button).
+  Composer action bar gains **"Add to queue"** - saves the draft(s), queues each platform,
+  shows "queued for <date>" per platform, links to Settings if no slots. 9 new tests
+  (`test/queue.test.js`); suite 219/219.
+- **Left navigation rail (B16b)**: the flat sidebar is now four collapsible groups - Plan
+  (Home, Calendar, Ideas), Create (Composer, Library, Images), Grow (Analytics, Research,
+  Inspiration), Setup (Profiles, Settings, Ops). Per-group collapse state persists
+  (localStorage `pd_nav_*`); active-route highlight unchanged; below 900px the rail flattens
+  to an icon-only strip with tooltips. Existing design tokens only, no new deps.
+- Verified in-browser (desktop + narrow viewport, live queue round-trip). Smoke-test
+  artifacts (2 empty posts + 14 seeded slots) removed from the live DB afterward.
+
+## 2026-07-18 - B16-B18 competitive wave spec'd (Hootsuite/Sprout gap analysis)
+
+- Ran a competitive analysis of Hootsuite + Sprout Social (2025-2026 feature sets) against
+  the current PostDeck inventory. Result spec'd as three waves in
+  `docs/B16_B18_COMPETITIVE_WAVE_SPEC.md`: **B16** queue slots (Sprout-style recurring
+  time slots + "Add to queue") and a grouped left navigation rail; **B17** campaign/tag
+  system + calendar gap-finding (per-day counts, empty-day treatment, brand coverage
+  strip); **B18** best-time-to-post nudge in the composer, "Redraft the winner" from
+  Analytics top posts, and per-brand UTM auto-append on approve. Also documents what was
+  deliberately skipped (unified inbox, approval chains, enterprise listening, ads) and a
+  parking lot (list view, streams-lite, queue re-flow, ICS export). Spec only - no code.
+
 ## 2026-07-16 - Calendar: click a post for a quick-view/edit modal
 
 - Clicking a post chip (month or week view) now opens a **pop-out modal** instead of navigating
@@ -38,7 +124,7 @@ first posts out (per CB: log the churn):
   live posting were fine all along. Do NOT create `postdeck/.env` (it shadows config/.env).
 - **listAccounts parse bug (my check, not shipped):** Blotato returns accounts under `items`,
   not `data`. Resolved the real account map: FB `<redacted-id>`, LinkedIn `<redacted-id>`, Twitter `<redacted-id>`,
-  with per-brand page subaccounts (see SOCIAL_STATUS.md).
+  with per-brand page subaccounts.
 - **PrimeWright accounts wired:** LinkedIn #8 -> acct <redacted-id> / page <redacted-id>; Facebook #9 ->
   acct <redacted-id> / page <redacted-id>; both manual=0 (worker-eligible).
 - **Flipped `BLOTATO_DRY_RUN=0`** in config/.env -> posting is LIVE.
