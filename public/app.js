@@ -146,6 +146,91 @@ function isManualAccount(acct) {
   return isManualPlatform(acct.platform);
 }
 
+// ---------------- Send to Blotato now (2026-07-19 UI pass, item 1/2) ----------------
+function accountForPost(post) {
+  return state.accounts.find((a) => String(a.id) === String(post.account_id)) || null;
+}
+function isManualPost(post) {
+  const acct = accountForPost(post);
+  return acct ? isManualAccount(acct) : isManualPlatform(post.platform);
+}
+function isMissedWindowPost(post) {
+  return typeof post.error_message === 'string' && post.error_message.startsWith('missed_window:');
+}
+// Per-post "Send to Blotato now" eligibility: scheduled_local/approved with a
+// publish_at set, not a manual account/platform, not already submitted or
+// published (those statuses are excluded by not being scheduled_local/approved).
+function canSendToBlotatoNow(post) {
+  if (!post || !['scheduled_local', 'approved'].includes(post.status)) return false;
+  if (!post.publish_at) return false;
+  if (isManualPost(post)) return false;
+  return true;
+}
+async function sendToBlotatoNow(postId, { onDone } = {}) {
+  try {
+    const res = await api(`/api/posts/${postId}/submit`, { method: 'POST', body: {} });
+    const dry = res.status === 'submitted_dry' || res.post?.status === 'submitted_dry';
+    toast(dry ? 'Sent to Blotato (dry run) - no real Blotato call was made.' : 'Sent to Blotato.', 'ok');
+    if (typeof onDone === 'function') onDone();
+    else if (typeof currentCalendarReload === 'function') currentCalendarReload();
+    return res;
+  } catch (err) {
+    toast(`Could not send: ${err.message}`, 'error');
+    return null;
+  }
+}
+// Shared button + sub-line, used by the popover/modal/review "send now" spot.
+function sendNowControl(post, { onDone, size = 'sm' } = {}) {
+  const btn = el('button', { class: `button secondary ${size}`, type: 'button' }, 'Send to Blotato now');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    await sendToBlotatoNow(post.id, { onDone });
+    btn.disabled = false;
+  });
+  return el('div', { class: 'send-now-wrap' }, [
+    btn,
+    el('div', { class: 'send-now-sub' }, 'hands off now - still publishes at the scheduled time'),
+  ]);
+}
+// Manual-account inline banner (item 4) - shown wherever a manual-account
+// scheduled/approved post is surfaced.
+function manualAccountBanner() {
+  return inlineBanner("This account is set to manual - the worker will never send this to Blotato. Fix in Settings → Brands, or use Mark posted.", 'info');
+}
+function missedWindowBanner(post, { onResolved } = {}) {
+  const wrap = el('div', {}, [
+    inlineBanner('⚠ missed window - review and resend', 'error'),
+    sendNowControl(post, { onDone: onResolved }),
+  ]);
+  return wrap;
+}
+
+// Blotato only auto-chains first comments on twitter/bluesky/threads. For
+// every other platform the stored first_comment is a manual step: once the
+// post is out, remind the operator to paste it as the first comment.
+const FIRST_COMMENT_AUTO_PLATFORMS = ['twitter', 'bluesky', 'threads'];
+function firstCommentReminder(post) {
+  if (!post.first_comment || !String(post.first_comment).trim()) return null;
+  if (FIRST_COMMENT_AUTO_PLATFORMS.includes(post.platform)) return null;
+  if (!['submitted', 'published'].includes(post.status)) return null;
+  const copyBtn = el('button', { class: 'button sm secondary' }, 'Copy comment');
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(post.first_comment);
+      toast('First comment copied - paste it on the live post.');
+    } catch {
+      toast('Could not copy - select the text manually.', 'error');
+    }
+  };
+  return el('div', { class: 'first-comment-reminder' }, [
+    inlineBanner(
+      `💬 Paste as the FIRST COMMENT after this ${post.platform} post is live (auto-comment isn't supported there): "${post.first_comment}"`,
+      'warn'
+    ),
+    copyBtn,
+  ]);
+}
+
 function slugify(text) {
   return String(text || '')
     .toLowerCase()
@@ -849,13 +934,59 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
   const nextBtn = el('button', { class: 'cal-nav-btn', title: 'Next' }, '›');
   const todayBtn = el('button', { class: 'cal-nav-btn' }, 'Today');
   const refreshBtn = el('button', { class: 'cal-nav-btn', title: 'Refresh from server' }, '↻');
+  const bulkSendBtn = el('button', { class: 'button secondary sm', type: 'button', title: 'Send every eligible post in the current view to Blotato now' }, 'Send to Blotato');
   const periodLabel = el('span', { class: 'cal-period-label' }, '');
+
+  // item 2: from/to bounds for whichever view is currently showing (month /
+  // week / Upcoming's 14-day span), so "Send to Blotato" only ever touches
+  // what's actually on screen.
+  function currentScopeRange() {
+    const mode = viewToggle.value;
+    let from, to;
+    if (mode === 'month') {
+      const y = refDate.getFullYear();
+      const m = refDate.getMonth();
+      from = new Date(y, m, 1, 0, 0, 0);
+      to = new Date(y, m + 1, 0, 23, 59, 59);
+    } else if (mode === 'week') {
+      from = new Date(refDate);
+      from.setHours(0, 0, 0, 0);
+      to = new Date(refDate);
+      to.setDate(to.getDate() + 6);
+      to.setHours(23, 59, 59, 999);
+    } else {
+      from = new Date();
+      from.setHours(0, 0, 0, 0);
+      to = new Date(from);
+      to.setDate(to.getDate() + 13);
+      to.setHours(23, 59, 59, 999);
+    }
+    return { from: from.toISOString(), to: to.toISOString() };
+  }
+  bulkSendBtn.addEventListener('click', async () => {
+    const { from, to } = currentScopeRange();
+    const scope = { from, to };
+    if (brandFilter.value) scope.brand_id = Number(brandFilter.value);
+    if (platformFilter.value) scope.platform = platformFilter.value;
+    bulkSendBtn.disabled = true;
+    try {
+      const qs = new URLSearchParams({ from, to });
+      if (scope.brand_id) qs.set('brand_id', scope.brand_id);
+      if (scope.platform) qs.set('platform', scope.platform);
+      const preview = await api(`/api/posts/submit-batch/preview?${qs.toString()}`);
+      openBulkSendConfirm(preview, scope, () => reload());
+    } catch (err) {
+      toast(`Could not preview: ${err.message}`, 'error');
+    } finally {
+      bulkSendBtn.disabled = false;
+    }
+  });
 
   // L4: nav (view toggle + prev/today/next + period label) LEFT, refresh
   // middle-right, filters (brand/platform/tag) RIGHTMOST.
   const toolbar = el('div', { class: 'cal-toolbar' }, [
     el('div', { class: 'cal-toolbar-group' }, [viewToggle, prevBtn, todayBtn, nextBtn, periodLabel]),
-    el('div', { class: 'cal-toolbar-group' }, [refreshBtn]),
+    el('div', { class: 'cal-toolbar-group' }, [refreshBtn, bulkSendBtn]),
     el('div', { class: 'cal-toolbar-group cal-toolbar-filters' }, [
       el('span', {}, 'Brand:'), brandFilter,
       el('span', {}, 'Platform:'), platformFilter,
@@ -900,17 +1031,18 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
     prevBtn.disabled = mode === 'upcoming';
     nextBtn.disabled = mode === 'upcoming';
     todayBtn.disabled = mode === 'upcoming';
+    const allBrands = !brand;
     if (mode === 'upcoming') {
       coverageStrip.hidden = true;
       grid.hidden = true;
       agendaHost.hidden = false;
-      drawAgenda(agendaHost, filtered);
+      drawAgenda(agendaHost, filtered, { allBrands });
     } else {
       coverageStrip.hidden = false;
       grid.hidden = false;
       agendaHost.hidden = true;
       renderCoverageStrip(coverageStrip, filtered, state.brands, mode, refDate);
-      drawGrid(grid, filtered, mode, refDate);
+      drawGrid(grid, filtered, mode, refDate, { allBrands });
     }
   }
 
@@ -1173,11 +1305,27 @@ function buildAttentionSection(container, posts, analyticsData, homeBrand, profi
   container.appendChild(card);
 }
 
-function weekChip(p) {
+// Small brand-initial disc for the "All brands" view (item 5) - reuses the
+// same brandColor mapping the coverage strip already assigns per-brand.
+function brandIdentityDisc(brandId) {
+  const name = brandName(brandId) || '?';
+  return el('span', { class: 'brand-identity-disc', style: `background:${brandColor(brandId)}`, title: brandName(brandId) }, name.trim().charAt(0).toUpperCase());
+}
+function manualWarnGlyph(post) {
+  if (isMissedWindowPost(post)) return el('span', { class: 'manual-warn-glyph missed-window', title: 'missed window - review and resend' }, '⚠');
+  if (['scheduled_local', 'approved'].includes(post.status) && isManualPost(post)) {
+    return el('span', { class: 'manual-warn-glyph', title: "won't auto-post - this account is manual" }, '⚠');
+  }
+  return null;
+}
+
+function weekChip(p, { allBrands = true } = {}) {
   const chip = el('a', { href: `#/post/${p.id}`, class: 'week-chip', style: `border-left-color:${brandColor(p.brand_id)}`, title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}` }, [
     el('span', { class: 'week-chip-dot', style: `background:${brandColor(p.brand_id)}` }),
+    allBrands ? brandIdentityDisc(p.brand_id) : null,
     platformIcon(p.platform, { size: 12 }),
     el('span', { class: 'week-chip-copy' }, (p.copy || '(no copy)').slice(0, 28)),
+    manualWarnGlyph(p),
     el('span', { class: 'week-chip-date' }, fmtDate(p.publish_at)),
   ]);
   chip.addEventListener('click', (e) => {
@@ -1188,7 +1336,7 @@ function weekChip(p) {
   return chip;
 }
 
-function buildWeekSection(container, posts) {
+function buildWeekSection(container, posts, allBrands = true) {
   container.innerHTML = '';
   const card = el('div', { class: 'card home-section' });
   const now = Date.now();
@@ -1202,7 +1350,7 @@ function buildWeekSection(container, posts) {
   if (!upcoming.length) {
     strip.appendChild(el('div', { class: 'week-strip-empty' }, 'Nothing scheduled in the next 7 days.'));
   } else {
-    upcoming.slice(0, 6).forEach((p) => strip.appendChild(weekChip(p)));
+    upcoming.slice(0, 6).forEach((p) => strip.appendChild(weekChip(p, { allBrands })));
   }
   card.appendChild(strip);
   container.appendChild(card);
@@ -1450,7 +1598,7 @@ async function renderHome(view) {
     const filteredPosts = homeBrand ? posts.filter((p) => String(p.brand_id) === String(homeBrand)) : posts;
     const filteredProfiles = homeBrand ? (profiles || []).filter((p) => String(p.brand_id) === String(homeBrand)) : (profiles || []);
     buildAttentionSection(attentionHost, filteredPosts, analyticsData, homeBrand, filteredProfiles);
-    buildWeekSection(weekHost, filteredPosts);
+    buildWeekSection(weekHost, filteredPosts, !homeBrand);
     buildPlatformChipsSection(platformHost, filteredPosts, homeBrand);
     buildMiniAnalyticsSection(analyticsHost, analyticsData, homeBrand);
     await renderCalendarInto(calendarHost, { initialBrand: homeBrand, defaultMode: 'week' });
@@ -1498,12 +1646,88 @@ function composeFromIdea(idea, dateKey) {
 }
 
 // Jump to the composer with "Publish at" prefilled to the clicked day (09:00
-// local), carrying the calendar's current brand filter. See renderComposer.
+// local), carrying the calendar's current brand filter. Still used by the
+// day popover's "+ New post" button... no - Quick Compose is preferred there
+// (see openDayPopover); kept for any other future full-page entry points.
 function composeOnDate(dateKey) {
   sessionStorage.setItem('pd_composer_prefill_date', `${dateKey}T09:00`);
   const brandSel = document.getElementById('cal-brand');
   if (brandSel && brandSel.value) sessionStorage.setItem('pd_composer_prefill_brand', brandSel.value);
   location.hash = '#/composer';
+}
+
+// ---- Build B: day-click popover (replaces the old jump-straight-to-composer
+// behavior). Small anchored popover: date title, that day's posts (click ->
+// existing post popover), "+ New post on <date>" -> Quick Compose prefilled
+// with 09:00 local (or the next open queue slot when that's trivially known
+// from what's already loaded - see nextSlotHintFor). Esc/click-outside closes.
+let currentDayPopover = null;
+function closeDayPopover() {
+  if (!currentDayPopover) return;
+  const { overlay, onKey, onOutside } = currentDayPopover;
+  overlay.remove();
+  document.removeEventListener('keydown', onKey);
+  document.removeEventListener('mousedown', onOutside, true);
+  currentDayPopover = null;
+}
+
+function openDayPopover(dateKey, anchorEl, dayPosts) {
+  closeDayPopover();
+  closePostPopover();
+  const pop = el('div', { class: 'day-popover', role: 'dialog' });
+  const dateObj = new Date(`${dateKey}T00:00:00`);
+  const label = dateObj.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+
+  pop.appendChild(
+    el('div', { class: 'day-popover-header' }, [
+      el('span', {}, label),
+      el('button', { class: 'button ghost sm modal-close', type: 'button', title: 'Close', onclick: closeDayPopover }, '✕'),
+    ])
+  );
+
+  const list = el('div', { class: 'day-popover-list' });
+  if (!dayPosts.length) {
+    list.appendChild(el('div', { class: 'day-popover-empty' }, 'Nothing scheduled.'));
+  } else {
+    for (const p of dayPosts) {
+      const time = p.publish_at
+        ? new Date(p.publish_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+        : '—';
+      const row = el('button', { type: 'button', class: 'day-popover-row' }, [
+        platformIcon(p.platform, { size: 13 }),
+        el('span', { class: 'dp-time' }, time),
+        el('span', {}, (p.copy || '(no copy)').slice(0, 40)),
+      ]);
+      row.addEventListener('click', () => { closeDayPopover(); openPostPopover(p.id, anchorEl); });
+      list.appendChild(row);
+    }
+  }
+  pop.appendChild(list);
+
+  pop.appendChild(
+    el('button', {
+      class: 'button primary sm',
+      type: 'button',
+      style: 'width:100%;',
+      onclick: () => {
+        closeDayPopover();
+        const brandSel = document.getElementById('cal-brand');
+        openQuickCompose({
+          brandId: brandSel && brandSel.value ? brandSel.value : undefined,
+          publishAt: `${dateKey}T09:00`,
+        });
+      },
+    }, `+ New post on ${dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`)
+  );
+
+  document.body.appendChild(pop);
+  positionPostPopover(pop, anchorEl);
+
+  function onKey(e) { if (e.key === 'Escape') closeDayPopover(); }
+  function onOutside(e) { if (!pop.contains(e.target) && e.target !== anchorEl && !anchorEl.contains?.(e.target)) closeDayPopover(); }
+  document.addEventListener('keydown', onKey);
+  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+  currentDayPopover = { overlay: pop, onKey, onOutside };
 }
 
 // Local YYYY-MM-DD key (avoid toISOString's UTC shift moving posts a day).
@@ -1592,7 +1816,7 @@ function renderCoverageStrip(hostEl, posts, brands, mode, refDate) {
   }
 }
 
-function drawGrid(grid, posts, mode, refDate) {
+function drawGrid(grid, posts, mode, refDate, { allBrands = true } = {}) {
   grid.innerHTML = '';
   const ref = refDate ? new Date(refDate) : new Date();
   ref.setHours(0, 0, 0, 0);
@@ -1659,7 +1883,7 @@ function drawGrid(grid, posts, mode, refDate) {
           mode === 'week' ? el('span', { class: 'cal-week-daycount' }, ` · ${dayPosts.length}`) : '',
         ]),
         countDots,
-        ...dayPosts.map((p) => postChip(p)),
+        ...dayPosts.map((p) => postChip(p, { allBrands })),
       ]
     );
     makeDropTarget(cell, key);
@@ -1669,7 +1893,7 @@ function drawGrid(grid, posts, mode, refDate) {
     cell.title = 'Click to schedule a post on this day';
     cell.addEventListener('click', (e) => {
       if (e.target.closest('.chip')) return;
-      composeOnDate(key);
+      openDayPopover(key, cell, dayPosts);
     });
     return cell;
   }
@@ -1710,7 +1934,7 @@ function drawGrid(grid, posts, mode, refDate) {
     grid.appendChild(
       el('div', { class: 'cal-day cal-unscheduled' }, [
         el('div', { class: 'day-label' }, 'Unscheduled'),
-        ...byDay.unscheduled.map((p) => postChip(p)),
+        ...byDay.unscheduled.map((p) => postChip(p, { allBrands })),
       ])
     );
   }
@@ -1761,29 +1985,31 @@ function agendaDayLabel(key, todayKey) {
   return date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
-function agendaRow(p) {
+function agendaRow(p, { allBrands = true } = {}) {
   const time = p.publish_at
     ? new Date(p.publish_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
     : '--:--';
   const row = el(
     'button',
-    { type: 'button', class: 'agenda-row', title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}` },
+    { type: 'button', class: 'agenda-row' + (allBrands ? ' agenda-row-allbrands' : ''), style: allBrands ? `border-left:3px solid ${brandColor(p.brand_id)}` : '', title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}` },
     [
+      allBrands ? brandIdentityDisc(p.brand_id) : null,
       platformIcon(p.platform, { size: 14 }),
       el('span', { class: 'agenda-row-time' }, time),
       el('span', { class: 'pill', style: `border-left-color:${brandColor(p.brand_id)}` }, brandName(p.brand_id)),
       el('span', { class: 'agenda-row-copy' }, (p.copy || '(no copy)').split('\n')[0]),
+      manualWarnGlyph(p),
       el('span', { class: `pill status-${p.status}` }, p.status),
     ]
   );
-  row.addEventListener('click', () => openPostPopover(p.id, row));
+  row.addEventListener('click', () => openPostPopover(p.id, row, { onChange: () => { if (typeof currentCalendarReload === 'function') currentCalendarReload(); } }));
   return row;
 }
 
 // Renders the agenda list (respects the calendar's existing brand/platform/tag
 // filters - `posts` is already filtered by the caller). Unscheduled drafts
 // group is collapsed by default; day groups are always expanded.
-function drawAgenda(host, posts) {
+function drawAgenda(host, posts, { allBrands = true } = {}) {
   host.innerHTML = '';
   const { unscheduled, days, todayKey } = computeAgendaGroups(posts);
 
@@ -1797,7 +2023,7 @@ function drawAgenda(host, posts) {
     const unschedBody = el(
       'div',
       { class: 'agenda-group-body' },
-      unscheduled.map((p) => agendaRow(p))
+      unscheduled.map((p) => agendaRow(p, { allBrands }))
     );
     unschedBody.hidden = true; // collapsed by default per spec
     function toggle() {
@@ -1820,13 +2046,13 @@ function drawAgenda(host, posts) {
     host.appendChild(
       el('div', {}, [
         el('div', { class: 'agenda-group-title' }, agendaDayLabel(day.key, todayKey)),
-        el('div', { class: 'agenda-group-body' }, day.posts.map((p) => agendaRow(p))),
+        el('div', { class: 'agenda-group-body' }, day.posts.map((p) => agendaRow(p, { allBrands }))),
       ])
     );
   }
 }
 
-function postChip(p) {
+function postChip(p, { allBrands = true } = {}) {
   const draggable = RESCHEDULABLE_STATUSES.includes(p.status);
   // B17a: a post carrying a campaign tag gets its chip's left border colored
   // by that campaign (falls back to the brand color otherwise), and tag
@@ -1856,6 +2082,9 @@ function postChip(p) {
   }
   const badge = el('span', { class: `pill status-${p.status}`, style: 'margin-left:4px;font-size:9px;' }, p.status);
   chip.appendChild(badge);
+  const warnGlyph = manualWarnGlyph(p);
+  if (warnGlyph) chip.appendChild(warnGlyph);
+  if (allBrands) chip.prepend(brandIdentityDisc(p.brand_id));
   chip.prepend(platformIcon(p.platform, { size: 12 }));
   // F7a: quick-action popover instead of a full-page navigation (keep href
   // for middle-click / accessibility, but a plain click opens the pop-out).
@@ -2025,7 +2254,21 @@ function openPostPopover(postId, anchorEl, { onChange } = {}) {
       pop.appendChild(el('div', { class: 'chip-popover-date' }, fmtDate(post.publish_at)));
       pop.appendChild(el('div', { class: 'chip-popover-copy' }, copyLines));
 
+      // item 4: manual-account / missed-window banners
+      if (isMissedWindowPost(post)) {
+        pop.appendChild(missedWindowBanner(post, { onResolved: () => { closePostPopover(); refresh(); } }));
+      } else if (['scheduled_local', 'approved'].includes(post.status) && isManualPost(post)) {
+        pop.appendChild(manualAccountBanner());
+      }
+      const fcReminder = firstCommentReminder(post);
+      if (fcReminder) pop.appendChild(fcReminder);
+
       const actions = el('div', { class: 'chip-popover-actions' });
+
+      // item 1: Send to Blotato now
+      if (canSendToBlotatoNow(post)) {
+        actions.appendChild(sendNowControl(post, { onDone: () => { closePostPopover(); refresh(); } }));
+      }
 
       // Reschedule - hidden for submitted/published (mirrors RESCHEDULABLE_STATUSES).
       if (RESCHEDULABLE_STATUSES.includes(post.status)) {
@@ -2156,6 +2399,78 @@ function openPostPopover(postId, anchorEl, { onChange } = {}) {
     });
 }
 
+// ---- item 2: bulk send confirm modal (Calendar toolbar "Send to Blotato") ----
+const SKIP_REASON_LABELS = {
+  manual: 'manual account',
+  missed_window: 'missed window',
+  no_publish_at: 'no publish time set',
+  wrong_status: 'not scheduled/approved',
+};
+function openBulkSendConfirm(preview, scope, onSent) {
+  const overlay = el('div', { class: 'modal-overlay' });
+  const card = el('div', { class: 'modal-card' });
+  overlay.appendChild(card);
+  function close() {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+  }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', onKey);
+
+  const eligible = preview.eligible || [];
+  const skipped = preview.skipped || [];
+  const skipCounts = {};
+  for (const s of skipped) skipCounts[s.reason] = (skipCounts[s.reason] || 0) + 1;
+
+  card.appendChild(
+    el('div', { class: 'modal-header' }, [
+      el('strong', {}, 'Send to Blotato'),
+      el('button', { class: 'modal-close', title: 'Close', type: 'button', onclick: close }, '✕'),
+    ])
+  );
+  if (preview.dry_run) card.appendChild(el('span', { class: 'dry-run-banner' }, 'DRY RUN - no real Blotato calls will be made'));
+  card.appendChild(el('div', { style: 'margin-top:10px;' }, `${eligible.length} post(s) eligible in the current view.`));
+  if (skipped.length) {
+    const lines = Object.entries(skipCounts).map(([reason, n]) => `${n} ${SKIP_REASON_LABELS[reason] || reason}`);
+    card.appendChild(inlineBanner(`Skipping ${skipped.length}: ${lines.join(', ')}.`, 'info'));
+  }
+  if (!eligible.length) {
+    card.appendChild(el('div', { class: 'toolbar', style: 'margin-top:12px;' }, [el('button', { class: 'button secondary md', type: 'button', onclick: close }, 'Close')]));
+    document.body.appendChild(overlay);
+    return;
+  }
+
+  const resultHost = el('div', { style: 'margin-top:10px;' });
+  const sendBtn = el('button', { class: 'button primary md', type: 'button' }, `Send ${eligible.length} posts`);
+  const cancelBtn = el('button', { class: 'button ghost md', type: 'button', onclick: close }, 'Cancel');
+  sendBtn.addEventListener('click', async () => {
+    sendBtn.disabled = true;
+    cancelBtn.disabled = true;
+    resultHost.innerHTML = '';
+    try {
+      const res = await api('/api/posts/submit-batch', { method: 'POST', body: { scope } });
+      const dryLabel = res.dry_run ? ' (dry run)' : '';
+      resultHost.appendChild(
+        el('div', { class: 'msg-banner msg-ok' }, `Sent ${res.submitted.length} of ${res.attempted}${dryLabel}.`)
+      );
+      if (res.failed && res.failed.length) {
+        for (const f of res.failed) resultHost.appendChild(inlineBanner(`Post #${f.id}: ${f.error}`, 'error'));
+      }
+      toast(`Sent ${res.submitted.length} post(s) to Blotato${dryLabel}.`, 'ok');
+      if (typeof onSent === 'function') onSent();
+      sendBtn.replaceWith(el('button', { class: 'button primary md', type: 'button', onclick: close }, 'Done'));
+    } catch (err) {
+      resultHost.appendChild(inlineBanner(`Could not send: ${err.message}`, 'error'));
+      sendBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  });
+  card.appendChild(el('div', { class: 'toolbar', style: 'margin-top:12px;' }, [sendBtn, cancelBtn]));
+  card.appendChild(resultHost);
+  document.body.appendChild(overlay);
+}
+
 // ---- Quick-view / edit modal (opened from a calendar chip) ----
 // isoToLocalInput: an ISO string -> a value a datetime-local input accepts,
 // in the viewer's local time.
@@ -2237,11 +2552,25 @@ function openPostModal(postId) {
       if (post.public_url) {
         card.appendChild(el('div', { style: 'margin-top:8px;' }, [el('a', { href: post.public_url, target: '_blank' }, 'View published post →')]));
       }
-      if (post.error_message) {
+      if (post.error_message && !isMissedWindowPost(post)) {
         card.appendChild(inlineBanner(post.error_message, 'error'));
       }
 
+      // item 4: manual-account / missed-window banners
+      if (isMissedWindowPost(post)) {
+        card.appendChild(missedWindowBanner(post, { onResolved: () => { close(); if (typeof currentCalendarReload === 'function') currentCalendarReload(); } }));
+      } else if (['scheduled_local', 'approved'].includes(post.status) && isManualPost(post)) {
+        card.appendChild(manualAccountBanner());
+      }
+      const fcReminderModal = firstCommentReminder(post);
+      if (fcReminderModal) card.appendChild(fcReminderModal);
+
       const actions = el('div', { class: 'toolbar', style: 'margin-top:12px;' });
+
+      // item 1: Send to Blotato now
+      if (canSendToBlotatoNow(post)) {
+        actions.appendChild(sendNowControl(post, { onDone: () => { close(); if (typeof currentCalendarReload === 'function') currentCalendarReload(); }, size: 'md' }));
+      }
 
       actions.appendChild(
         el('button', {
@@ -2495,6 +2824,22 @@ function openQuickCompose(prefill = {}) {
   const queueBtn = el('button', { class: 'button secondary sm', type: 'button' }, 'Add to queue');
   const scheduleMsg = el('div');
 
+  // item 6: compact first-comment toggle (same idea as the full composer's).
+  let firstCommentEnabled = false;
+  const firstCommentToggle = el('input', { type: 'checkbox' });
+  const firstCommentInput = el('input', { placeholder: 'https://... (goes in the first comment)', class: 'sm', style: 'width:100%;margin-top:4px;' });
+  firstCommentInput.hidden = true;
+  firstCommentToggle.addEventListener('change', () => {
+    firstCommentEnabled = firstCommentToggle.checked;
+    firstCommentInput.hidden = !firstCommentEnabled;
+    scheduleLivePreview();
+  });
+  firstCommentInput.addEventListener('input', scheduleLivePreview);
+  const firstCommentRow = el('div', { class: 'field-row', style: 'margin-top:6px;' }, [
+    el('label', { class: 'cv3-first-comment-label' }, [firstCommentToggle, ' Link in first comment']),
+    firstCommentInput,
+  ]);
+
   const saveBtn = el('button', { class: 'button primary md', type: 'button' }, 'Save draft');
   const saveApproveBtn = el('button', { class: 'button secondary md', type: 'button' }, 'Save & approve');
   const openFullBtn = el('button', { class: 'button ghost md', type: 'button' }, 'Open full composer →');
@@ -2558,6 +2903,12 @@ function openQuickCompose(prefill = {}) {
     const brand = state.brands.find((b) => String(b.id) === String(brandId));
     const mediaUrl = attachedImage ? (mediaFiles.find((f) => f.path === attachedImage.path)?.url || null) : null;
     previewHost.appendChild(renderPostPreview(platform, { copy: copyArea.value, mediaUrl, brand }));
+    if (firstCommentEnabled && firstCommentInput.value.trim()) {
+      previewHost.appendChild(el('div', { class: 'feed-preview-first-comment' }, [
+        el('span', { class: 'feed-preview-first-comment-label' }, 'first comment'),
+        el('span', {}, firstCommentInput.value.trim()),
+      ]));
+    }
   }
   previewToggleBtn.addEventListener('click', () => {
     previewOpen = !previewOpen;
@@ -2721,6 +3072,7 @@ function openQuickCompose(prefill = {}) {
           platform_fields: {},
           content_type: null,
           media,
+          first_comment: firstCommentEnabled && firstCommentInput.value.trim() ? firstCommentInput.value.trim() : null,
           publish_at: publishAtOverride !== undefined
             ? publishAtOverride
             : (publishAtInput.value ? new Date(publishAtInput.value).toISOString() : null),
@@ -2862,6 +3214,7 @@ function openQuickCompose(prefill = {}) {
       el('div', { class: 'qc-inline-controls' }, [publishAtInput, queueBtn]),
     ]),
     bestTimeHost,
+    firstCommentRow,
     scheduleMsg,
     actionMsg,
     el('div', { class: 'toolbar qc-action-bar' }, [openFullBtn, saveApproveBtn, saveBtn])
@@ -3124,6 +3477,20 @@ async function renderReview(view) {
     const trashBtn = el('button', { class: 'button destructive md', type: 'button', onclick: doTrash }, 'Trash');
     const openComposerBtn = el('button', { class: 'button ghost md', type: 'button', onclick: doOpenComposer }, 'Open in composer');
     actionsRow.append(approveNextBtn, approveBtn, skipBtn, trashBtn, openComposerBtn);
+
+    // item 4: manual-account / missed-window banners (review queue is drafts,
+    // so these are rare here, but a re-approved draft can carry either flag)
+    if (isMissedWindowPost(post)) {
+      card.appendChild(missedWindowBanner(post, { onResolved: () => { queue.shift(); renderCurrent(); } }));
+    } else if (isManualPost(post)) {
+      card.appendChild(manualAccountBanner());
+    }
+    // item 1: Send to Blotato now (only meaningful once approved+scheduled,
+    // but shown here too so a draft that already has a publish_at + non-manual
+    // account can be sent immediately without a second trip through Calendar)
+    if (canSendToBlotatoNow(post)) {
+      actionsRow.appendChild(sendNowControl(post, { onDone: () => { queue.shift(); renderCurrent(); } }));
+    }
 
     card.appendChild(actionMsg);
     card.appendChild(actionsRow);
@@ -3682,6 +4049,7 @@ async function renderBestTimeHint(hostEl, { brandId, platform, onApplyIso, guard
 async function renderComposer(view) {
   view.innerHTML = '';
   view.classList.add('view-default');
+  view.classList.add('composer-v3');
 
   // One-off "Publish at" prefill when arriving from a calendar day click
   // (composeOnDate). Consumed once; applied to publishAtInput in loadForBrand.
@@ -3690,7 +4058,7 @@ async function renderComposer(view) {
 
   // One-off "Redraft the winner" handoff from Analytics (B18b). Consumed
   // once; applied in loadForBrand if it matches the brand being loaded -
-  // preselects the matching platform's account, seeds the idea with a
+  // preselects the matching platform's account, seeds the Default copy with a
   // "fresh take on this proven post" framing prompt, stages the original
   // as an example (existing examples mechanism, best-effort grounding for
   // future drafts), and auto-runs Draft with AI.
@@ -3723,42 +4091,29 @@ async function renderComposer(view) {
     el('option', { value: '' }, 'Select brand…'),
     ...state.brands.map((b) => el('option', { value: b.id }, b.name)),
   ]);
-  // ---- Redistribute-from-blog (B11) - collapsible, reuses the Home form ----
-  const redistributeHost = el('div');
-  redistributeHost.hidden = true;
-  let redistributeOpen = false;
-  const redistributeToggleBtn = el('button', {
-    class: 'button secondary sm',
-    type: 'button',
-    onclick: () => {
-      redistributeOpen = !redistributeOpen;
-      redistributeHost.hidden = !redistributeOpen;
-      redistributeHost.innerHTML = '';
-      if (redistributeOpen) redistributeHost.appendChild(redistributeForm(() => brandSelect.value));
-    },
-  }, 'Redistribute a blog post');
-  // R1: title -> primary context control (brand) -> actions.
-  view.appendChild(pageHeader('Composer', brandSelect, redistributeToggleBtn));
-  view.appendChild(redistributeHost);
+  view.appendChild(pageHeader('New post', brandSelect));
 
   const body = el('div', {});
   view.appendChild(body);
 
   let selectedAccounts = new Set();
-  let ideaText = '';
-  let currentTab = null;
-  const draftsByPlatform = {};
+  let currentTab = 'default'; // 'default' | platform name
+  const draftsByPlatform = {}; // 'default' + one entry per platform
+  const dirtyPlatforms = new Set(); // platforms the operator has edited directly (stop following Default)
   let contentType = '';
   let pillarText = '';
   let attachedImage = null; // { path, url, altText } - picked from the Library
+  let pendingImageRequest = null; // { id, status, variants } - the "Waiting on Codex" placeholder
+  let pendingImagePollTimer = null;
+  let createdPostIds = []; // posts created for the current selection this session (Save draft / Save & approve / queue / image-request auto-save)
 
   async function loadForBrand(brandId) {
     body.innerHTML = '';
+    clearInterval(pendingImagePollTimer);
     if (!brandId) return;
     const accounts = state.accounts.filter((a) => String(a.brand_id) === String(brandId));
     // B18b: preselect the matching platform's account when arriving from a
-    // Redraft handoff, so it renders pre-checked (accountRow reads
-    // selectedAccounts.has(a.id) when it builds each row below).
+    // Redraft handoff, so it renders pre-checked.
     const pendingRedraft = redraftData && String(redraftData.brand_id) === String(brandId) ? redraftData : null;
     let redraftMatchingAcct = null;
     if (pendingRedraft) {
@@ -3789,218 +4144,243 @@ async function renderComposer(view) {
     }
     const toneSelect = el(
       'select',
-      {},
+      { class: 'sm' },
       ['business', 'personal', 'casual'].map((t) =>
         el('option', { value: t, selected: t === defaultTone ? 'selected' : undefined }, t)
       )
     );
-    // Per-platform structured fields (TikTok flags, blog title/slug/hero),
-    // mutated in place by tiktokFieldsEditor/blogFieldsEditor so they survive
-    // switching tabs. Persisted into posts.platform_fields on Save draft.
+    // Per-platform structured fields (TikTok flags, blog title/slug/hero,
+    // reddit title/subreddit/body), mutated in place by tiktokFieldsEditor/
+    // blogFieldsEditor/redditFieldsEditor so they survive switching tabs.
+    // Persisted into posts.platform_fields on Save draft.
     const platformFieldsByPlatform = {};
     const mediaFiles = await api('/api/media').catch(() => []);
 
-    // ---- Distribute-to row (B11: + per-account "manual" toggle + badge) ----
-    // Widening an account to manual=1 makes it assisted-manual (compose ->
-    // copy -> open platform -> mark posted) even if its platform normally
-    // auto-posts via Blotato; the worker skips it accordingly (SPEC.md B11).
-    function accountRow(a) {
-      const cb = el('input', { type: 'checkbox' });
-      cb.checked = selectedAccounts.has(a.id); // reflect persisted selection across re-renders
-      cb.addEventListener('change', () => {
-        if (cb.checked) selectedAccounts.add(a.id);
-        else selectedAccounts.delete(a.id);
-        renderPlatformTabs();
-        updateContentTypeSuggestion();
-        renderImagePreview();
-        updateBestTimeHint();
-      });
-      const limit = textLimitFor(a.platform);
-      const limitStr = limit == null ? 'no char limit' : `${limit} char limit`;
+    createdPostIds = [];
 
-      const badgeHost = el('span', { style: 'margin-left:8px;' });
-      function renderBadge() {
-        badgeHost.innerHTML = '';
-        if (isManualAccount(a)) {
-          badgeHost.appendChild(el('span', { class: 'pill manual-pill' }, 'manual - copy & paste'));
-        }
+    // =========================================================
+    // 1/2. Accounts row - icon chips, one line, wraps. "Manage accounts"
+    // expands the old full account-management block (add platform, manual
+    // toggle, remove) so it doesn't bloat the primary row.
+    // =========================================================
+    const accountsRow = el('div', { class: 'cv3-accounts-row' });
+    const manageHost = el('div');
+    manageHost.hidden = true;
+    let manageOpen = false;
+
+    function renderAccountsRow() {
+      accountsRow.innerHTML = '';
+      for (const a of accounts) {
+        const active = selectedAccounts.has(a.id);
+        const manual = isManualAccount(a);
+        accountsRow.appendChild(
+          el('button', {
+            type: 'button',
+            class: 'cv3-acct-chip' + (active ? ' active' : ''),
+            onclick: () => {
+              if (active) selectedAccounts.delete(a.id);
+              else selectedAccounts.add(a.id);
+              renderAccountsRow();
+              renderCopyTabs();
+              updateContentTypeSuggestion();
+              updateBestTimeHint();
+              renderMediaStrip();
+              updateSummary();
+            },
+          }, [platformIcon(a.platform, { size: 14 }), ` ${a.platform}`, manual ? el('span', { class: 'manual-tag' }, ' (manual)') : ''])
+        );
       }
-      renderBadge();
-
-      const platformForced = isManualPlatform(a.platform);
-      const manualToggle = el('input', { type: 'checkbox', class: 'switch' });
-      manualToggle.checked = Number(a.manual) === 1;
-      if (platformForced) manualToggle.disabled = true; // already assisted-manual by platform, nothing to toggle
-      manualToggle.addEventListener('change', async () => {
-        const next = manualToggle.checked ? 1 : 0;
-        try {
-          const updated = await api(`/api/accounts/${a.id}`, { method: 'PATCH', body: { manual: next } });
-          a.manual = updated?.manual ?? next;
-          renderBadge();
-          renderPlatformTabs(); // re-render in case the current tab's copy/mark-posted affordance changed
-        } catch (err) {
-          manualToggle.checked = !manualToggle.checked; // revert on failure
-          toast(`Could not update manual flag: ${err.message}`, 'error');
-        }
-      });
-      const manualLabel = el(
-        'label',
-        { class: 'manual-toggle-label', title: platformForced ? 'Already assisted-manual for this platform' : 'Mark as assisted-manual (copy & paste instead of auto-post)' },
-        [manualToggle, ' manual']
+      if (!accounts.length) {
+        accountsRow.appendChild(el('span', { style: 'color:var(--muted);font-size:12px;' }, 'No accounts yet for this brand.'));
+      }
+      accountsRow.appendChild(
+        el('button', {
+          type: 'button',
+          class: 'cv3-manage-link',
+          onclick: () => {
+            manageOpen = !manageOpen;
+            manageHost.hidden = !manageOpen;
+            manageHost.innerHTML = '';
+            if (manageOpen) manageHost.appendChild(manageAccountsBox());
+          },
+        }, manageOpen ? 'Hide account management' : 'Manage accounts')
       );
+    }
 
-      // Remove this account (e.g. a wrong/duplicate connection). Confirms
-      // first; on success drops it from state + selection and re-renders.
-      const removeBtn = el('button', {
-        class: 'account-remove',
-        type: 'button',
-        title: 'Remove this account',
-        onclick: async () => {
-          if (!confirm(`Remove the ${a.platform} account (#${a.id}) from this brand?`)) return;
+    // ---- Manage accounts (Advanced-style panel opened from the accounts
+    // row): add a platform, toggle assisted-manual, remove an account. ----
+    function manageAccountsBox() {
+      const box = el('div', { class: 'card' });
+      box.appendChild(el('h2', {}, 'Manage accounts'));
+      function accountRow(a) {
+        const limit = textLimitFor(a.platform);
+        const limitStr = limit == null ? 'no char limit' : `${limit} char limit`;
+        const badgeHost = el('span', { style: 'margin-left:8px;' });
+        function renderBadge() {
+          badgeHost.innerHTML = '';
+          if (isManualAccount(a)) badgeHost.appendChild(el('span', { class: 'pill manual-pill' }, 'manual - copy & paste'));
+        }
+        renderBadge();
+        const platformForced = isManualPlatform(a.platform);
+        const manualToggle = el('input', { type: 'checkbox', class: 'switch' });
+        manualToggle.checked = Number(a.manual) === 1;
+        if (platformForced) manualToggle.disabled = true;
+        manualToggle.addEventListener('change', async () => {
+          const next = manualToggle.checked ? 1 : 0;
           try {
-            await api(`/api/accounts/${a.id}`, { method: 'DELETE' });
-            state.accounts = state.accounts.filter((x) => x.id !== a.id);
-            selectedAccounts.delete(a.id);
+            const updated = await api(`/api/accounts/${a.id}`, { method: 'PATCH', body: { manual: next } });
+            a.manual = updated?.manual ?? next;
+            renderBadge();
+            renderAccountsRow();
+          } catch (err) {
+            manualToggle.checked = !manualToggle.checked;
+            toast(`Could not update manual flag: ${err.message}`, 'error');
+          }
+        });
+        const manualLabel = el(
+          'label',
+          { class: 'manual-toggle-label', title: platformForced ? 'Already assisted-manual for this platform' : 'Mark as assisted-manual (copy & paste instead of auto-post)' },
+          [manualToggle, ' manual']
+        );
+        const removeBtn = el('button', {
+          class: 'account-remove',
+          type: 'button',
+          title: 'Remove this account',
+          onclick: async () => {
+            if (!confirm(`Remove the ${a.platform} account (#${a.id}) from this brand?`)) return;
+            try {
+              await api(`/api/accounts/${a.id}`, { method: 'DELETE' });
+              state.accounts = state.accounts.filter((x) => x.id !== a.id);
+              selectedAccounts.delete(a.id);
+              await loadForBrand(brandId);
+            } catch (err) {
+              toast(`Could not remove account: ${err.message}`, 'error');
+            }
+          },
+        }, '✕');
+        return el('div', { class: 'account-row', style: 'display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:6px;' }, [
+          el('label', {}, `${a.platform} (account #${a.id}) - ${limitStr}`),
+          manualLabel,
+          badgeHost,
+          removeBtn,
+        ]);
+      }
+      if (accounts.length) accounts.map(accountRow).forEach((r) => box.appendChild(r));
+      const existingPlatforms = new Set(accounts.map((a) => a.platform));
+      const addablePlatforms = ['linkedin', 'facebook', 'twitter', 'instagram', 'reddit', 'tiktok', 'youtube', 'threads', 'blog']
+        .filter((p) => !existingPlatforms.has(p));
+      if (addablePlatforms.length) {
+        const addSelect = el('select', {}, [
+          el('option', { value: '' }, '+ add platform...'),
+          ...addablePlatforms.map((p) => el('option', { value: p }, p)),
+        ]);
+        const addBtn = el('button', { class: 'btn-secondary', type: 'button' }, 'Add');
+        const addMsg = el('span', { style: 'margin-left:8px;color:var(--muted);font-size:12px;' });
+        addBtn.onclick = async () => {
+          const platform = addSelect.value;
+          if (!platform) return;
+          addBtn.disabled = true;
+          addMsg.textContent = 'Adding...';
+          try {
+            const created = await api('/api/accounts', { method: 'POST', body: { brand_id: brandId, platform } });
+            state.accounts.push(created);
+            selectedAccounts.add(created.id);
+            manageOpen = true; // reopen post-render so the operator keeps context
             await loadForBrand(brandId);
           } catch (err) {
-            toast(`Could not remove account: ${err.message}`, 'error');
+            addMsg.textContent = `Could not add: ${err.message}`;
+            addBtn.disabled = false;
           }
-        },
-      }, '✕');
-
-      return el('div', { class: 'account-row', style: 'display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:6px;' }, [
-        el('label', {}, [cb, ` ${a.platform} (account #${a.id}) - ${limitStr}`]),
-        manualLabel,
-        badgeHost,
-        removeBtn,
-      ]);
-    }
-
-    const accountsBox = el('div', { class: 'card' }, [
-      el('h2', {}, 'Distribute to (accounts, auto-filtered by brand)'),
-    ]);
-    if (accounts.length === 0) {
-      accountsBox.appendChild(
-        el('div', { style: 'color:var(--muted);font-size:13px;margin-bottom:8px;' },
-          'No accounts yet for this brand. Add a platform below to draft for it (copy & paste by default; attach a live connection later).')
+        };
+        box.appendChild(el('div', { class: 'field-row', style: 'margin-top:8px;' }, [addSelect, addBtn, addMsg]));
+      }
+      // Redistribute-from-blog (B11) lives here too - it's a secondary
+      // one-off action, not core to composing a normal post.
+      const redistributeHost = el('div');
+      redistributeHost.hidden = true;
+      let redistributeOpen = false;
+      box.appendChild(
+        el('div', { style: 'margin-top:10px;' }, [
+          el('button', {
+            class: 'button secondary sm',
+            type: 'button',
+            onclick: () => {
+              redistributeOpen = !redistributeOpen;
+              redistributeHost.hidden = !redistributeOpen;
+              redistributeHost.innerHTML = '';
+              if (redistributeOpen) redistributeHost.appendChild(redistributeForm(() => brandId));
+            },
+          }, 'Redistribute a blog post'),
+          redistributeHost,
+        ])
       );
-    } else {
-      accounts.map(accountRow).forEach((r) => accountsBox.appendChild(r));
+      return box;
     }
+    renderAccountsRow();
 
-    // ---- Add a platform for this brand (esp. brands seeded without a
-    // Blotato connection). Creates a manual copy-&-paste account so drafting
-    // is never blocked; the operator can flip it live later.
-    const existingPlatforms = new Set(accounts.map((a) => a.platform));
-    const addablePlatforms = ['linkedin', 'facebook', 'twitter', 'instagram', 'reddit', 'tiktok', 'youtube', 'threads', 'blog']
-      .filter((p) => !existingPlatforms.has(p));
-    if (addablePlatforms.length) {
-      const addSelect = el('select', {}, [
-        el('option', { value: '' }, '+ add platform...'),
-        ...addablePlatforms.map((p) => el('option', { value: p }, p)),
-      ]);
-      const addBtn = el('button', { class: 'btn-secondary', type: 'button' }, 'Add');
-      const addMsg = el('span', { style: 'margin-left:8px;color:var(--muted);font-size:12px;' });
-      addBtn.onclick = async () => {
-        const platform = addSelect.value;
-        if (!platform) return;
-        addBtn.disabled = true;
-        addMsg.textContent = 'Adding...';
-        try {
-          const created = await api('/api/accounts', { method: 'POST', body: { brand_id: brandId, platform } });
-          state.accounts.push(created);
-          selectedAccounts.add(created.id); // pre-select the freshly added platform
-          await loadForBrand(brandId); // re-render so the new account row + tabs appear
-        } catch (err) {
-          addMsg.textContent = `Could not add: ${err.message}`;
-          addBtn.disabled = false;
-        }
-      };
-      accountsBox.appendChild(
-        el('div', { class: 'field-row', style: 'margin-top:8px;' }, [addSelect, addBtn, addMsg])
-      );
-    }
-    // L3: cards are appended in the canonical order at the end of
-    // loadForBrand (distribution -> content -> media -> metadata ->
-    // scheduling -> AI tools) instead of inline, so their construction order
-    // above can stay as-is. See the "D2 L3 assembly" block near the end.
-
-    // ---- Content-type picker + recommender (B8) ----
-    const contentTypeBox = el('div', { class: 'card' });
-    contentTypeBox.appendChild(el('h2', {}, 'Content type'));
-    const contentTypeSelect = el(
-      'select',
-      { onchange: (e) => { contentType = e.target.value; renderImagePreview(); } },
-      [el('option', { value: '' }, '(unset)'), ...['static', 'carousel', 'image', 'text', 'video'].map((t) => el('option', { value: t }, t))]
-    );
-    const pillarInput = el('input', { placeholder: 'pillar (optional, for recommender)' });
-    pillarInput.oninput = () => { pillarText = pillarInput.value; updateContentTypeSuggestion(); };
-    const suggestionLine = el('div', { style: 'color:var(--muted);font-size:12px;margin-top:6px;' });
-    contentTypeBox.append(
-      el('div', { class: 'field-row' }, [el('label', {}, 'Content type'), contentTypeSelect]),
-      el('div', { class: 'field-row' }, [el('label', {}, 'Pillar'), pillarInput]),
-      suggestionLine
-    );
-
-    // ---- Tags & campaign picker (B17a) ----
-    // Tags: multi-select chip toggle. Campaign: single-select chip group (max
-    // one per post, enforced client-side by only ever keeping one active).
-    // Both support create-inline (Enter in the small text input creates the
-    // tag/campaign with an auto color from TAG_COLOR_PALETTE) so the operator
-    // never has to leave the composer to set one up.
+    // =========================================================
+    // Details line - content type, tags, campaign (one compact row)
+    // =========================================================
     const selectedTagIds = new Set();
     let selectedCampaignId = null;
     let brandTags = [];
-    const tagsCard = el('div', { class: 'card' });
-    tagsCard.appendChild(el('h2', {}, 'Tags & campaign'));
-    const tagChipRow = el('div', { class: 'chip-row' });
-    const tagCreateInput = el('input', { placeholder: '+ tag', style: 'max-width:140px;display:inline-block;' });
-    const campaignChipRow = el('div', { class: 'chip-row', style: 'margin-top:8px;' });
-    const campaignCreateInput = el('input', { placeholder: '+ campaign', style: 'max-width:160px;display:inline-block;' });
-    const tagsMsg = el('div');
-    tagsCard.append(
-      el('div', { class: 'field-row' }, [el('label', {}, 'Tags'), tagChipRow, el('div', { style: 'margin-top:6px;' }, [tagCreateInput])]),
-      el('div', { class: 'field-row' }, [el('label', {}, 'Campaign (max one)'), campaignChipRow, el('div', { style: 'margin-top:6px;' }, [campaignCreateInput])]),
-      tagsMsg
+
+    const contentTypeSelect = el(
+      'select',
+      { onchange: (e) => { contentType = e.target.value; renderMediaStrip(); } },
+      [el('option', { value: '' }, '(unset)'), ...['static', 'carousel', 'image', 'text', 'video'].map((t) => el('option', { value: t }, t))]
     );
+    const contentTypeHintEl = el('span', { class: 'hint', style: 'font-size:11px;color:var(--muted);margin-left:6px;', title: '' }, '');
+    async function updateContentTypeSuggestion() {
+      contentTypeHintEl.textContent = '';
+      contentTypeHintEl.title = '';
+      if (currentTab === 'default') return;
+      try {
+        const qs = new URLSearchParams({ brand_id: brandId, platform: currentTab });
+        if (pillarText) qs.set('pillar', pillarText);
+        const rec = await api(`/api/recommend/content-type?${qs.toString()}`);
+        contentTypeHintEl.textContent = `💡 ${rec.suggestion}`;
+        contentTypeHintEl.title = rec.ranked?.[0]?.reason || '';
+      } catch {
+        // best-effort only - recommender is a convenience, never blocks the composer
+      }
+    }
+    const pillarInput = el('input', { placeholder: 'pillar (optional)', class: 'sm' });
+    pillarInput.oninput = () => { pillarText = pillarInput.value; updateContentTypeSuggestion(); };
+
+    const tagChipRow = el('div', { class: 'chip-row' });
+    const tagCreateInput = el('input', { placeholder: '+ tag', class: 'sm', style: 'max-width:100px;display:inline-block;' });
+    const campaignChipRow = el('div', { class: 'chip-row' });
+    const campaignCreateInput = el('input', { placeholder: '+ campaign', class: 'sm', style: 'max-width:120px;display:inline-block;' });
+    const tagsMsg = el('div');
 
     function renderTagPickers() {
       tagChipRow.innerHTML = '';
       campaignChipRow.innerHTML = '';
       for (const t of brandTags.filter((t) => t.kind === 'tag')) {
         const active = selectedTagIds.has(t.id);
-        const btn = el(
-          'button',
-          {
+        tagChipRow.appendChild(
+          el('button', {
             type: 'button',
             class: 'chip-btn' + (active ? ' active-tag' : ''),
             style: `border-left:3px solid ${t.color || '#a3a19a'};${active ? `background:${t.color || 'var(--surface-2)'};color:#1a1200;` : ''}`,
             onclick: () => { active ? selectedTagIds.delete(t.id) : selectedTagIds.add(t.id); renderTagPickers(); },
-          },
-          t.name
+          }, t.name)
         );
-        tagChipRow.appendChild(btn);
       }
-      if (!brandTags.some((t) => t.kind === 'tag')) {
-        tagChipRow.appendChild(el('span', { style: 'color:var(--muted);font-size:12px;' }, 'No tags yet - create one below.'));
-      }
+      tagChipRow.appendChild(tagCreateInput);
       for (const t of brandTags.filter((t) => t.kind === 'campaign')) {
         const active = selectedCampaignId === t.id;
-        const btn = el(
-          'button',
-          {
+        campaignChipRow.appendChild(
+          el('button', {
             type: 'button',
             class: 'chip-btn' + (active ? ' active-tag' : ''),
             style: `border-left:3px solid ${t.color || '#a3a19a'};${active ? `background:${t.color || 'var(--surface-2)'};color:#1a1200;` : ''}`,
             onclick: () => { selectedCampaignId = active ? null : t.id; renderTagPickers(); },
-          },
-          t.name
+          }, t.name)
         );
-        campaignChipRow.appendChild(btn);
       }
-      if (!brandTags.some((t) => t.kind === 'campaign')) {
-        campaignChipRow.appendChild(el('span', { style: 'color:var(--muted);font-size:12px;' }, 'No campaigns yet - create one below.'));
-      }
+      campaignChipRow.appendChild(campaignCreateInput);
     }
 
     async function loadBrandTags() {
@@ -4014,16 +4394,12 @@ async function renderComposer(view) {
       renderTagPickers();
       loadAllTags(); // best-effort refresh of the calendar/analytics cache too
     }
-
     async function createInlineTag(kind, input) {
       const name = input.value.trim();
       if (!name) return;
       tagsMsg.innerHTML = '';
       try {
-        const row = await api('/api/tags', {
-          method: 'POST',
-          body: { name, kind, color: nextTagColor(), brand_id: Number(brandId) },
-        });
+        const row = await api('/api/tags', { method: 'POST', body: { name, kind, color: nextTagColor(), brand_id: Number(brandId) } });
         brandTags.push(row);
         if (kind === 'tag') selectedTagIds.add(row.id);
         else selectedCampaignId = row.id;
@@ -4037,192 +4413,488 @@ async function renderComposer(view) {
     campaignCreateInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); createInlineTag('campaign', campaignCreateInput); } });
     await loadBrandTags();
 
-    async function updateContentTypeSuggestion() {
-      suggestionLine.textContent = '';
-      if (!currentTab) return;
-      try {
-        const qs = new URLSearchParams({ brand_id: brandId, platform: currentTab });
-        if (pillarText) qs.set('pillar', pillarText);
-        const rec = await api(`/api/recommend/content-type?${qs.toString()}`);
-        suggestionLine.textContent = `Suggested: ${rec.suggestion}${rec.ranked?.[0]?.reason ? ` - ${rec.ranked[0].reason}` : ''}`;
-      } catch {
-        // best-effort only - recommender is a convenience, never blocks the composer
-      }
-    }
+    const detailsLine = el('div', { class: 'cv3-details-line' }, [
+      el('div', { class: 'cv3-detail-field' }, [el('label', {}, 'Content type'), contentTypeSelect, contentTypeHintEl]),
+      el('div', { class: 'cv3-detail-field' }, [el('label', {}, 'Pillar'), pillarInput]),
+      el('div', { class: 'cv3-detail-field' }, [el('label', {}, 'Tags'), el('div', { class: 'cv3-tag-chip-add' }, [tagChipRow])]),
+      el('div', { class: 'cv3-detail-field' }, [el('label', {}, 'Campaign (max one)'), el('div', { class: 'cv3-tag-chip-add' }, [campaignChipRow])]),
+    ]);
 
-    // ---- Attached image (B8 - feeds alt-text/preview/Codex handoff) ----
-    const imageBox = el('div', { class: 'card' });
-    imageBox.appendChild(el('h2', {}, 'Attached image'));
-    const imageSelect = el(
+    // =========================================================
+    // Media strip - selected image, "+ Library", "Request image" (Codex),
+    // and a "Waiting on Codex" placeholder tile while a request is pending.
+    // =========================================================
+    const mediaStrip = el('div', { class: 'cv3-media-strip' });
+    const imageReqMsg = el('div');
+    const variantCountSelect = el(
       'select',
       {},
-      [
-        el('option', { value: '' }, '(no image)'),
-        ...mediaFiles
-          .filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f.filename))
-          .map((f) => el('option', { value: f.path }, f.filename)),
-      ]
+      [1, 2, 3, 4, 5, 6].map((n) => el('option', { value: String(n), selected: n === 1 ? 'selected' : undefined }, `${n} variant${n > 1 ? 's' : ''}`))
     );
-    imageSelect.onchange = () => {
-      const f = mediaFiles.find((x) => x.path === imageSelect.value);
-      attachedImage = f ? { path: f.path, url: f.url, altText: attachedImage?.path === f.path ? attachedImage.altText : '' } : null;
-      renderImagePreview();
-    };
-    imageBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'From Library'), imageSelect]));
-    const previewHost = el('div');
-    imageBox.appendChild(previewHost);
+    const sizeHintSelect = el('select', {}, [
+      el('option', { value: '' }, '(no size hint)'),
+      el('option', { value: 'vertical' }, 'Vertical 9:16'),
+      el('option', { value: 'square' }, 'Square 1:1'),
+      el('option', { value: 'portrait' }, 'Portrait 4:5'),
+      el('option', { value: 'landscape' }, 'Landscape 16:9'),
+    ]);
+    const typeHintSelect = el('select', {}, [
+      el('option', { value: '' }, '(no type hint)'),
+      el('option', { value: 'thumbnail' }, 'Thumbnail'),
+      el('option', { value: 'feed' }, 'Feed post'),
+      el('option', { value: 'story' }, 'Story'),
+    ]);
 
-    function renderImagePreview() {
-      previewHost.innerHTML = '';
-      if (!attachedImage) return;
-      previewHost.appendChild(
-        el('div', { style: 'margin-top:8px;' }, [
-          el('img', { src: attachedImage.url, style: 'max-width:160px;max-height:160px;border-radius:6px;border:1px solid var(--border);display:block;' }),
-        ])
-      );
-      const altInput = el('input', { placeholder: 'Alt text', value: attachedImage.altText || '' });
-      altInput.oninput = () => { attachedImage.altText = altInput.value; };
-      previewHost.appendChild(el('div', { class: 'field-row', style: 'margin-top:6px;' }, [el('label', {}, 'Alt text'), altInput]));
-      previewHost.appendChild(multiSizePreviewPanel());
+    function stopPendingPoll() {
+      if (pendingImagePollTimer) { clearInterval(pendingImagePollTimer); pendingImagePollTimer = null; }
     }
-
-    // ---- Multi-size preview (B8 - frontend-only, canvas-native crop preview) ----
-    function multiSizePreviewPanel() {
-      const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
-      if (!attachedImage || !platforms.length) return el('div');
-      const panel = el('div', { class: 'preview-sizes' });
-      panel.appendChild(el('h3', { style: 'margin-top:10px;' }, 'Preview sizes'));
-      const row = el('div', { class: 'preview-sizes-row' });
-      for (const platform of [...new Set(platforms)]) {
-        const rawDims = platformImageDimsRaw(platform, contentType);
-        const dims = parseDimsClient(rawDims);
-        const frame = el('div', { class: 'preview-frame' });
-        const label = el('div', { style: 'font-size:11px;color:var(--muted);margin-bottom:4px;' }, `${platform} - ${dims.raw || 'no spec'}`);
-        const box = el('div', { class: 'preview-box' });
-        if (dims.w && dims.h) {
-          box.style.aspectRatio = `${dims.w} / ${dims.h}`;
-        } else {
-          box.style.aspectRatio = '1 / 1';
+    function startPendingPoll() {
+      stopPendingPoll();
+      pendingImagePollTimer = setInterval(async () => {
+        if (!pendingImageRequest) { stopPendingPoll(); return; }
+        try {
+          const row = await api(`/api/image-requests/${pendingImageRequest.id}`);
+          pendingImageRequest = row;
+          if (row.status && row.status !== 'requested' && row.status !== 'pending') {
+            stopPendingPoll();
+          }
+          renderMediaStrip();
+        } catch {
+          // best-effort only - a transient poll failure just tries again
         }
-        const img = el('img', { src: attachedImage.url, style: 'width:100%;height:100%;object-fit:cover;' });
-        box.appendChild(img);
-        frame.append(label, box);
-        if (!dims.w) frame.appendChild(el('div', { style: 'font-size:10px;color:var(--red);margin-top:2px;' }, 'no dims spec - verify manually'));
-        row.appendChild(frame);
-      }
-      panel.appendChild(row);
-      return panel;
+      }, 4000);
     }
 
-    const aiBox = el('div', { class: 'card' });
-    aiBox.appendChild(el('h2', {}, 'Draft with AI'));
-    // AI availability pill + one-click login. Draft-with-AI shells out to the
-    // `claude` CLI on the subscription (no API key); if it isn't logged in,
-    // drafting 503s. This surfaces status and lets the operator log in without
-    // touching a terminal.
-    const aiStatusHost = el('div', { class: 'ai-status-host' });
-    aiBox.appendChild(aiStatusHost);
-    async function refreshAiStatus() {
-      aiStatusHost.innerHTML = '';
-      let status;
+    async function ensurePostsSavedForImageRequest() {
+      // Image requests persist via post_id (server auto-attaches the picked
+      // variant to posts.media). If nothing's been saved yet this session,
+      // silently save the current draft(s) first so the request has a post
+      // to attach to - the operator never has to think about save-order.
+      if (createdPostIds.length) return createdPostIds[0];
+      const created = await createPostsForSelection();
+      createdPostIds = created.map((p) => p.id);
+      return createdPostIds[0] || null;
+    }
+
+    // item 7: alt text editor for the currently-attached image tile - inline
+    // input toggled by a small "alt" button, plus a "Suggest" button that
+    // calls the same /api/copy-assist alt_text mode the Advanced panel uses.
+    async function suggestAltTextForAttached(altInput, altMsg) {
+      altMsg.textContent = 'Asking AI…';
       try {
-        status = await api('/api/ai/status');
-      } catch {
-        return; // best-effort; drafting still surfaces its own error
+        const platforms = currentPlatforms();
+        const res = await api('/api/copy-assist', {
+          method: 'POST',
+          body: {
+            mode: 'alt_text',
+            idea_text: draftsByPlatform.default || '',
+            copy: getActiveCopy ? getActiveCopy() : '',
+            brand_id: Number(brandId),
+            platforms,
+            image_path: attachedImage?.path,
+            provider: sessionDraftProvider || 'claude',
+          },
+        });
+        if (res.result?.alt_text) {
+          altInput.value = res.result.alt_text;
+          if (attachedImage) attachedImage.altText = res.result.alt_text;
+          altMsg.textContent = '';
+        } else {
+          altMsg.textContent = 'No suggestion returned.';
+        }
+      } catch (err) {
+        altMsg.textContent = err.status === 503 ? 'AI unavailable.' : err.message;
       }
-      function appendHint(text) {
-        aiStatusHost.appendChild(
-          el('div', { class: 'hint', style: 'margin-top:6px;color:var(--muted);' }, text)
+    }
+    function altTextEditor(imgObj, onSave) {
+      const wrap = el('div', { class: 'cv3-media-alt', hidden: true });
+      const altInput = el('input', { placeholder: 'Alt text (accessibility)', class: 'sm', value: imgObj.altText || '' });
+      const altMsg = el('span', { style: 'font-size:11px;color:var(--muted);' });
+      altInput.addEventListener('input', () => { imgObj.altText = altInput.value; if (onSave) onSave(altInput.value); });
+      const suggestBtn = el('button', { class: 'button ghost sm', type: 'button', onclick: () => suggestAltTextForAttached(altInput, altMsg) }, 'Suggest');
+      wrap.append(altInput, suggestBtn, altMsg);
+      return wrap;
+    }
+    function renderMediaStrip() {
+      mediaStrip.innerHTML = '';
+      if (attachedImage) {
+        const altBox = altTextEditor(attachedImage);
+        const altBtn = el('button', { class: 'cv3-media-alt-btn', type: 'button', title: 'Edit alt text', onclick: () => { altBox.hidden = !altBox.hidden; } }, 'alt');
+        const tile = el('div', { class: 'cv3-media-tile' }, [
+          el('img', { src: attachedImage.url }),
+          altBtn,
+          el('button', { class: 'cv3-media-x', type: 'button', title: 'Remove image', onclick: () => { attachedImage = null; renderMediaStrip(); refreshActiveEditor(); } }, '✕'),
+        ]);
+        mediaStrip.appendChild(tile);
+        mediaStrip.appendChild(altBox);
+      }
+      // "+ Library" tile
+      const libTile = el('div', { class: 'cv3-media-tile add-tile' }, [el('span', {}, '📁'), el('span', {}, '+ Library')]);
+      libTile.addEventListener('click', (e) => openLibraryPicker(e.currentTarget));
+      mediaStrip.appendChild(libTile);
+      // "Request image" tile
+      const reqTile = el('div', { class: 'cv3-media-tile request-tile' }, [el('span', {}, '✨'), el('span', {}, 'Request image')]);
+      reqTile.addEventListener('click', fireImageRequest);
+      mediaStrip.appendChild(reqTile);
+      mediaStrip.appendChild(
+        el('button', { class: 'button ghost sm', type: 'button', style: 'align-self:center;', onclick: openImagePromptModal }, 'Edit prompts')
+      );
+      // Pending / resolved image-request placeholder
+      if (pendingImageRequest) {
+        const variants = Array.isArray(pendingImageRequest.variants) ? pendingImageRequest.variants : [];
+        if (pendingImageRequest.chosen_path) {
+          const chosen = variants.find((v) => v.path === pendingImageRequest.chosen_path) || {};
+          const tile = el('div', { class: 'cv3-media-tile' }, [
+            el('img', { src: chosen.url || pendingImageRequest.chosen_path }),
+            el('button', { class: 'cv3-media-x', type: 'button', title: 'Remove', onclick: () => { pendingImageRequest = null; renderMediaStrip(); } }, '✕'),
+          ]);
+          mediaStrip.appendChild(tile);
+        } else if (variants.length) {
+          for (const v of variants) {
+            const tile = el('div', { class: 'cv3-media-tile', title: 'Click to use this variant' }, [el('img', { src: v.url || v.path })]);
+            tile.style.cursor = 'pointer';
+            tile.addEventListener('click', async () => {
+              try {
+                const row = await api(`/api/image-requests/${pendingImageRequest.id}/pick`, { method: 'POST', body: { chosen_path: v.path } });
+                pendingImageRequest = row;
+                attachedImage = { path: v.path, url: v.url || v.path, altText: '' };
+                stopPendingPoll();
+                renderMediaStrip();
+                refreshActiveEditor();
+              } catch (err) {
+                toast(`Could not use variant: ${err.message}`, 'error');
+              }
+            });
+            mediaStrip.appendChild(tile);
+          }
+        } else {
+          const tile = el('div', { class: 'cv3-media-tile pending-tile' }, [
+            el('span', {}, '🖼️'),
+            el('span', {}, 'Waiting on Codex'),
+            el('button', {
+              class: 'cv3-media-x', type: 'button', title: 'Cancel request',
+              onclick: async () => {
+                try {
+                  await api(`/api/image-requests/${pendingImageRequest.id}/cancel`, { method: 'POST' });
+                } catch {
+                  // best-effort - clear the placeholder regardless
+                }
+                pendingImageRequest = null;
+                stopPendingPoll();
+                renderMediaStrip();
+              },
+            }, '✕'),
+          ]);
+          mediaStrip.appendChild(tile);
+        }
+      }
+    }
+
+    function openLibraryPicker(anchorEl) {
+      document.querySelectorAll('.cv3-media-library-pop').forEach((n) => n.remove());
+      const pop = el('div', { class: 'cv3-media-library-pop' });
+      const images = mediaFiles.filter((f) => /\.(png|jpe?g|gif|webp)$/i.test(f.filename));
+      if (!images.length) {
+        pop.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;padding:6px;' }, 'No images in the Library yet.'));
+      } else {
+        for (const f of images) {
+          pop.appendChild(el('button', { type: 'button', onclick: () => { attachedImage = { path: f.path, url: f.url, altText: '' }; pop.remove(); renderMediaStrip(); refreshActiveEditor(); } }, f.filename));
+        }
+      }
+      document.body.appendChild(pop);
+      const rect = anchorEl.getBoundingClientRect();
+      pop.style.left = `${rect.left}px`;
+      pop.style.top = `${rect.bottom + 6}px`;
+      const onOutside = (e) => { if (!pop.contains(e.target) && e.target !== anchorEl) { pop.remove(); document.removeEventListener('mousedown', onOutside, true); } };
+      setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+    }
+
+    async function fireImageRequest() {
+      imageReqMsg.innerHTML = '';
+      const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
+      if (!platforms.length) {
+        imageReqMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account first.'));
+        return;
+      }
+      const copy = currentTab === 'reddit' ? (platformFieldsByPlatform.reddit?.body || '') : (draftsByPlatform[currentTab] || draftsByPlatform.default || '');
+      const hints = {};
+      if (sizeHintSelect.value) hints.size = sizeHintSelect.value;
+      if (typeHintSelect.value) hints.type = typeHintSelect.value;
+      try {
+        const postId = await ensurePostsSavedForImageRequest();
+        const res = await api('/api/image-requests', {
+          method: 'POST',
+          body: {
+            brand_id: Number(brandId),
+            post_id: postId || undefined,
+            platforms,
+            content_type: contentType || null,
+            copy,
+            variant_count: Number(variantCountSelect.value) || 1,
+            hints,
+          },
+        });
+        pendingImageRequest = res;
+        renderMediaStrip();
+        startPendingPoll();
+      } catch (err) {
+        imageReqMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
+      }
+    }
+    renderMediaStrip();
+
+    // =========================================================
+    // Schedule line - publish-at, add to queue, best-time chips, last-posted hint
+    // =========================================================
+    const publishAtInput = el('input', { type: 'datetime-local', class: 'sm' });
+    if (prefillDate) { publishAtInput.value = prefillDate; prefillDate = null; } // from a calendar day click, applied once
+    const bestTimeHost = el('div', { class: 'best-time-host' });
+    let bestTimeToken = 0;
+    function updateBestTimeHint() {
+      const firstAcct = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).find(Boolean);
+      const myToken = ++bestTimeToken;
+      renderBestTimeHint(bestTimeHost, {
+        brandId,
+        platform: firstAcct?.platform,
+        guard: { stale: () => myToken !== bestTimeToken },
+        onApplyIso: (val) => { publishAtInput.value = val; },
+      });
+    }
+    updateBestTimeHint();
+
+    const queueMsg = el('div');
+    const queueBtn = el('button', { class: 'button secondary sm', type: 'button' }, 'Add to queue');
+    queueBtn.addEventListener('click', async () => {
+      queueMsg.innerHTML = '';
+      if (![...selectedAccounts].length) {
+        queueMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account first.'));
+        return;
+      }
+      let created;
+      try {
+        created = await createPostsForSelection(null);
+        createdPostIds = created.map((p) => p.id);
+      } catch (err) {
+        queueMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not save draft: ${err.message}`));
+        return;
+      }
+      if (!created.length) return;
+      const lines = [];
+      let earliest = null;
+      for (const post of created) {
+        try {
+          const res = await api(`/api/posts/${post.id}/queue`, { method: 'POST', body: {} });
+          const when = fmtDate(res.publish_at);
+          lines.push(el('div', {}, `${post.platform}: queued for ${when}`));
+          if (!earliest || res.publish_at < earliest) earliest = res.publish_at;
+        } catch (err) {
+          if (err.status === 422 && err.data?.error === 'no_open_slot') {
+            lines.push(
+              el('div', {}, [
+                `${post.platform}: no active queue slots for this brand — `,
+                el('a', { href: '#/settings', onclick: () => { location.hash = '#/settings'; } }, 'set one up in Settings'),
+                '.',
+              ])
+            );
+          } else {
+            lines.push(el('div', {}, `${post.platform}: ${err.message}`));
+          }
+        }
+      }
+      if (earliest) publishAtInput.value = new Date(earliest).toISOString().slice(0, 16);
+      toast('Draft(s) saved and queued. Go to Calendar to approve.');
+      queueMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, lines));
+    });
+
+    // item 6: first-comment toggle - a small link the worker (or the
+    // manual-post flow) can drop in as the first comment instead of cramming
+    // it into the main copy. Saved defensively as first_comment on every
+    // POST/PATCH so it round-trips even before/while the backend column ships.
+    let firstCommentEnabled = false;
+    const firstCommentToggle = el('input', { type: 'checkbox' });
+    const firstCommentInput = el('input', { placeholder: 'https://... (goes in the first comment)', class: 'sm', style: 'width:260px;' });
+    firstCommentInput.hidden = true;
+    firstCommentToggle.addEventListener('change', () => {
+      firstCommentEnabled = firstCommentToggle.checked;
+      firstCommentInput.hidden = !firstCommentEnabled;
+      refreshPreview();
+    });
+    firstCommentInput.addEventListener('input', refreshPreview);
+    const firstCommentRow = el('div', { class: 'cv3-detail-field cv3-first-comment' }, [
+      el('label', { class: 'cv3-first-comment-label' }, [firstCommentToggle, ' Link in first comment']),
+      firstCommentInput,
+    ]);
+
+    const scheduleLine = el('div', { class: 'cv3-schedule-line' }, [
+      el('div', { class: 'cv3-detail-field' }, [el('label', {}, 'Publish at'), publishAtInput]),
+      queueBtn,
+      bestTimeHost,
+      firstCommentRow,
+    ]);
+
+    // =========================================================
+    // Copy area - Default tab + one tab per selected platform. Tone / Draft
+    // with AI / provider switch live directly above the box; the F1 preview
+    // toggles under it (default ON, remembered per-browser).
+    // =========================================================
+    const copyTabsRow = el('div', { class: 'cv3-copy-tabs' });
+    const copyToolbarRow = el('div', { class: 'cv3-copy-toolbar' });
+    const copyHeaderRow = el('div', { class: 'cv3-copy-header' });
+    const copyCountsEl = el('div', { class: 'cv3-copy-counts' });
+    const copyTextarea = el('textarea', { class: 'cv3-copy-textarea', id: 'ai-idea-input', autofocus: 'autofocus' });
+    autosizeTextarea(copyTextarea);
+    const fieldsEditorHost = el('div'); // hosts tiktok/reddit/blog structured fields when active
+    const aiMsg = el('div');
+    const compareHost = el('div');
+    const previewToggleBtn = el('button', { class: 'button ghost sm cv3-preview-toggle', type: 'button' }, 'Preview');
+    const previewBody = el('div', { class: 'feed-preview-host' });
+    let previewOpen = localStorage.getItem('pd_composer_preview_open') !== '0';
+
+    function currentPlatforms() {
+      return [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
+    }
+
+    function getActiveCopy() {
+      if (currentTab === 'default') return draftsByPlatform.default || '';
+      if (currentTab === 'reddit') return platformFieldsByPlatform.reddit?.body || '';
+      return draftsByPlatform[currentTab] || '';
+    }
+    function setActiveCopy(v) {
+      if (currentTab === 'default') {
+        draftsByPlatform.default = v;
+        // Propagate to every platform tab that hasn't been directly edited yet.
+        for (const p of currentPlatforms()) {
+          if (!dirtyPlatforms.has(p) && p !== 'reddit' && p !== 'blog') draftsByPlatform[p] = v;
+        }
+      } else if (currentTab === 'reddit') {
+        platformFieldsByPlatform.reddit = platformFieldsByPlatform.reddit || {};
+        platformFieldsByPlatform.reddit.body = v;
+        dirtyPlatforms.add('reddit');
+      } else {
+        draftsByPlatform[currentTab] = v;
+        dirtyPlatforms.add(currentTab);
+      }
+    }
+
+    function refreshCopyHeader() {
+      const platform = currentTab === 'default' ? null : currentTab;
+      const foldChars = platform ? foldCharsFor(platform) : null;
+      const limit = platform ? textLimitFor(platform) : null;
+      const text = getActiveCopy();
+      copyCountsEl.innerHTML = '';
+      const lenEl = el('span', {}, limit == null ? `${text.length} chars` : `${text.length} / ${limit}`);
+      if (limit != null && text.length > limit) lenEl.style.color = 'var(--red, #d9534f)';
+      copyCountsEl.appendChild(lenEl);
+      if (foldChars != null) {
+        const st = foldCounterState(text, foldChars);
+        copyCountsEl.appendChild(el('span', { class: st.cls || '' }, st.text));
+      }
+    }
+
+    function refreshPreview() {
+      previewBody.innerHTML = '';
+      if (!previewOpen) return;
+      const platform = currentTab === 'default' ? (currentPlatforms()[0] || 'linkedin') : currentTab;
+      const brand = state.brands.find((b) => String(b.id) === String(brandId));
+      const mediaUrl = attachedImage ? attachedImage.url || null : null;
+      previewBody.appendChild(renderPostPreview(platform, { copy: getActiveCopy(), mediaUrl, brand }));
+      // item 6: faint "first comment" bubble under the feed preview when set
+      if (typeof firstCommentEnabled !== 'undefined' && firstCommentEnabled && firstCommentInput.value.trim()) {
+        previewBody.appendChild(el('div', { class: 'feed-preview-first-comment' }, [
+          el('span', { class: 'feed-preview-first-comment-label' }, 'first comment'),
+          el('span', {}, firstCommentInput.value.trim()),
+        ]));
+      }
+    }
+    previewToggleBtn.classList.toggle('active-tag', previewOpen);
+    previewToggleBtn.addEventListener('click', () => {
+      previewOpen = !previewOpen;
+      localStorage.setItem('pd_composer_preview_open', previewOpen ? '1' : '0');
+      previewToggleBtn.classList.toggle('active-tag', previewOpen);
+      refreshPreview();
+    });
+
+    function refreshActiveEditor() {
+      refreshCopyHeader();
+      refreshPreview();
+      updateSummary();
+    }
+
+    function renderFieldsEditor() {
+      fieldsEditorHost.innerHTML = '';
+      if (currentTab === 'reddit') {
+        const fields = platformFieldsByPlatform.reddit || (platformFieldsByPlatform.reddit = {});
+        const editor = redditFieldsEditor(fields);
+        const bodyArea = editor.querySelector ? editor.querySelector('textarea') : null;
+        if (bodyArea) bodyArea.addEventListener('input', () => { refreshActiveEditor(); });
+        fieldsEditorHost.appendChild(editor);
+      } else if (currentTab === 'blog') {
+        const fields = platformFieldsByPlatform.blog || (platformFieldsByPlatform.blog = {});
+        fieldsEditorHost.appendChild(blogFieldsEditor(fields, mediaFiles));
+      } else if (currentTab === 'tiktok') {
+        const fields = platformFieldsByPlatform.tiktok || (platformFieldsByPlatform.tiktok = {});
+        fieldsEditorHost.appendChild(tiktokFieldsEditor(fields));
+      }
+    }
+
+    function renderCopyTabs() {
+      copyTabsRow.innerHTML = '';
+      const platforms = currentPlatforms();
+      if (currentTab !== 'default' && !platforms.includes(currentTab)) currentTab = 'default';
+      const tabDefs = [{ key: 'default', label: 'Default' }, ...platforms.map((p) => ({ key: p, label: p }))];
+      for (const t of tabDefs) {
+        copyTabsRow.appendChild(
+          el('button', {
+            type: 'button',
+            class: t.key === currentTab ? 'active' : '',
+            title: t.key === 'default' ? 'Shared copy' : t.label,
+            onclick: () => {
+              currentTab = t.key;
+              renderCopyTabs();
+              syncCopyTextareaVisibility();
+              renderFieldsEditor();
+              refreshActiveEditor();
+              updateContentTypeSuggestion();
+            },
+          }, t.key === 'default' ? 'Default' : [platformIcon(t.key, { size: 13 }), ` ${t.label}`])
         );
       }
-      function startProviderLogin(provider, noun) {
-        return async () => {
-          try {
-            await api('/api/ai/login', { method: 'POST', body: { provider } });
-            appendHint(`A Terminal window opened to sign you in to ${noun}. Approve in your browser if prompted, then click Recheck.`);
-          } catch (err) {
-            toast(`Could not start login: ${err.message}`, 'error');
-          }
-        };
-      }
-      function providerStatusRow(provider, s = {}) {
-        const installed = s.installed === true;
-        const loggedIn = s.loggedIn === true;
-        const unknownLogin = installed && s.loggedIn == null;
-        const label = provider === 'codex' ? 'Codex' : 'Claude';
-        const pillText =
-          provider === 'codex'
-            ? loggedIn
-              ? 'Codex: logged in'
-              : unknownLogin
-                ? 'Codex: installed'
-                : installed
-                  ? 'Codex: not logged in'
-                  : 'Codex CLI not found'
-            : loggedIn
-              ? 'Claude: logged in'
-              : installed
-                ? 'Claude: not logged in'
-                : 'Claude CLI not found';
-        const pillClass = loggedIn ? 'ai-pill-ok' : 'ai-pill-warn';
-        const row = el('div', { class: 'ai-status-row' }, [
-          el('span', { class: `ai-pill ${pillClass}` }, pillText),
-        ]);
-        const showLogin =
-          provider === 'codex'
-            ? installed && !loggedIn
-            : installed && !loggedIn;
-        if (showLogin) {
-          row.appendChild(
-            el(
-              'button',
-              {
-                class: 'btn-secondary',
-                type: 'button',
-                onclick: startProviderLogin(provider, label),
-              },
-              `Log in to ${label}`
-            )
-          );
-        }
-        row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: refreshAiStatus }, 'Recheck'));
-        return row;
-      }
-      aiStatusHost.appendChild(providerStatusRow('claude', status.claude || {}));
-      aiStatusHost.appendChild(providerStatusRow('codex', status.codex || {}));
     }
-    refreshAiStatus();
-    const ideaInput = el('textarea', { rows: '3', placeholder: 'Idea text…', id: 'ai-idea-input' });
-    autosizeTextarea(ideaInput);
-    ideaInput.oninput = () => (ideaText = ideaInput.value);
+
+    function syncCopyTextareaVisibility() {
+      // Reddit's body lives in redditFieldsEditor's own textarea, not the
+      // shared copy box, but everything else (including blog's markdown
+      // body) uses the shared textarea.
+      copyTextarea.hidden = currentTab === 'reddit';
+      copyTextarea.value = currentTab === 'reddit' ? '' : getActiveCopy();
+    }
+    copyTextarea.addEventListener('input', () => {
+      setActiveCopy(copyTextarea.value);
+      refreshActiveEditor();
+    });
+
+    aiMsg.innerHTML = '';
     if (pendingRedraft && redraftMatchingAcct) {
-      // B18b: frame the idea as a repurpose of the proven post, not a copy -
-      // the draft pipeline (scrub, hook-first, link-high) still applies.
       const framing = `Write a fresh take on this proven post - same idea, new angle and hook (don't copy it verbatim):\n\n${pendingRedraft.copy}`;
-      ideaInput.value = framing;
-      ideaText = framing;
+      draftsByPlatform.default = framing;
     }
-    aiBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Idea'), ideaInput]));
-    aiBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Tone'), toneSelect]));
-    // B15: provider switch - shared with the copy-assist panel below via the
-    // currentProvider closure var, defaults from the draft_provider setting.
+    if (qcPrefill && qcPrefill.copy) {
+      draftsByPlatform.default = qcPrefill.copy;
+      qcPrefill = null;
+    }
+
     const providerSwitchEl = providerSwitch(currentProvider, (v) => {
       currentProvider = v;
       sessionDraftProvider = v;
     });
-    aiBox.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Model'), providerSwitchEl]));
-    const aiMsg = el('div');
-    aiBox.appendChild(aiMsg);
-    // Named (not inline) so B18b's redraft handoff can trigger the exact
-    // same path programmatically, instead of duplicating the request.
+
     async function runAiDraft() {
       aiMsg.innerHTML = '';
       compareHost.innerHTML = '';
-      const platforms = [...selectedAccounts]
-        .map((id) => accounts.find((a) => a.id === id)?.platform)
-        .filter(Boolean);
-      if (!ideaText.trim() || !platforms.length) {
-        aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account and enter an idea first.'));
+      const platforms = currentPlatforms();
+      const ideaText = (draftsByPlatform.default || '').trim();
+      if (!ideaText || !platforms.length) {
+        aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account and type an idea in Default first.'));
         return;
       }
       try {
@@ -4232,56 +4904,16 @@ async function renderComposer(view) {
           body: { idea_text: ideaText, brand_id: Number(brandId), tone_profile_id: tp, platforms, provider: currentProvider },
         });
         Object.assign(draftsByPlatform, result.drafts);
-        renderPlatformTabs();
-        aiMsg.appendChild(
-          el('div', { class: 'msg-banner msg-ok' }, `Drafts populated. Scrub applied: ${result.scrub_applied.join(', ') || 'none'}`)
-        );
+        for (const p of Object.keys(result.drafts || {})) dirtyPlatforms.delete(p); // fresh AI output tracks Default again until hand-edited
+        syncCopyTextareaVisibility();
+        renderFieldsEditor();
+        refreshActiveEditor();
+        aiMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, `Drafts populated. Scrub applied: ${result.scrub_applied.join(', ') || 'none'}`));
       } catch (err) {
         aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `AI drafting unavailable: ${err.message}`));
       }
     }
-    const draftButtonsRow = el('div', { class: 'toolbar', style: 'margin-top:4px;' });
-    draftButtonsRow.appendChild(el('button', { class: 'primary', onclick: runAiDraft }, 'Draft with AI'));
-    const compareHost = el('div');
-    draftButtonsRow.appendChild(
-      el('button', {
-        onclick: async () => {
-          aiMsg.innerHTML = '';
-          compareHost.innerHTML = '';
-          const platforms = [...selectedAccounts]
-            .map((id) => accounts.find((a) => a.id === id)?.platform)
-            .filter(Boolean);
-          if (!ideaText.trim() || !platforms.length) {
-            aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account and enter an idea first.'));
-            return;
-          }
-          compareHost.appendChild(el('div', { class: 'msg-banner', style: 'color:var(--muted);' }, 'Running Claude and Codex - this can take a moment…'));
-          try {
-            const tp = await findToneProfileId(brandId, toneSelect.value);
-            const cmp = await api('/api/draft/compare', {
-              method: 'POST',
-              body: { idea_text: ideaText, brand_id: Number(brandId), tone_profile_id: tp, platforms },
-            });
-            compareHost.innerHTML = '';
-            const grid = el('div', { class: 'compare-grid' });
-            for (const p of AI_PROVIDERS) {
-              grid.appendChild(compareColumn(p.label, p.value, cmp?.[p.value]));
-            }
-            compareHost.appendChild(grid);
-          } catch (err) {
-            compareHost.innerHTML = '';
-            compareHost.appendChild(
-              el('div', { class: 'msg-banner msg-error' }, `Compare unavailable: ${err.message}`)
-            );
-          }
-        },
-      }, 'Compare both')
-    );
-    aiBox.appendChild(draftButtonsRow);
-    aiBox.appendChild(compareHost);
 
-    // ---- Compare-both column (B15) - one side of the Claude vs Codex
-    // side-by-side. `side` is `{result: {drafts, scrub_applied}} | {error}`.
     function compareColumn(label, providerValue, side) {
       const col = el('div', { class: 'compare-col' });
       col.appendChild(el('h3', {}, label));
@@ -4308,7 +4940,9 @@ async function renderComposer(view) {
           style: 'margin-top:8px;',
           onclick: () => {
             Object.assign(draftsByPlatform, drafts);
-            renderPlatformTabs();
+            for (const p of Object.keys(drafts)) dirtyPlatforms.delete(p);
+            syncCopyTextareaVisibility();
+            refreshActiveEditor();
             aiMsg.innerHTML = '';
             aiMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, `Filled composer fields from ${label}.`));
           },
@@ -4317,255 +4951,120 @@ async function renderComposer(view) {
       return col;
     }
 
-    const composerBox = el('div', { class: 'card' });
-    composerBox.appendChild(el('h2', {}, 'Platform variants'));
-    const tabsRow = el('div', { class: 'tabs' });
-    const editorHost = el('div');
-    composerBox.appendChild(tabsRow);
-    composerBox.appendChild(editorHost);
-
-    const publishAtInput = el('input', { type: 'datetime-local' });
-    if (prefillDate) { publishAtInput.value = prefillDate; prefillDate = null; } // from a calendar day click, applied once
-    // ---- Best-time nudge (B18a) - keyed off the first selected account's
-    // platform (the "primary" platform for this draft). Refetches whenever
-    // the selection changes; a bumped token guards against a slow earlier
-    // fetch clobbering a faster later one.
-    const bestTimeHost = el('div', { class: 'best-time-host' });
-    let bestTimeToken = 0;
-    function updateBestTimeHint() {
-      const firstAcct = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).find(Boolean);
-      const myToken = ++bestTimeToken;
-      renderBestTimeHint(bestTimeHost, {
-        brandId,
-        platform: firstAcct?.platform,
-        guard: { stale: () => myToken !== bestTimeToken },
-        onApplyIso: (val) => { publishAtInput.value = val; },
-      });
-    }
-    const publishCard = el('div', { class: 'card' }, [
-      el('h2', {}, 'Schedule'),
-      el('div', { class: 'field-row' }, [el('label', {}, 'Publish at'), publishAtInput]),
-      bestTimeHost,
-    ]);
-    updateBestTimeHint();
-
-    const saveRow = el('div', { class: 'toolbar' });
-    const savedMsg = el('div');
-
-    // Shared by "Save draft" and "Add to queue" - creates one post per
-    // selected account and returns the created rows (with id + platform) so
-    // callers can chain more actions (e.g. queueing) onto them.
-    async function createPostsForSelection(publishAtOverride) {
-      const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).filter(Boolean);
-      if (!platforms.length) return [];
-      const media = attachedImage ? [{ path: attachedImage.path, altText: attachedImage.altText || '' }] : [];
-      const created = [];
-      for (const acct of platforms) {
-        const fields = platformFieldsByPlatform[acct.platform] || {};
-        // Reddit has no free-text "copy" tab of its own - its body IS the
-        // copy (mirrored so calendar chips/exports show something useful).
-        const copy = acct.platform === 'reddit' ? (fields.body || '') : (draftsByPlatform[acct.platform] || '');
-        const row = await api('/api/posts', {
-          method: 'POST',
-          body: {
-            brand_id: Number(brandId),
-            account_id: acct.id,
-            platform: acct.platform,
-            copy,
-            platform_fields: fields,
-            content_type: contentType || null,
-            media,
-            publish_at: publishAtOverride !== undefined
-              ? publishAtOverride
-              : (publishAtInput.value ? new Date(publishAtInput.value).toISOString() : null),
-          },
-        });
-        created.push(row);
-      }
-      // B17a: apply the selected tags + campaign (if any) to every post just
-      // created for this selection. Best-effort - a tag-set failure shouldn't
-      // block the post itself from having been saved.
-      const tagIds = [...selectedTagIds, ...(selectedCampaignId ? [selectedCampaignId] : [])];
-      if (tagIds.length) {
-        for (const row of created) {
-          try {
-            await api(`/api/posts/${row.id}/tags`, { method: 'PUT', body: { tag_ids: tagIds } });
-          } catch (err) {
-            tagsMsg.innerHTML = '';
-            tagsMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not tag post #${row.id}: ${err.message}`));
-          }
+    const draftBtn = el('button', { class: 'button primary sm', type: 'button', onclick: runAiDraft }, 'Draft with AI');
+    const compareBtn = el('button', {
+      class: 'button secondary sm', type: 'button',
+      onclick: async () => {
+        aiMsg.innerHTML = '';
+        compareHost.innerHTML = '';
+        const platforms = currentPlatforms();
+        const ideaText = (draftsByPlatform.default || '').trim();
+        if (!ideaText || !platforms.length) {
+          aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account and type an idea in Default first.'));
+          return;
         }
+        compareHost.appendChild(el('div', { class: 'msg-banner', style: 'color:var(--muted);' }, 'Running Claude and Codex - this can take a moment…'));
+        try {
+          const tp = await findToneProfileId(brandId, toneSelect.value);
+          const cmp = await api('/api/draft/compare', {
+            method: 'POST',
+            body: { idea_text: ideaText, brand_id: Number(brandId), tone_profile_id: tp, platforms },
+          });
+          compareHost.innerHTML = '';
+          const grid = el('div', { class: 'compare-grid' });
+          for (const p of AI_PROVIDERS) grid.appendChild(compareColumn(p.label, p.value, cmp?.[p.value]));
+          compareHost.appendChild(grid);
+        } catch (err) {
+          compareHost.innerHTML = '';
+          compareHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Compare unavailable: ${err.message}`));
+        }
+      },
+    }, 'Compare both');
+
+    copyToolbarRow.append(
+      el('label', {}, 'Tone'), toneSelect, draftBtn, compareBtn, providerSwitchEl
+    );
+    copyHeaderRow.append(el('div', {}, ''), copyCountsEl);
+
+    // ---- AI status pill (moved from the old "Draft with AI" card header) ----
+    const aiStatusHost = el('div', { class: 'ai-status-host', style: 'margin-bottom:6px;' });
+    async function refreshAiStatus() {
+      aiStatusHost.innerHTML = '';
+      let status;
+      try {
+        status = await api('/api/ai/status');
+      } catch {
+        return;
       }
-      return created;
+      function appendHint(text) {
+        aiStatusHost.appendChild(el('div', { class: 'hint', style: 'margin-top:6px;color:var(--muted);' }, text));
+      }
+      function startProviderLogin(provider, noun) {
+        return async () => {
+          try {
+            await api('/api/ai/login', { method: 'POST', body: { provider } });
+            appendHint(`A Terminal window opened to sign you in to ${noun}. Approve in your browser if prompted, then click Recheck.`);
+          } catch (err) {
+            toast(`Could not start login: ${err.message}`, 'error');
+          }
+        };
+      }
+      function providerStatusRow(provider, s = {}) {
+        const installed = s.installed === true;
+        const loggedIn = s.loggedIn === true;
+        const unknownLogin = installed && s.loggedIn == null;
+        const label = provider === 'codex' ? 'Codex' : 'Claude';
+        const pillText =
+          provider === 'codex'
+            ? loggedIn ? 'Codex: logged in' : unknownLogin ? 'Codex: installed' : installed ? 'Codex: not logged in' : 'Codex CLI not found'
+            : loggedIn ? 'Claude: logged in' : installed ? 'Claude: not logged in' : 'Claude CLI not found';
+        const pillClass = loggedIn ? 'ai-pill-ok' : 'ai-pill-warn';
+        const row = el('div', { class: 'ai-status-row' }, [el('span', { class: `ai-pill ${pillClass}` }, pillText)]);
+        const showLogin = installed && !loggedIn;
+        if (showLogin) row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: startProviderLogin(provider, label) }, `Log in to ${label}`));
+        row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: refreshAiStatus }, 'Recheck'));
+        return row;
+      }
+      aiStatusHost.appendChild(providerStatusRow('claude', status.claude || {}));
+      aiStatusHost.appendChild(providerStatusRow('codex', status.codex || {}));
     }
+    refreshAiStatus();
 
-    saveRow.appendChild(
-      el('button', {
-        class: 'primary',
-        onclick: async () => {
-          savedMsg.innerHTML = '';
-          const created = await createPostsForSelection();
-          if (!created.length) return;
-          savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft(s) saved. Go to Calendar to approve.'));
-        },
-      }, 'Save draft')
-    );
-
-    // ---- Add to queue (B16a) - saves the current draft(s) if not already
-    // saved, then drops each into the next open queue slot for its
-    // brand+platform via POST /api/posts/:id/queue. Shows the computed
-    // time(s); if no slot exists for a platform, points at Settings.
-    const queueMsg = el('div');
-    saveRow.appendChild(
-      el('button', {
-        onclick: async () => {
-          queueMsg.innerHTML = '';
-          if (![...selectedAccounts].length) {
-            queueMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account first.'));
-            return;
-          }
-          let created;
-          try {
-            // publish_at is computed by the queue endpoint, not the input.
-            created = await createPostsForSelection(null);
-          } catch (err) {
-            queueMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not save draft: ${err.message}`));
-            return;
-          }
-          if (!created.length) return;
-          const lines = [];
-          let earliest = null;
-          for (const post of created) {
-            try {
-              const res = await api(`/api/posts/${post.id}/queue`, { method: 'POST', body: {} });
-              const when = fmtDate(res.publish_at);
-              lines.push(el('div', {}, `${post.platform}: queued for ${when}`));
-              if (!earliest || res.publish_at < earliest) earliest = res.publish_at;
-            } catch (err) {
-              if (err.status === 422 && err.data?.error === 'no_open_slot') {
-                lines.push(
-                  el('div', {}, [
-                    `${post.platform}: no active queue slots for this brand — `,
-                    el('a', { href: '#/settings', onclick: () => { location.hash = '#/settings'; } }, 'set one up in Settings'),
-                    '.',
-                  ])
-                );
-              } else {
-                lines.push(el('div', {}, `${post.platform}: ${err.message}`));
-              }
-            }
-          }
-          if (earliest) {
-            publishAtInput.value = new Date(earliest).toISOString().slice(0, 16);
-          }
-          savedMsg.innerHTML = '';
-          savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft(s) saved. Go to Calendar to approve.'));
-          queueMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, lines));
-        },
-      }, 'Add to queue')
-    );
-    // ---- Image request options (B14) - CB picks how many variants Codex
-    // drops + optional size/type hints, seeded per platform-specs.json but
-    // never hardcoded to a fixed count.
-    const imageOptsCard = el('div', { class: 'card' });
-    imageOptsCard.appendChild(el('h2', {}, 'Image request options'));
-    imageOptsCard.appendChild(
-      el('div', { class: 'image-prompt-note' }, [
-        el('span', {}, 'Reusable image prompts live in Settings and are included in every Codex handoff.'),
-        el('button', { class: 'button ghost sm', type: 'button', onclick: openImagePromptModal }, 'Edit prompts'),
-      ])
-    );
-    const variantCountSelect = el(
-      'select',
-      {},
-      [1, 2, 3, 4, 5, 6].map((n) => el('option', { value: String(n), selected: n === 1 ? 'selected' : undefined }, `${n} variant${n > 1 ? 's' : ''}`))
-    );
-    const sizeHintSelect = el('select', {}, [
-      el('option', { value: '' }, '(no size hint)'),
-      el('option', { value: 'vertical' }, 'Vertical 9:16'),
-      el('option', { value: 'square' }, 'Square 1:1'),
-      el('option', { value: 'portrait' }, 'Portrait 4:5'),
-      el('option', { value: 'landscape' }, 'Landscape 16:9'),
+    const copyCard = el('div', { class: 'cv3-copy-card' }, [
+      copyTabsRow,
+      copyToolbarRow,
+      aiStatusHost,
+      copyHeaderRow,
+      copyTextarea,
+      fieldsEditorHost,
+      aiMsg,
+      compareHost,
+      previewToggleBtn,
+      previewBody,
     ]);
-    const typeHintSelect = el('select', {}, [
-      el('option', { value: '' }, '(no type hint)'),
-      el('option', { value: 'thumbnail' }, 'Thumbnail'),
-      el('option', { value: 'feed' }, 'Feed post'),
-      el('option', { value: 'story' }, 'Story'),
-    ]);
-    imageOptsCard.appendChild(
-      el('div', { class: 'composer-grid' }, [
-        el('div', { class: 'field-row' }, [el('label', {}, 'Variant count'), variantCountSelect]),
-        el('div', { class: 'field-row' }, [el('label', {}, 'Size / orientation'), sizeHintSelect]),
-        el('div', { class: 'field-row' }, [el('label', {}, 'Type'), typeHintSelect]),
-      ])
-    );
 
-    const imageReqMsg = el('div');
-    saveRow.appendChild(
-      el('button', {
-        onclick: async () => {
-          imageReqMsg.innerHTML = '';
-          const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
-          if (!platforms.length) {
-            imageReqMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account first.'));
-            return;
-          }
-          const copy = currentTab === 'reddit' ? (platformFieldsByPlatform.reddit?.body || '') : (draftsByPlatform[currentTab] || '');
-          const hints = {};
-          if (sizeHintSelect.value) hints.size = sizeHintSelect.value;
-          if (typeHintSelect.value) hints.type = typeHintSelect.value;
-          try {
-            const res = await api('/api/image-requests', {
-              method: 'POST',
-              body: {
-                brand_id: Number(brandId),
-                platforms,
-                content_type: contentType || null,
-                copy,
-                variant_count: Number(variantCountSelect.value) || 1,
-                hints,
-              },
-            });
-            imageReqMsg.appendChild(
-              el('div', { class: 'msg-banner msg-ok' }, `Request #${res.id}: Waiting on Codex - run the image handoff to generate this (see Images tab).`)
-            );
-          } catch (err) {
-            imageReqMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, err.message));
-          }
-        },
-      }, 'Request image (Codex)')
-    );
-    // NOTE: actual DOM assembly/ordering happens in one place further down
-    // ("D2 L3 assembly" below) - a pre-existing reorg block already lived
-    // there (from an earlier wave) and re-appends these same nodes, so this
-    // is where the canonical order is decided, not here.
-
-    // ---- Copy-assist panel (B8) - Headlines / Hashtags / Alt text buttons,
-    // shared across platform editors. Results insert into the copy field the
-    // caller passes via getCopy/setCopy; alt text writes to attachedImage.
-    function copyAssistPanel({ getCopy, setCopy, platform }) {
-      const box = el('div', { class: 'copy-assist-box' });
-      const switchRow = el('div', { class: 'field-row', style: 'max-width:220px;' }, [
-        el('label', {}, 'Model'),
-        providerSwitch(currentProvider, (v) => { currentProvider = v; sessionDraftProvider = v; }),
-      ]);
+    // =========================================================
+    // Copy-assist (headlines / hashtags / alt text) + examples-grounding -
+    // these are supplementary drafting aids, live in Advanced.
+    // =========================================================
+    function copyAssistPanel() {
+      const box = el('div', { class: 'copy-assist-box card' });
+      box.appendChild(el('h2', {}, 'Copy assist'));
       const btnRow = el('div', { class: 'toolbar', style: 'margin-top:8px;margin-bottom:4px;' });
       const msg = el('div');
       const resultHost = el('div');
-
       async function runAssist(mode) {
         msg.innerHTML = '';
         resultHost.innerHTML = '';
         try {
           const tp = await findToneProfileId(brandId, toneSelect.value).catch(() => null);
-          const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
+          const platforms = currentPlatforms();
           const res = await api('/api/copy-assist', {
             method: 'POST',
             body: {
               mode,
-              idea_text: ideaText,
-              copy: getCopy(),
+              idea_text: draftsByPlatform.default || '',
+              copy: getActiveCopy(),
               brand_id: Number(brandId),
               tone_profile_id: tp,
               platforms,
@@ -4575,25 +5074,17 @@ async function renderComposer(view) {
           });
           if (res.result?.headlines?.length) {
             const chipRow = el('div', { class: 'chip-row' });
-            for (const h of res.result.headlines) {
-              chipRow.appendChild(el('button', { class: 'chip-btn', onclick: () => setCopy(h) }, h));
-            }
-            resultHost.appendChild(
-              el('div', { style: 'margin-top:6px;' }, [el('div', { style: 'font-size:11px;color:var(--muted);' }, 'Headlines (click to insert):'), chipRow])
-            );
+            for (const h of res.result.headlines) chipRow.appendChild(el('button', { class: 'chip-btn', onclick: () => { setActiveCopy(h); syncCopyTextareaVisibility(); refreshActiveEditor(); } }, h));
+            resultHost.appendChild(el('div', { style: 'margin-top:6px;' }, [el('div', { style: 'font-size:11px;color:var(--muted);' }, 'Headlines (click to insert):'), chipRow]));
           }
           if (res.result?.hashtags) {
-            const tags = res.result.hashtags[platform] || Object.values(res.result.hashtags).flat();
+            const tags = res.result.hashtags[currentTab] || Object.values(res.result.hashtags).flat();
             if (tags?.length) {
               const chipRow = el('div', { class: 'chip-row' });
               for (const t of tags) {
-                chipRow.appendChild(
-                  el('button', { class: 'chip-btn', onclick: () => { const cur = getCopy(); setCopy(cur + (cur && !cur.endsWith(' ') ? ' ' : '') + t); } }, t)
-                );
+                chipRow.appendChild(el('button', { class: 'chip-btn', onclick: () => { const cur = getActiveCopy(); setActiveCopy(cur + (cur && !cur.endsWith(' ') ? ' ' : '') + t); syncCopyTextareaVisibility(); refreshActiveEditor(); } }, t));
               }
-              resultHost.appendChild(
-                el('div', { style: 'margin-top:6px;' }, [el('div', { style: 'font-size:11px;color:var(--muted);' }, 'Hashtags (click to append):'), chipRow])
-              );
+              resultHost.appendChild(el('div', { style: 'margin-top:6px;' }, [el('div', { style: 'font-size:11px;color:var(--muted);' }, 'Hashtags (click to append):'), chipRow]));
             }
           }
           if (res.result?.alt_text) {
@@ -4601,20 +5092,11 @@ async function renderComposer(view) {
               el('div', { style: 'margin-top:6px;' }, [
                 el('div', { style: 'font-size:11px;color:var(--muted);' }, 'Alt text:'),
                 el('div', { style: 'font-size:12px;' }, res.result.alt_text),
-                el('button', {
-                  onclick: () => {
-                    if (attachedImage) {
-                      attachedImage.altText = res.result.alt_text;
-                      renderImagePreview();
-                    }
-                  },
-                }, 'Use as alt text'),
+                el('button', { onclick: () => { if (attachedImage) { attachedImage.altText = res.result.alt_text; toast('Alt text set.'); } } }, 'Use as alt text'),
               ])
             );
           }
-          if (res.scrub_applied?.length) {
-            msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, `Scrub applied: ${res.scrub_applied.join(', ')}`));
-          }
+          if (res.scrub_applied?.length) msg.appendChild(el('div', { class: 'msg-banner msg-ok' }, `Scrub applied: ${res.scrub_applied.join(', ')}`));
         } catch (err) {
           if (err.status === 503) {
             const cliName = currentProvider === 'codex' ? 'codex CLI (codex login)' : 'claude CLI';
@@ -4624,99 +5106,54 @@ async function renderComposer(view) {
           }
         }
       }
-
       btnRow.append(
         el('button', { onclick: () => runAssist('headlines') }, 'Headlines'),
         el('button', { onclick: () => runAssist('hashtags') }, 'Hashtags'),
         el('button', { onclick: () => runAssist('alt_text') }, 'Alt text')
       );
-      box.append(switchRow, btnRow, msg, resultHost);
+      box.append(btnRow, msg, resultHost);
       return box;
     }
 
-    function renderPlatformTabs() {
-      tabsRow.innerHTML = '';
-      editorHost.innerHTML = '';
-      const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
-      if (!platforms.length) {
-        editorHost.appendChild(el('div', { style: 'color:var(--muted)' }, 'Select at least one account above.'));
-        return;
+    function examplesPanel() {
+      const platform = currentTab === 'default' ? (currentPlatforms()[0] || null) : currentTab;
+      const container = el('div', { class: 'card' });
+      container.appendChild(el('h2', {}, `Examples to match${platform ? ` (${platform})` : ''}`));
+      if (!platform) {
+        container.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'Select an account or a platform tab first.'));
+        return container;
       }
-      if (!currentTab || !platforms.includes(currentTab)) currentTab = platforms[0];
-      for (const p of platforms) {
-        tabsRow.appendChild(
-          el('button', { class: p === currentTab ? 'active' : '', onclick: () => { currentTab = p; renderPlatformTabs(); updateContentTypeSuggestion(); } }, [platformIcon(p, { size: 13 }), ` ${p}`])
-        );
-      }
-      editorHost.appendChild(platformEditor(currentTab));
-      updateContentTypeSuggestion();
-    }
-
-    // ---- Examples panel (B11) - collapsible, per active platform. Paste text
-    // or upload a screenshot (extract-once preview -> save); saved examples
-    // show as chips and automatically ground /api/copy-assist for this
-    // brand+platform (server-side; nothing more to wire here).
-    function examplesPanel(platform) {
-      const container = el('div', { class: 'card examples-panel' });
-      const collapseBody = el('div', { class: 'examples-body' });
-      let open = false;
-      const caret = el('span', { class: 'examples-caret' }, '▸');
-      const header = el(
-        'div',
-        { class: 'examples-header', onclick: () => { open = !open; collapseBody.hidden = !open; caret.textContent = open ? '▾' : '▸'; } },
-        [caret, el('h3', { style: 'margin:0;display:inline;' }, ' Examples to match')]
+      container.appendChild(
+        el('div', { style: 'color:var(--muted);font-size:11px;margin:2px 0 10px;' },
+          'Saved examples ground the Copy assist buttons above for this brand + platform.')
       );
-      collapseBody.hidden = true;
-      container.append(header, collapseBody);
-
-      collapseBody.appendChild(
-        el('div', { style: 'color:var(--muted);font-size:11px;margin:8px 0 10px;' },
-          'Saved examples ground the Headlines/Hashtags copy-assist buttons above for this brand + platform.')
-      );
-
       const chipsHost = el('div', { class: 'examples-chip-row' });
-      collapseBody.appendChild(chipsHost);
-
+      container.appendChild(chipsHost);
       async function reloadExamples() {
         chipsHost.innerHTML = '';
         if (!brandId) return;
         try {
           const qs = new URLSearchParams({ brand_id: brandId, platform });
           const list = await api(`/api/examples?${qs.toString()}`);
-          if (!list.length) {
-            chipsHost.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'No saved examples yet.'));
-            return;
-          }
+          if (!list.length) { chipsHost.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'No saved examples yet.')); return; }
           for (const ex of list) {
             const text = ex.text || '';
-            const chip = el('span', { class: 'example-chip' }, [
-              el('span', { class: 'example-chip-text' }, text.length > 60 ? `${text.slice(0, 60)}…` : text || '(empty)'),
-              el('button', {
-                class: 'example-chip-x',
-                title: 'Delete example',
-                onclick: async () => {
-                  try {
-                    await api(`/api/examples/${ex.id}`, { method: 'DELETE' });
-                    reloadExamples();
-                  } catch (err) {
-                    toast(err.message, 'error');
-                  }
-                },
-              }, '×'),
-            ]);
-            chipsHost.appendChild(chip);
+            chipsHost.appendChild(
+              el('span', { class: 'example-chip' }, [
+                el('span', { class: 'example-chip-text' }, text.length > 60 ? `${text.slice(0, 60)}…` : text || '(empty)'),
+                el('button', { class: 'example-chip-x', title: 'Delete example', onclick: async () => { try { await api(`/api/examples/${ex.id}`, { method: 'DELETE' }); reloadExamples(); } catch (err) { toast(err.message, 'error'); } } }, '×'),
+              ])
+            );
           }
         } catch (err) {
           chipsHost.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not load examples: ${err.message}`));
         }
       }
       reloadExamples();
-
-      // ---- Paste text ----
       const pasteArea = el('textarea', { rows: '3', placeholder: 'Paste an example post that nails the style/format…' });
       const pasteMsg = el('div');
-      collapseBody.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Paste example text'), pasteArea]));
-      collapseBody.appendChild(
+      container.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Paste example text'), pasteArea]));
+      container.appendChild(
         el('div', { class: 'toolbar' }, [
           el('button', {
             class: 'primary',
@@ -4736,23 +5173,18 @@ async function renderComposer(view) {
           }, 'Save example'),
         ])
       );
-      collapseBody.appendChild(pasteMsg);
-
-      // ---- Upload screenshot (extract-once preview -> save) ----
+      container.appendChild(pasteMsg);
       const fileInput = el('input', { type: 'file', accept: 'image/*' });
       const uploadMsg = el('div');
       const previewBox = el('div');
-      collapseBody.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Upload screenshot'), fileInput]));
-      collapseBody.appendChild(
+      container.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Upload screenshot'), fileInput]));
+      container.appendChild(
         el('div', { class: 'toolbar' }, [
           el('button', {
             onclick: async () => {
               uploadMsg.innerHTML = '';
               previewBox.innerHTML = '';
-              if (!fileInput.files.length) {
-                uploadMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Choose a screenshot first.'));
-                return;
-              }
+              if (!fileInput.files.length) { uploadMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Choose a screenshot first.')); return; }
               const fd = new FormData();
               fd.append('image', fileInput.files[0]);
               try {
@@ -4766,15 +5198,11 @@ async function renderComposer(view) {
                 );
                 previewBox.appendChild(
                   el('button', {
-                    class: 'primary',
-                    style: 'margin-top:8px;',
+                    class: 'primary', style: 'margin-top:8px;',
                     onclick: async () => {
                       if (!brandId) { uploadMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Select a brand first.')); return; }
                       try {
-                        await api('/api/examples', {
-                          method: 'POST',
-                          body: { brand_id: Number(brandId), platform, source: 'screenshot', text: extracted.text, image_path: extracted.image_path },
-                        });
+                        await api('/api/examples', { method: 'POST', body: { brand_id: Number(brandId), platform, source: 'screenshot', text: extracted.text, image_path: extracted.image_path } });
                         uploadMsg.innerHTML = '';
                         uploadMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Example saved.'));
                         previewBox.innerHTML = '';
@@ -4797,156 +5225,164 @@ async function renderComposer(view) {
           }, 'Extract text from screenshot'),
         ])
       );
-      collapseBody.appendChild(uploadMsg);
-      collapseBody.appendChild(previewBox);
-
+      container.appendChild(uploadMsg);
+      container.appendChild(previewBox);
       return container;
     }
 
-    // F1: fold counter + collapsible feed-preview shared by every variant
-    // tab (default open per spec). getCopy is re-read on demand so it always
-    // reflects whichever field (textarea/fields.body) backs this platform.
-    function variantPreviewSection(platform, getCopy) {
-      const foldChars = foldCharsFor(platform);
-      const foldLine = el('div', { class: 'fold-count' });
-      const previewBody = el('div', { class: 'feed-preview-host' });
-      const previewCard = el('div', { class: 'card variant-preview-card' }, [el('h2', {}, 'Preview'), previewBody]);
-      makeCollapsible(previewCard, { open: true, key: `variant-preview-${platform}` });
-      function refresh() {
-        const copy = getCopy();
-        if (foldChars != null) {
-          const st = foldCounterState(copy, foldChars);
-          foldLine.className = 'fold-count' + (st.cls ? ` ${st.cls}` : '');
-          foldLine.textContent = st.text;
-        } else {
-          foldLine.textContent = '';
-        }
-        previewBody.innerHTML = '';
-        const brand = state.brands.find((b) => String(b.id) === String(brandId));
-        const mediaUrl = attachedImage ? attachedImage.url || null : null;
-        previewBody.appendChild(renderPostPreview(platform, { copy, mediaUrl, brand }));
-      }
-      refresh();
-      return { foldLine, previewCard, refresh };
+    // =========================================================
+    // Image request options - part of Advanced (the strip's "Request image"
+    // tile fires with these settings).
+    // =========================================================
+    function imageOptsCard() {
+      const box = el('div', { class: 'card' });
+      box.appendChild(el('h2', {}, 'Image request options'));
+      box.appendChild(
+        el('div', { class: 'composer-grid' }, [
+          el('div', { class: 'field-row' }, [el('label', {}, 'Variant count'), variantCountSelect]),
+          el('div', { class: 'field-row' }, [el('label', {}, 'Size / orientation'), sizeHintSelect]),
+          el('div', { class: 'field-row' }, [el('label', {}, 'Type'), typeHintSelect]),
+        ])
+      );
+      box.appendChild(imageReqMsg);
+      return box;
     }
 
-    function platformEditor(platform) {
-      const fields = platformFieldsByPlatform[platform] || (platformFieldsByPlatform[platform] = {});
-      const hintText = platformHint(platform);
-      const hint = hintText
-        ? el('div', { class: 'hint', style: 'color:var(--muted);font-size:12px;margin-bottom:6px;' }, hintText)
-        : null;
-
-      if (platform === 'reddit') {
-        const assist = copyAssistPanel({
-          getCopy: () => fields.body || '',
-          setCopy: (v) => { fields.body = v; renderPlatformTabs(); },
-          platform,
-        });
-        const preview = variantPreviewSection(platform, () => fields.body || '');
-        const bodyField = redditFieldsEditor(fields);
-        const bodyArea = bodyField.querySelector ? bodyField.querySelector('textarea') : null;
-        if (bodyArea) bodyArea.addEventListener('input', preview.refresh);
-        return el('div', {}, [hint, bodyField, preview.foldLine, assist, preview.previewCard, examplesPanel(platform)]);
-      }
-
-      if (platform === 'blog') {
-        const bodyArea = el('textarea', { rows: '10', placeholder: 'Body (markdown)' });
-        autosizeTextarea(bodyArea);
-        bodyArea.value = draftsByPlatform.blog || '';
-        const preview = variantPreviewSection(platform, () => draftsByPlatform.blog || '');
-        bodyArea.oninput = () => { draftsByPlatform.blog = bodyArea.value; preview.refresh(); };
-        const assist = copyAssistPanel({
-          getCopy: () => draftsByPlatform.blog || '',
-          setCopy: (v) => { draftsByPlatform.blog = v; renderPlatformTabs(); },
-          platform,
-        });
-        return el('div', {}, [
-          hint,
-          blogFieldsEditor(fields, mediaFiles),
-          el('div', { class: 'field-row' }, [el('label', {}, 'Body (markdown)'), bodyArea]),
-          preview.foldLine,
-          assist,
-          preview.previewCard,
-          examplesPanel(platform),
-        ]);
-      }
-      const area = el('textarea', { rows: '8' });
-      autosizeTextarea(area);
-      area.value = draftsByPlatform[platform] || '';
-      const counter = el('div', { class: 'char-count' });
-      function updateCounter() {
-        const limit = textLimitFor(platform);
-        const len = area.value.length;
-        counter.textContent = limit == null ? `${len} chars (no limit)` : `${len} / ${limit}`;
-        counter.classList.toggle('over', limit != null && len > limit);
-      }
-      const preview = variantPreviewSection(platform, () => draftsByPlatform[platform] || '');
-      area.oninput = () => {
-        draftsByPlatform[platform] = area.value;
-        updateCounter();
-        preview.refresh();
-      };
-      updateCounter();
-      const assist = copyAssistPanel({
-        getCopy: () => draftsByPlatform[platform] || '',
-        setCopy: (v) => { draftsByPlatform[platform] = v; renderPlatformTabs(); },
-        platform,
+    // =========================================================
+    // Sticky action bar - Save draft / Save & approve / summary / Advanced toggle
+    // =========================================================
+    const savedMsg = el('div');
+    const summaryEl = el('span', { class: 'cv3-summary' });
+    function updateSummary() {
+      const platforms = currentPlatforms();
+      if (!platforms.length) { summaryEl.textContent = 'Select at least one account.'; return; }
+      const parts = platforms.map((p) => {
+        const limit = textLimitFor(p);
+        const len = (p === 'reddit' ? (platformFieldsByPlatform.reddit?.body || '') : (draftsByPlatform[p] || draftsByPlatform.default || '')).length;
+        return limit == null ? `${p}: ${len}` : `${p}: ${len}/${limit}${len > limit ? ' ⚠' : ''}`;
       });
-      const wrap = el('div', {}, [hint, area, counter, preview.foldLine, assist]);
-      if (platform === 'tiktok') {
-        wrap.appendChild(tiktokFieldsEditor(fields));
+      summaryEl.textContent = parts.join('  ·  ');
+    }
+
+    async function createPostsForSelection(publishAtOverride) {
+      const platforms = [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)).filter(Boolean);
+      if (!platforms.length) return [];
+      const media = attachedImage ? [{ path: attachedImage.path, altText: attachedImage.altText || '' }] : [];
+      const created = [];
+      for (const acct of platforms) {
+        const fields = platformFieldsByPlatform[acct.platform] || {};
+        const copy = acct.platform === 'reddit' ? (fields.body || '') : (draftsByPlatform[acct.platform] || draftsByPlatform.default || '');
+        const row = await api('/api/posts', {
+          method: 'POST',
+          body: {
+            brand_id: Number(brandId),
+            account_id: acct.id,
+            platform: acct.platform,
+            copy,
+            platform_fields: fields,
+            content_type: contentType || null,
+            media,
+            first_comment: firstCommentEnabled && firstCommentInput.value.trim() ? firstCommentInput.value.trim() : null,
+            publish_at: publishAtOverride !== undefined
+              ? publishAtOverride
+              : (publishAtInput.value ? new Date(publishAtInput.value).toISOString() : null),
+          },
+        });
+        created.push(row);
       }
-      wrap.appendChild(preview.previewCard);
-      wrap.appendChild(examplesPanel(platform));
-      return wrap;
-    }
-
-    // ---- D2 L3 assembly, revised per CB feedback (2026-07-19): Draft with
-    // AI moved up next to the copy/content editor (was buried at the bottom
-    // inside a collapsed "AI tools" group) - distribution -> AI draft ->
-    // content -> media -> metadata -> scheduling -> image options. Every
-    // section is independently collapsible (all are real `.card`s with an
-    // <h2> first child, so makeCollapsible can wrap each standalone - no
-    // more grouping two unrelated cards into one collapsible shell, which is
-    // why "AI tools" used to swallow Image request options too). All are
-    // draggable; makeSectionsReorderable persists the chosen order under
-    // pd_composer_order and re-applies it on every render (L4).
-    const composerSections = [
-      { key: 'acct', node: accountsBox, open: true },
-      { key: 'ai', node: aiBox, open: true },
-      { key: 'content', node: composerBox, open: true },
-      { key: 'img', node: imageBox, open: true },
-      { key: 'ctype', node: contentTypeBox, open: false },
-      { key: 'tags', node: tagsCard, open: false },
-      { key: 'sched', node: publishCard, open: false },
-      { key: 'imgopts', node: imageOptsCard, open: false },
-    ];
-    for (const s of composerSections) {
-      makeCollapsible(s.node, { open: s.open, key: s.key, draggable: true });
-    }
-    makeSectionsReorderable(body, 'pd_composer_order', composerSections);
-    // Sticky action bar so Save/Request are always reachable without scrolling.
-    saveRow.classList.add('composer-actionbar');
-    body.append(savedMsg, queueMsg, imageReqMsg, saveRow);
-
-    // Quick Compose hand-off: drop the in-progress copy straight into every
-    // selected platform's variant tab (and the idea box, for re-drafting),
-    // then consume it so a later brand switch doesn't repeat it.
-    if (qcPrefill && qcPrefill.copy) {
-      for (const p of new Set(accounts.filter((a) => selectedAccounts.has(a.id)).map((a) => a.platform))) {
-        draftsByPlatform[p] = qcPrefill.copy;
+      const tagIds = [...selectedTagIds, ...(selectedCampaignId ? [selectedCampaignId] : [])];
+      if (tagIds.length) {
+        for (const row of created) {
+          try {
+            await api(`/api/posts/${row.id}/tags`, { method: 'PUT', body: { tag_ids: tagIds } });
+          } catch (err) {
+            tagsMsg.innerHTML = '';
+            tagsMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Could not tag post #${row.id}: ${err.message}`));
+          }
+        }
       }
-      ideaInput.value = qcPrefill.copy;
-      ideaText = qcPrefill.copy;
-      qcPrefill = null;
+      return created;
     }
 
-    renderPlatformTabs();
+    const saveBtn = el('button', {
+      class: 'button primary md', type: 'button',
+      onclick: async () => {
+        savedMsg.innerHTML = '';
+        const created = await createPostsForSelection();
+        if (!created.length) return;
+        createdPostIds = created.map((p) => p.id);
+        savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft(s) saved. Go to Calendar to approve.'));
+      },
+    }, 'Save draft');
+    const saveApproveBtn = el('button', {
+      class: 'button secondary md', type: 'button',
+      onclick: async () => {
+        savedMsg.innerHTML = '';
+        const created = await createPostsForSelection();
+        if (!created.length) return;
+        createdPostIds = created.map((p) => p.id);
+        for (const row of created) {
+          try {
+            await api(`/api/posts/${row.id}`, { method: 'PATCH', body: { status: 'approved' } });
+          } catch (err) {
+            savedMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Saved but could not approve #${row.id}: ${err.message}`));
+          }
+        }
+        savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved and approved.'));
+      },
+    }, 'Save & approve');
+
+    let advancedOpen = localStorage.getItem('pd_composer_advanced_open') === '1';
+    const advancedToggleBtn = el('button', {
+      class: 'button ghost sm cv3-advanced-toggle', type: 'button',
+    }, advancedOpen ? 'Advanced ▾' : 'Advanced ▸');
+    const advancedBody = el('div', { class: 'cv3-advanced-body' });
+    advancedBody.hidden = !advancedOpen;
+    function renderAdvanced() {
+      advancedBody.innerHTML = '';
+      advancedBody.appendChild(imageOptsCard());
+      advancedBody.appendChild(copyAssistPanel());
+      advancedBody.appendChild(examplesPanel());
+    }
+    advancedToggleBtn.addEventListener('click', () => {
+      advancedOpen = !advancedOpen;
+      localStorage.setItem('pd_composer_advanced_open', advancedOpen ? '1' : '0');
+      advancedBody.hidden = !advancedOpen;
+      advancedToggleBtn.textContent = advancedOpen ? 'Advanced ▾' : 'Advanced ▸';
+      if (advancedOpen) renderAdvanced();
+    });
+    if (advancedOpen) renderAdvanced();
+
+    const actionBar = el('div', { class: 'cv3-actionbar' }, [
+      saveBtn, saveApproveBtn, summaryEl, advancedToggleBtn,
+    ]);
+
+    // =========================================================
+    // Assemble the page, top to bottom, per spec.
+    // =========================================================
+    body.append(
+      accountsRow,
+      manageHost,
+      copyCard,
+      mediaStrip,
+      detailsLine,
+      scheduleLine,
+      savedMsg,
+      queueMsg,
+      imageReqMsg,
+      actionBar,
+      el('div', { class: 'cv3-advanced' }, [advancedBody]),
+    );
+
+    renderCopyTabs();
+    syncCopyTextareaVisibility();
+    renderFieldsEditor();
+    refreshActiveEditor();
+    updateContentTypeSuggestion();
+    updateSummary();
 
     // ---- B18b: finish the redraft handoff - stage the original as an
-    // example (best-effort grounding for future drafts; failure shouldn't
-    // block the auto-draft) then run Draft with AI.
+    // example (best-effort grounding) then run Draft with AI.
     if (pendingRedraft && redraftMatchingAcct) {
       aiMsg.appendChild(el('div', { class: 'msg-banner', style: 'color:var(--muted);' }, 'Redrafting your top post - fresh angle incoming…'));
       try {
@@ -4964,7 +5400,7 @@ async function renderComposer(view) {
   brandSelect.onchange = () => {
     setStickyBrand(brandSelect.value);
     selectedAccounts = new Set();
-    currentTab = null;
+    currentTab = 'default';
     loadForBrand(brandSelect.value);
   };
 
@@ -4979,7 +5415,12 @@ async function renderComposer(view) {
   const focusAI = sessionStorage.getItem('pd_composer_focus_ai');
   sessionStorage.removeItem('pd_composer_prefill_brand');
   sessionStorage.removeItem('pd_composer_focus_ai');
-  const effectiveBrand = prefillBrand || getStickyBrand();
+  // Never render an empty page: with no prefill and no sticky brand yet
+  // (fresh install / cleared storage), default to the first brand.
+  const effectiveBrand =
+    prefillBrand ||
+    getStickyBrand() ||
+    (state.brands.length ? String(state.brands[0].id) : '');
   if (effectiveBrand && state.brands.some((b) => String(b.id) === String(effectiveBrand))) {
     brandSelect.value = effectiveBrand;
     setStickyBrand(effectiveBrand);
@@ -7384,6 +7825,120 @@ function wireGlobalChrome() {
   }
 }
 
+// ---------------- item 3: Live/sync status pill (nav rail footer) ----------------
+function syncStatusEls() {
+  return {
+    pill: document.getElementById('sync-status-pill'),
+    dot: document.getElementById('sync-status-dot'),
+    label: document.getElementById('sync-status-label'),
+    popover: document.getElementById('sync-status-popover'),
+    body: document.getElementById('sync-status-body'),
+    syncNowBtn: document.getElementById('sync-status-sync-now'),
+  };
+}
+function timeAgo(iso) {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+async function refreshSyncStatusPill() {
+  const { dot, label } = syncStatusEls();
+  if (!dot) return;
+  try {
+    const ws = await api('/api/worker/status');
+    dot.className = 'sync-status-dot';
+    if (!ws.enabled) { dot.classList.add('sync-red'); label.textContent = 'Worker off'; }
+    else if (ws.dryRun) { dot.classList.add('sync-amber'); label.textContent = 'Dry run'; }
+    else { dot.classList.add('sync-green'); label.textContent = 'Live'; }
+  } catch {
+    dot.className = 'sync-status-dot sync-red';
+    label.textContent = 'Unknown';
+  }
+}
+async function refreshSyncStatusPopover() {
+  const { body } = syncStatusEls();
+  if (!body) return;
+  body.innerHTML = '';
+  body.appendChild(el('p', { style: 'color:var(--muted);font-size:12px;' }, 'Loading…'));
+  try {
+    const [ws, posts] = await Promise.all([api('/api/worker/status'), api('/api/posts')]);
+    const submittedUpcoming = posts.filter((p) => ['submitted', 'submitted_dry'].includes(p.status) && p.publish_at && new Date(p.publish_at).getTime() >= Date.now()).length;
+    const waiting = posts.filter((p) => p.status === 'scheduled_local').length;
+    const errored = posts.filter((p) => p.error_message).length;
+    body.innerHTML = '';
+    body.appendChild(el('div', { class: 'sync-status-row' }, `Synced ${timeAgo(ws.lastRunAt)}`));
+    body.appendChild(el('div', { class: 'sync-status-row' }, `Next run: ${ws.nextRunAt ? fmtDate(ws.nextRunAt) : '-'}`));
+    body.appendChild(el('div', { class: 'sync-status-row' }, `${submittedUpcoming} submitted upcoming`));
+    body.appendChild(el('div', { class: 'sync-status-row' }, `${waiting} scheduled, waiting`));
+    body.appendChild(el('div', { class: 'sync-status-row' }, `${errored} with an error`));
+  } catch (err) {
+    body.innerHTML = '';
+    body.appendChild(inlineBanner(`Could not load sync status: ${err.message}`, 'error'));
+  }
+}
+function openSyncStatusPopover() {
+  const { popover, pill } = syncStatusEls();
+  if (!popover) return;
+  popover.hidden = false;
+  popover.setAttribute('aria-hidden', 'false');
+  pill.setAttribute('aria-expanded', 'true');
+  refreshSyncStatusPopover();
+}
+function closeSyncStatusPopover() {
+  const { popover, pill } = syncStatusEls();
+  if (!popover) return;
+  popover.hidden = true;
+  popover.setAttribute('aria-hidden', 'true');
+  pill.setAttribute('aria-expanded', 'false');
+}
+function toggleSyncStatusPopover() {
+  const { popover } = syncStatusEls();
+  if (!popover) return;
+  if (popover.hidden) openSyncStatusPopover();
+  else closeSyncStatusPopover();
+}
+function wireSyncStatusPill() {
+  const { pill, popover, syncNowBtn } = syncStatusEls();
+  if (!pill) return;
+  pill.addEventListener('click', toggleSyncStatusPopover);
+  document.addEventListener('mousedown', (e) => {
+    if (!popover.hidden && !popover.contains(e.target) && e.target !== pill && !pill.contains(e.target)) closeSyncStatusPopover();
+  });
+  syncNowBtn.addEventListener('click', async () => {
+    syncNowBtn.disabled = true;
+    syncNowBtn.textContent = 'Syncing…';
+    try {
+      const summary = await api('/api/worker/run-now', { method: 'POST', body: {} });
+      toast(`Sync complete - ${summary.handoffCount} handed off, ${summary.verifyCount} verified.`, 'ok');
+      await refreshSyncStatusPill();
+      await refreshSyncStatusPopover();
+      if (typeof currentCalendarReload === 'function') currentCalendarReload();
+    } catch (err) {
+      if (err.status === 409) toast('Already syncing - try again in a moment.', 'info');
+      else toast(`Sync failed: ${err.message}`, 'error');
+    } finally {
+      syncNowBtn.disabled = false;
+      syncNowBtn.textContent = 'Sync now';
+    }
+  });
+  refreshSyncStatusPill();
+  // Poll every 60s while the popover is closed; live-update every 10s while open.
+  setInterval(() => {
+    const { popover: p } = syncStatusEls();
+    if (p && !p.hidden) refreshSyncStatusPopover();
+  }, 10000);
+  setInterval(() => {
+    const { popover: p } = syncStatusEls();
+    if (!p || p.hidden) refreshSyncStatusPill();
+  }, 60000);
+}
+
 // ---------------- Nav rail (B16b) ----------------
 // Persistent grouped left rail lives outside #view (in index.html); active-route
 // highlight is already handled generically in router() via #sidebar a[data-route].
@@ -7677,3 +8232,4 @@ function wireGlobalShortcuts() {
 wireNavRail();
 wireGlobalChrome();
 wireGlobalShortcuts();
+wireSyncStatusPill();

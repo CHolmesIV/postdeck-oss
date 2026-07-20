@@ -60,6 +60,17 @@
       </div>
     </div>
 
+    <button type="button" id="sync-status-pill" class="sync-status-pill" aria-expanded="false" title="Sync status">
+      <span id="sync-status-dot" class="sync-status-dot"></span>
+      <span id="sync-status-label">Loading…</span>
+    </button>
+    <div id="sync-status-popover" class="sync-status-popover" hidden aria-hidden="true">
+      <div id="sync-status-body" class="sync-status-body">
+        <p style="color:var(--muted);font-size:12px;">Loading…</p>
+      </div>
+      <button type="button" id="sync-status-sync-now" class="button secondary sm">Sync now</button>
+    </div>
+
     <button type="button" id="nav-shortcuts-hint" class="nav-shortcuts-hint" title="Keyboard shortcuts (? or click)">
       <span class="nav-shortcuts-hint-key">?</span> shortcuts
     </button>

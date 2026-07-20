@@ -6,7 +6,7 @@ _Last updated: 2026-07-19. One-page state of the build. Full design: `SPEC.md`. 
 ## Where it stands
 
 Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:4520`
-(`npm start`). **268/268 tests passing.** Dry-run is the hard default unless deliberately
+(`npm start`). **300/300 tests passing.** Dry-run is the hard default unless deliberately
 flipped.
 
 ## Built (done)
@@ -38,6 +38,7 @@ flipped.
 | D2 | Design consistency pass (Seeds-informed): button/input/toggle system, pageHeader/formSection/toast/banner/emptyState primitives, composer reorder, Settings zones, full-view sweep | ✅ |
 | - | Composer UX wave (CB feedback): Quick Compose modal on +, collapsible/drag-reorder sections, Edit-prompts button, Waiting-on-Codex status, metrics quick-entry + CSV analytics import | ✅ |
 | B19 | Flow wave: network post preview w/ fold line, Review mode (#/review), calendar popover + Upcoming agenda view, platform icon set, idea-drag to calendar, duplicate/copy-to-brand w/ re-voice, shortcuts + Cmd+K palette, brand setup card | ✅ |
+| - | Composer v3 (single dense form, image placeholder tile, day popover) + send controls (per-post/bulk send-now, sync-now, status pill), startup catch-up + missed-window flagging, manual-account badges, All-Brands identity, image auto-fit pipeline, first-comment (auto on X/threads, reminder on LinkedIn/FB), alt text | ✅ |
 
 ## Security posture (reviewed 2026-07-15)
 

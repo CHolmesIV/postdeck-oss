@@ -14,7 +14,7 @@ import { getDb, nowIso } from './db.js';
 import { draftWithAi, PLATFORM_LIMITS } from './draft.js';
 import { getAuthStatus, startLogin } from './ai.js';
 import { markdownToHtml, escapeHtml } from './md.js';
-import { startWorker, submitNow, getWorkerStatus } from './worker.js';
+import { startWorker, submitNow, getWorkerStatus, resolveBatch, runSubmitBatch, runCycleNow, isDryRun } from './worker.js';
 import { buildSocialState } from './export.js';
 import { validateTiktokFields } from './validate.js';
 import { getAllSettings, updateSettings, isWithinQuietHours } from './settings.js';
@@ -87,6 +87,7 @@ import {
   cancelImageRequest,
 } from './imagespec.js';
 import { resizeToDims, resizeForPlatforms, sipsAvailable } from './resize.js';
+import { fitImageForPlatform } from './imagefit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -456,10 +457,10 @@ function buildServer() {
         `
         INSERT INTO posts (
           external_id, idea_id, brand_id, account_id, platform, tone_profile_id,
-          copy, media, platform_fields, content_type, publish_at, status, created_at, updated_at
+          copy, media, platform_fields, content_type, publish_at, first_comment, status, created_at, updated_at
         ) VALUES (
           @external_id, @idea_id, @brand_id, @account_id, @platform, @tone_profile_id,
-          @copy, @media, @platform_fields, @content_type, @publish_at, 'draft', @now, @now
+          @copy, @media, @platform_fields, @content_type, @publish_at, @first_comment, 'draft', @now, @now
         )
       `
       )
@@ -475,6 +476,7 @@ function buildServer() {
         platform_fields: JSON.stringify(b.platform_fields || {}),
         content_type: b.content_type || null,
         publish_at: b.publish_at || null,
+        first_comment: b.first_comment !== undefined ? b.first_comment : null,
         now,
       });
     const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(info.lastInsertRowid);
@@ -561,6 +563,7 @@ function buildServer() {
       publish_at: publishAt,
       account_id: b.account_id !== undefined ? b.account_id : existing.account_id,
       tone_profile_id: b.tone_profile_id !== undefined ? b.tone_profile_id : existing.tone_profile_id,
+      first_comment: b.first_comment !== undefined ? b.first_comment : existing.first_comment,
       status: nextStatus,
       now,
       id: req.params.id,
@@ -587,6 +590,16 @@ function buildServer() {
           brand: brandRow?.slug,
           template: template || undefined,
         });
+        // The link usually lives in the first comment, not the body — apply
+        // the same append here so the approve-gate UTM pass covers both.
+        if (merged.first_comment) {
+          merged.first_comment = appendUtm(merged.first_comment, {
+            platform: existing.platform,
+            campaign: campaignRow?.name,
+            brand: brandRow?.slug,
+            template: template || undefined,
+          });
+        }
       }
     }
 
@@ -595,7 +608,7 @@ function buildServer() {
       UPDATE posts SET
         copy = @copy, media = @media, platform_fields = @platform_fields,
         content_type = @content_type, publish_at = @publish_at, account_id = @account_id,
-        tone_profile_id = @tone_profile_id, status = @status, updated_at = @now
+        tone_profile_id = @tone_profile_id, first_comment = @first_comment, status = @status, updated_at = @now
       WHERE id = @id
     `
     ).run(merged);
@@ -1064,6 +1077,49 @@ ${bodyHtml}
     }
 
     return { files, skipped };
+  });
+
+  // ---------- auto-normalize an image for a platform (dims/format/size-cap) ----------
+  // Backstop on top of B14 resize: guarantees the file will actually be
+  // accepted by `platform` (used today by the worker's Blotato handoff, and
+  // wired here for a future "Fix for platform" UI button — see src/imagefit.js).
+  app.post('/api/media/fit', async (req, reply) => {
+    const b = req.body || {};
+    if (!b.path) {
+      reply.code(400);
+      return { error: 'path is required' };
+    }
+    if (!b.platform) {
+      reply.code(400);
+      return { error: 'platform is required' };
+    }
+    const srcAbsPath = resolveMediaPath(b.path);
+    if (!srcAbsPath) {
+      reply.code(400);
+      return { error: 'invalid_path', message: 'path must be a file inside media/.' };
+    }
+    if (!fs.existsSync(srcAbsPath)) {
+      reply.code(404);
+      return { error: 'source_not_found' };
+    }
+    try {
+      const result = await fitImageForPlatform(srcAbsPath, b.platform);
+      if (result.skipped === 'sips_unavailable') {
+        reply.code(503);
+        return {
+          error: 'resize_unavailable',
+          message: 'sips is not available on this machine — auto-fit needs macOS. Resize/convert the image manually and attach it instead.',
+        };
+      }
+      return result;
+    } catch (err) {
+      if (err.code === 'resize_unavailable') {
+        reply.code(503);
+        return { error: 'resize_unavailable', message: err.message };
+      }
+      reply.code(500);
+      return { error: 'fit_failed', message: err.message };
+    }
   });
 
   // ---------- AI drafting ----------
@@ -1548,6 +1604,59 @@ ${bodyHtml}
   });
 
   app.get('/api/worker/status', async () => getWorkerStatus());
+
+  // ---------- batch submit + worker run-now ----------
+  app.post('/api/posts/submit-batch', async (req, reply) => {
+    const body = req.body || {};
+    const hasIds = Array.isArray(body.post_ids);
+    const hasScope = !!(body.scope && typeof body.scope === 'object');
+    if (hasIds === hasScope) {
+      reply.code(400);
+      return { error: 'invalid_body', message: 'provide exactly one of post_ids or scope' };
+    }
+    if (hasIds && body.post_ids.length === 0) {
+      reply.code(400);
+      return { error: 'invalid_body', message: 'post_ids must be a non-empty array' };
+    }
+    if (hasScope && (!body.scope.from || !body.scope.to)) {
+      reply.code(400);
+      return { error: 'invalid_body', message: 'scope requires from and to' };
+    }
+    const result = await runSubmitBatch(db, hasIds ? { post_ids: body.post_ids } : { scope: body.scope });
+    return result;
+  });
+
+  app.get('/api/posts/submit-batch/preview', async (req, reply) => {
+    const { from, to, brand_id, platform } = req.query || {};
+    if (!from || !to) {
+      reply.code(400);
+      return { error: 'invalid_query', message: 'from and to query params are required' };
+    }
+    const scope = { from, to };
+    if (brand_id) scope.brand_id = Number(brand_id);
+    if (platform) scope.platform = platform;
+    const { eligible, skipped } = resolveBatch(db, { scope });
+    return {
+      eligible: eligible.map((p) => ({
+        id: p.id,
+        brand_id: p.brand_id,
+        platform: p.platform,
+        publish_at: p.publish_at,
+        status: p.status,
+      })),
+      skipped,
+      dry_run: isDryRun(),
+    };
+  });
+
+  app.post('/api/worker/run-now', async (req, reply) => {
+    const result = await runCycleNow();
+    if (result.busy) {
+      reply.code(409);
+      return { error: 'busy' };
+    }
+    return result.summary;
+  });
 
   // ---------- Agentic OS bridge (B5): state export ----------
   app.get('/api/export/social-state', async () => buildSocialState(db));

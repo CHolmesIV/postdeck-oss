@@ -690,8 +690,7 @@ APIs, human Approve gate untouched.*
 - **Action-center popover**: ONE corner button (distinct from the + and chat buttons; lives in
   the shell so it's on every view) → a compact popover with quick stats (drafts awaiting,
   scheduled this week, published this month, 30-day engagement) from `/api/usage` +
-  `/api/analytics`. Read-only glance; "Open Ops / Analytics →" links through. No new numbers  - 
-  reuses existing endpoints.
+  `/api/analytics`. Read-only glance; "Open Ops / Analytics →" links through. No new numbers - reuses existing endpoints.
 - The composer's tone dropdown defaults to the brand's saved default tone.
 
 ### Constraints / tests
@@ -747,8 +746,7 @@ Env `POSTDECK_VISION_MODEL` (default the cheap vision model) for the one-time im
   `extractFromImage` ONCE and store the returned text (image_path kept for reference only),
   `deleteExample(db,id)`, `examplesGrounding(db,{brand_id,platform,limit=3})` → a short text
   digest fed into the copy assistant / agent as "match the style/format of these examples."
-- `src/redistribute.js`: `redistributeFromUrl(db,{url,brand_id,platforms,make_images=true})`  - 
-  `extractFromUrl`, then for each platform draft copy (reuse `copy_assist`/`draft`, grounded
+- `src/redistribute.js`: `redistributeFromUrl(db,{url,brand_id,platforms,make_images=true})` - `extractFromUrl`, then for each platform draft copy (reuse `copy_assist`/`draft`, grounded
   in brand voice + the article), create a DRAFT post per platform (status `draft`), and if
   `make_images` create one `image_requests` brief from the article's themes. Returns
   `{ source:{title,url}, drafts:[...], image_requests:[...] }`. Human approves as always.
@@ -861,3 +859,18 @@ CB hands-on testing feedback + Blotato/Sprout-inspired flow features. Full specs
   cross-brand; account auto-resolve; AI re-voice through target brand tone).
 - **F5 shortcuts** (C/R/1-4/?) + Cmd+K command palette (nav/actions/post search).
 - **F6 brand setup completeness card** on Home.
+
+## Composer v3 + reliability/send-controls wave (BUILT 2026-07-19 night)
+
+CB live-testing round 2 + the silent-skip incident. Details: CHANGELOG same date.
+- Composer v3: single dense form (no card stack), Default+per-platform copy tabs, media
+  strip w/ "Waiting on Codex" placeholder (polls -> picked image), day-click popover.
+- Send controls: POST /api/posts/submit-batch (+/preview), POST /api/worker/run-now;
+  per-post/bulk Send-now UI + nav-rail sync status pill.
+- Reliability: startup catch-up sweep; past-due -> 'missed_window' flag (never silently
+  late-post); manual-account "won't auto-post" badges; All-Brands chip identity.
+- Image auto-fit: src/imagefit.js sips derivatives per platform at handoff (+ Codex
+  import pre-fit + POST /api/media/fit).
+- First comment (mig v10): auto additionalPosts on twitter/bluesky/threads (flat
+  {text,mediaUrls}); linkedin/facebook = stored + paste reminder w/ copy button; UTM
+  applies at approve. Alt-text input + AI suggest on media tiles.

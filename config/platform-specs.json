@@ -70,6 +70,7 @@
       "portrait": "1080x1350 (best real estate)",
       "story": "1080x1920",
       "carousel_max_slides": 10,
+      "max_mb": 8,
       "_uncertain": [
         "10-slide max is long-standing, not re-confirmed 2026"
       ]
@@ -212,7 +213,8 @@
         "1080x1080",
         "1080x1920",
         "1920x1080"
-      ]
+      ],
+      "max_mb": 5
     },
     "video": {
       "free_max_s": 140,
@@ -258,7 +260,8 @@
     },
     "image": {
       "feed": "1200x627 or 1080x1080",
-      "carousel": "2-10 images (Blotato native)"
+      "carousel": "2-10 images (Blotato native)",
+      "max_mb": 8
     },
     "notes": "Kept wired (accounts exist); not in CB's current top-5 focus.",
     "cadence": "2-3x/week",

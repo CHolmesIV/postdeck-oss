@@ -62,8 +62,7 @@ Batch approval for AI-drafted posts: one at a time, full preview, act, next.
 - Post detail + post modal + review mode overflow: **Duplicate** (same brand, new draft,
   copy + media + platform prefilled, no publish_at) and **Copy to brand →** (brand list;
   creates a draft for target brand and, when AI available, auto-redrafts the copy through
-  the target brand's voice via the existing draft path with the original as grounding  - 
-  falls back to verbatim copy + a "re-voice with AI" button if CLI not available).
+  the target brand's voice via the existing draft path with the original as grounding - falls back to verbatim copy + a "re-voice with AI" button if CLI not available).
 - Backend: `POST /api/posts/:id/duplicate` {brand_id?} → new draft post (server-side copy
   keeps media refs + platform; strips publish_at/status history). Test.
 
@@ -81,8 +80,7 @@ Batch approval for AI-drafted posts: one at a time, full preview, act, next.
 ## F6 - Brand setup completeness card
 
 - Home card (one row per brand): checks = Blotato account(s) connected ✓, queue slots
-  defined ✓, UTM link tracking on ✓ (or explicitly "off" as a neutral state, not a warning
- - it's optional), brand profile status current ✓, voice/tone set ✓. Each item click-jumps
+  defined ✓, UTM link tracking on ✓ (or explicitly "off" as a neutral state, not a warning - it's optional), brand profile status current ✓, voice/tone set ✓. Each item click-jumps
   to the exact Settings zone/section. Collapsed by default once a brand is 100%.
 - Pure frontend over existing endpoints (accounts, queue-slots, brands utm fields,
   profiles staleness, settings) - no backend changes expected.
@@ -93,8 +91,7 @@ Batch approval for AI-drafted posts: one at a time, full preview, act, next.
   the full modal): platform icon + brand, scheduled date/time, first ~3 lines of copy, and
   three quick actions - **Reschedule** (inline datetime picker, saves via existing PATCH),
   **Move to drafts** (status → draft, clears publish_at), **Delete** (destructive; drafts
-  hard-delete via the F2 DELETE endpoint, scheduled posts use existing cancel semantics)  - 
-  plus **See more** which opens the existing full quick-view modal. Esc/click-outside
+  hard-delete via the F2 DELETE endpoint, scheduled posts use existing cancel semantics) - plus **See more** which opens the existing full quick-view modal. Esc/click-outside
   closes. Position near the chip, flip when near viewport edges.
 - **Platform icons**: inline SVG icon set (linkedin, facebook, instagram, twitter/x,
   tiktok, reddit, youtube, blog) as a `platformIcon(name)` helper - used on calendar chips,

@@ -280,6 +280,14 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_post_tags_post ON post_tags(post_id);
   CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
   `,
+  // v10 — "Link in first comment": per-post optional first-comment text.
+  // LinkedIn/Facebook deprioritize posts with links in the body, so the link
+  // can be moved to a follow-up comment instead. NULL = no first comment
+  // (unchanged single-post behavior). See src/worker.js buildBlotatoPayload
+  // for how this is attached to the Blotato submission.
+  `
+  ALTER TABLE posts ADD COLUMN first_comment TEXT;
+  `,
 ];
 
 function applyMigrations(db) {

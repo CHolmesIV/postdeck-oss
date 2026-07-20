@@ -3,6 +3,53 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-07-19 (night) - Composer v3, manual send controls, reliability + image pipeline
+
+Driven by CB's live testing (the composer verdict: "you don't want to use this to create
+a post") and a real incident: scheduled posts silently never reached Blotato.
+
+- **Composer v3 - single dense form**: replaced the card-stack composer entirely. Accounts
+  row -> copy card (Default + per-platform tabs, tone + Draft-with-AI ON the box, char +
+  fold counters, live preview) -> media strip (library picker, Request image with an
+  immediate **"Waiting on Codex" placeholder tile** that polls and becomes the picked
+  image) -> one details line (content type, pillar, tags, campaign) -> one schedule line ->
+  sticky action bar. Everything for a normal post visible with ZERO expanding; the only
+  collapsed region is Advanced (tiktok/reddit/blog fields, examples, redistribute).
+  Image requests auto-save the draft first so they always carry a post_id. Fresh installs
+  default to the first brand (no more blank page). Calendar day-click now opens a **day
+  popover** (that day's posts + "New post on <date>" -> Quick Compose) instead of dumping
+  into the full page.
+- **Incident: posts silently skipped.** CB's CHolmesIV LinkedIn account had `manual=1`
+  (flipped mid-rework 7/18) - the worker deliberately never hands manual accounts to
+  Blotato and wrote NO error. Flag cleared; post handed off (submission <redacted-id>). Fix
+  class shipped: **manual-account badges** ("won't auto-post") on chips/popover/review,
+  and missed-window flagging.
+- **Send controls (CB: "I just don't have a button")**: per-post **"Send to Blotato now"**
+  (popover, modal, review; hands off early, still publishes at the scheduled time),
+  **bulk "Send to Blotato"** on the calendar (current view scope, preview + confirm with
+  per-reason skip breakdown), and a **Sync now** action. New endpoints:
+  POST /api/posts/submit-batch (+preview), POST /api/worker/run-now (409 when busy).
+- **Computer-was-off catch-up**: the worker now runs a full sweep seconds after app
+  launch; posts whose time passed while the machine was off get flagged
+  ('missed_window...') instead of silently posting late - surfaced with a resend button.
+- **Live/sync status pill** (nav rail): green Live / amber Dry run / red Worker off;
+  popover with last/next sync, submitted/waiting/error counts, Sync now.
+- **All Brands calendar identity**: brand-colored accent + initial disc on chips/rows
+  when no single brand is filtered.
+- **Image auto-fit pipeline** (`src/imagefit.js`): every image is normalized to the
+  target platform at handoff time (resize within dims, format convert, quality-step
+  under the platform's size cap) via sips derivatives - originals never touched; Codex
+  imports pre-generate fits per platform; POST /api/media/fit for manual runs. Fixes
+  "Codex makes images too big for Blotato".
+- **Link in first comment** (mig v10, `posts.first_comment`): composer + Quick Compose
+  toggle; UTM applies to the comment link at approve. Verified against Blotato docs:
+  additionalPosts auto-chains ONLY on twitter/bluesky/threads (flat {text, mediaUrls}
+  entries - review caught the agent's wrong shape) - on those it posts automatically;
+  on linkedin/facebook the app shows a **"paste as first comment" reminder + copy
+  button** on the live post instead.
+- **Alt text** input + AI suggest on composer media tiles.
+- Suite 268 -> 300. Blotato payload shape verified against help.blotato.com llms-full.txt.
+
 ## 2026-07-19 - B19 flow wave: preview, review mode, calendar popover/agenda, icons, shortcuts
 
 Eight features from CB's hands-on testing session + Blotato/Sprout inspiration. Spec:
@@ -186,10 +233,10 @@ first posts out (per CB: log the churn):
   in `Social Media/config/.env`, loaded by `src/env.js` (imported first in server.js). Key +
   live posting were fine all along. Do NOT create `postdeck/.env` (it shadows config/.env).
 - **listAccounts parse bug (my check, not shipped):** Blotato returns accounts under `items`,
-  not `data`. Resolved the real account map: FB `<redacted-id>`, LinkedIn `<redacted-id>`,
-  Twitter `<redacted-id>`, with per-brand page subaccounts.
-- **PrimeWright accounts wired:** LinkedIn #8 -> acct `<redacted-id>` / page `<redacted-id>`;
-  Facebook #9 -> acct `<redacted-id>` / page `<redacted-id>`; both manual=0 (worker-eligible).
+  not `data`. Resolved the real account map: FB `<redacted-id>`, LinkedIn `<redacted-id>`, Twitter `<redacted-id>`,
+  with per-brand page subaccounts (see SOCIAL_STATUS.md).
+- **PrimeWright accounts wired:** LinkedIn #8 -> acct <redacted-id> / page <redacted-id>; Facebook #9 ->
+  acct <redacted-id> / page <redacted-id>; both manual=0 (worker-eligible).
 - **Flipped `BLOTATO_DRY_RUN=0`** in config/.env -> posting is LIVE.
 - **Scheduling window gotcha:** the worker only hands a post to Blotato within 48h of its
   publish_at. Posts scheduled >48h out show NOTHING in Blotato's upcoming until then - which

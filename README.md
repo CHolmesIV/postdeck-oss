@@ -3,14 +3,11 @@
 Local-first multi-brand social scheduler + content studio. Full architecture, data model,
 and build plan live in [`SPEC.md`](./SPEC.md) - read that first; current state is in
 [`BUILD_STATUS.md`](./BUILD_STATUS.md) and history in [`CHANGELOG.md`](./CHANGELOG.md).
-Shipped through **B19**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
-analytics, Content Studio, image sizing + Codex handoff, chat agent, brand/profile settings,
-Claude/Codex drafting, editable image prompts, a designed local command-center UI, post
-queues, tags/campaigns, best-time suggestions, UTM tagging, and a composer/flow UX wave -
-network post preview with a see-more fold, a review mode, a calendar popover + Upcoming
-agenda view, per-platform icons, a Quick Compose modal, drag-to-triage ideas, duplicate /
-copy-to-brand, keyboard shortcuts + a command palette, a brand setup checklist, CSV
-analytics import, and quick metrics entry.
+Shipped through the composer v3 wave: Fastify + SQLite, dashboard, Blotato worker, Agentic OS
+bridge, analytics, Content Studio, image sizing + Codex handoff, chat agent, brand/profile
+settings, Claude/Codex drafting, editable image prompts, a designed local command-center UI,
+a single-form composer with per-network tabs and live preview, an image auto-fit pipeline,
+one-click send controls, sync status, and calendar/scheduling polish (see below).
 
 ## Delivery rule
 
@@ -156,8 +153,7 @@ accidental real post until you deliberately flip the flag.
   `~/Library/LaunchAgents/com.postdeck.plist` (`RunAtLoad` + `KeepAlive`,
   runs `node src/server.js` with `WorkingDirectory` set to the repo, logs to
   `logs/postdeck.{out,err}.log`). Run `--uninstall` to tear it down. This repo
-  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`)
- - installing it is a standing background process, so run it yourself when
+  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`) - installing it is a standing background process, so run it yourself when
   ready:
   ```bash
   chmod +x scripts/install-launchd.sh   # already executable in the repo
@@ -165,6 +161,30 @@ accidental real post until you deliberately flip the flag.
   launchctl list | grep com.postdeck    # verify it's running
   ./scripts/install-launchd.sh --uninstall
   ```
+
+## Composer v3 + send controls (this pass)
+
+- **Composer v3**: a single-form compose experience with per-network tabs and a live
+  preview, replacing the old multi-card layout for the actual copy-writing surface.
+- **Image request placeholder + auto-fit pipeline**: images are auto-fit to each
+  platform's target dimensions and size caps before send, so one source image works
+  across networks without manual resizing.
+- **Send to Blotato now**: per-post and bulk "send now" controls for pushing approved
+  posts out immediately instead of waiting on the worker's schedule window.
+- **Sync status pill + sync-now**: a status indicator plus an on-demand sync trigger
+  in the dashboard.
+- **Startup catch-up sweep + missed-window protection**: on boot, PostDeck reconciles
+  any posts that should have gone out while it was down, and guards against a missed
+  scheduling window silently dropping a post.
+- **Manual-account badges**: accounts that require manual posting (no API path) are
+  flagged directly in the UI so they're not mistaken for worker-eligible.
+- **Link-in-first-comment**: for platforms that support it (X/Bluesky/Threads), links
+  are auto-threaded into the first comment instead of the main post; other platforms
+  get a reminder flow instead.
+- **Alt text with AI suggest**: alt text fields now have an AI-assisted suggestion
+  button alongside manual entry.
+- **Day popover on the calendar**: clicking a day on the calendar opens a popover with
+  that day's posts instead of navigating away.
 
 ## Going live with real Blotato calls - checklist
 

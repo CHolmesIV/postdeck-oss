@@ -7,6 +7,9 @@
 // 'submitted_dry' instead of 'submitted'. This is a hard requirement for this
 // build session: no real create/schedule/media-upload calls are allowed.
 
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { getDb, nowIso } from './db.js';
 import * as blotato from './blotato.js';
 import { exportSocialState } from './export.js';
@@ -16,6 +19,24 @@ import { importGeneratedImages } from './imagestudio.js';
 import { importResearchInbox } from './research.js';
 import { recordUsage } from './usage.js';
 import { getPlatformSpec } from './platforms.js';
+import { fitImageForPlatform } from './imagefit.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|tiff?|bmp)$/i;
+
+function getMediaDir() {
+  return process.env.POSTDECK_MEDIA_DIR || path.join(ROOT, 'media');
+}
+
+/** Resolve a stored media path/url (e.g. "media/123-file.png" or
+ * "/media/123-file.png") to an absolute path under the media dir. Confines
+ * to the basename (same defensive approach as server.js's resolveMediaPath)
+ * so a malformed stored value can never escape media/. */
+function resolveMediaAbsPath(relOrPath) {
+  if (!relOrPath || typeof relOrPath !== 'string') return null;
+  return path.join(getMediaDir(), path.basename(relOrPath));
+}
 
 const FIVE_MINUTES_MS = 5 * 60 * 1000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -74,17 +95,69 @@ function summarize(text, len = 60) {
   return text.length > len ? `${text.slice(0, len)}...` : text;
 }
 
-function buildBlotatoPayload(post, account) {
+/**
+ * Handoff-time platform-fit substitution (imagefit.js). For every image in
+ * `post.media`, if a `_fit_<platform>` derivative already exists it's used;
+ * if not, it's generated right here (fitImageForPlatform caches the result
+ * as a sibling file, so this is a one-time cost per source+platform). This
+ * catches every image at the payload-construction choke point — not just
+ * ones that came through the Codex handoff — so a manually-attached photo
+ * gets the same oversized/wrong-format protection. Never blocks the
+ * handoff: any fit error just falls back to the original media url/path.
+ */
+async function buildBlotatoPayload(post, account) {
   const media = parseJsonColumn(post.media, []);
   const platformFields = parseJsonColumn(post.platform_fields, {});
   const targetFields = account ? parseJsonColumn(account.target_fields, {}) : {};
+
+  const mediaUrls = [];
+  for (const m of media) {
+    const rawPath = m.path || m.url;
+    if (!rawPath) continue;
+    const absPath = resolveMediaAbsPath(rawPath);
+    if (absPath && IMAGE_EXT_RE.test(absPath) && fs.existsSync(absPath)) {
+      try {
+        const fit = await fitImageForPlatform(absPath, post.platform);
+        if (fit && fit.path && !fit.skipped) {
+          if (fit.actions && fit.actions.length && fit.actions[0] !== 'cached') {
+            console.log(
+              `[worker] media fit for post ${post.id} (${post.platform}): ${fit.actions.join(', ')} -> ${fit.path}`
+            );
+          }
+          mediaUrls.push(`/${fit.path}`);
+          continue;
+        }
+      } catch (err) {
+        console.error(`[worker] media fit failed for post ${post.id} (${post.platform}): ${err.message}`);
+      }
+    }
+    mediaUrls.push(m.url || m.path);
+  }
+
+  // "Link in first comment": Blotato's additionalPosts only auto-chains on
+  // twitter/bluesky/threads (verified against help.blotato.com llms-full.txt
+  // 2026-07-19; entries are FLAT {text, mediaUrls}, platform inherited from
+  // the parent content). For those platforms we attach it. For everything
+  // else (linkedin/facebook etc.) the comment stays stored on the post and
+  // the dashboard surfaces it as a paste-after-publish reminder instead —
+  // never send an additionalPosts the API doesn't support.
+  const THREADABLE = ['twitter', 'bluesky', 'threads'];
+  const additionalPosts = [];
+  if (
+    post.first_comment &&
+    String(post.first_comment).trim() &&
+    THREADABLE.includes(post.platform)
+  ) {
+    additionalPosts.push({ text: post.first_comment, mediaUrls: [] });
+  }
+
   return {
     accountId: account ? account.blotato_account_id : null,
     content: {
       text: post.copy || '',
-      mediaUrls: media.map((m) => m.url || m.path).filter(Boolean),
+      mediaUrls,
       platform: post.platform,
-      additionalPosts: [],
+      additionalPosts,
       ...platformFields,
     },
     target: {
@@ -105,7 +178,7 @@ async function handoffOne(db, post) {
   const account = post.account_id
     ? db.prepare('SELECT * FROM accounts WHERE id = ?').get(post.account_id)
     : null;
-  const payload = buildBlotatoPayload(post, account);
+  const payload = await buildBlotatoPayload(post, account);
   const now = nowIso();
 
   if (isDryRun()) {
@@ -115,7 +188,7 @@ async function handoffOne(db, post) {
         `scheduledTime=${post.publish_at} content="${summarize(payload.content.text)}"`
     );
     db.prepare(
-      `UPDATE posts SET status = 'submitted_dry', updated_at = @now WHERE id = @id`
+      `UPDATE posts SET status = 'submitted_dry', error_message = NULL, updated_at = @now WHERE id = @id`
     ).run({ now, id: post.id });
     recordUsage(db, { kind: 'blotato_submit', brand_id: post.brand_id, meta: { dry_run: true } });
     return { ok: true, status: 'submitted_dry' };
@@ -186,6 +259,18 @@ function isAssistedManual(db, post) {
   return !!(account && account.manual);
 }
 
+// Computer-was-off catch-up: a scheduled_local post whose publish_at is
+// already in the past when the handoff sweep finally runs must NOT be
+// silently blasted out late. Flag it instead (no schema change — reuses
+// error_message) and leave it in scheduled_local for human review. An
+// explicit submitNow() call still bypasses this and clears the flag.
+const MISSED_WINDOW_MSG =
+  'missed_window: computer was off past the publish time - review and resend';
+
+function isMissedWindow(post) {
+  return post.status === 'scheduled_local' && post.publish_at && Date.parse(post.publish_at) < Date.now();
+}
+
 async function runHandoffPhase(db) {
   const windowHours = getHandoffWindowHours(db);
   const cutoff = new Date(Date.now() + windowHours * 60 * 60 * 1000).toISOString();
@@ -196,10 +281,22 @@ async function runHandoffPhase(db) {
     )
     .all(cutoff)
     .filter((post) => !isAssistedManual(db, post));
+  let handoffCount = 0;
   for (const post of rows) {
+    if (isMissedWindow(post)) {
+      if (post.error_message !== MISSED_WINDOW_MSG) {
+        db.prepare(`UPDATE posts SET error_message = @msg, updated_at = @now WHERE id = @id`).run({
+          msg: MISSED_WINDOW_MSG,
+          now: nowIso(),
+          id: post.id,
+        });
+      }
+      continue;
+    }
     await handoffOne(db, post);
+    handoffCount += 1;
   }
-  return rows.length;
+  return handoffCount;
 }
 
 /**
@@ -222,6 +319,109 @@ async function submitNow(postId) {
   const result = await handoffOne(db, post);
   const updated = db.prepare('SELECT * FROM posts WHERE id = ?').get(postId);
   return { ...result, post: updated };
+}
+
+/**
+ * B-batch: resolve which posts are eligible for a bulk submit, either from
+ * an explicit list of post_ids or a scope window (from/to ISO + optional
+ * brand_id/platform). Mirrors submitNow's eligibility rules (status +
+ * assisted-manual + publish_at) so a post that would be rejected by
+ * POST /api/posts/:id/submit is never silently "submitted" in a batch.
+ * @returns {{ eligible: object[], skipped: {id:number, reason:string}[] }}
+ */
+function resolveBatchCandidates(db, { post_ids, scope }) {
+  if (post_ids && post_ids.length) {
+    return post_ids.map((id) => ({ id, post: db.prepare('SELECT * FROM posts WHERE id = ?').get(id) }));
+  }
+  const { from, to, brand_id, platform } = scope || {};
+  let sql = `SELECT * FROM posts WHERE status IN ('scheduled_local', 'approved')
+             AND publish_at IS NOT NULL AND publish_at >= ? AND publish_at <= ?`;
+  const params = [from, to];
+  if (brand_id) {
+    sql += ' AND brand_id = ?';
+    params.push(brand_id);
+  }
+  if (platform) {
+    sql += ' AND platform = ?';
+    params.push(platform);
+  }
+  const rows = db.prepare(sql).all(...params);
+  return rows.map((post) => ({ id: post.id, post }));
+}
+
+function resolveBatch(db, { post_ids, scope }) {
+  const candidates = resolveBatchCandidates(db, { post_ids, scope });
+  const eligible = [];
+  const skipped = [];
+  for (const { id, post } of candidates) {
+    if (!post) {
+      skipped.push({ id, reason: 'wrong_status' });
+      continue;
+    }
+    if (isAssistedManual(db, post)) {
+      skipped.push({ id, reason: 'manual' });
+      continue;
+    }
+    if (!['scheduled_local', 'approved'].includes(post.status)) {
+      skipped.push({ id, reason: 'wrong_status' });
+      continue;
+    }
+    if (!post.publish_at) {
+      skipped.push({ id, reason: 'no_publish_at' });
+      continue;
+    }
+    // A batch (bulk, not an explicit per-post human click) must never push a
+    // late scheduled_local post through — same rule as the background worker
+    // sweep. Explicit POST /api/posts/:id/submit still bypasses this.
+    if (isMissedWindow(post)) {
+      skipped.push({ id, reason: 'missed_window' });
+      continue;
+    }
+    // Window filter only applies to scope-based resolution — an explicit
+    // post_ids list is an intentional override of the time window.
+    if (!post_ids && scope) {
+      const ms = Date.parse(post.publish_at);
+      const fromMs = Date.parse(scope.from);
+      const toMs = Date.parse(scope.to);
+      if (Number.isFinite(fromMs) && Number.isFinite(toMs) && (ms < fromMs || ms > toMs)) {
+        skipped.push({ id, reason: 'wrong_status' });
+        continue;
+      }
+    }
+    eligible.push(post);
+  }
+  return { eligible, skipped };
+}
+
+/**
+ * Runs handoffOne SEQUENTIALLY (never Promise.all — Blotato rate safety)
+ * over the eligible set from resolveBatch, never throwing on a single-post
+ * failure. Used by POST /api/posts/submit-batch.
+ */
+async function runSubmitBatch(db, { post_ids, scope }) {
+  const { eligible, skipped } = resolveBatch(db, { post_ids, scope });
+  const submitted = [];
+  const failed = [];
+  for (const post of eligible) {
+    try {
+      const result = await handoffOne(db, post);
+      if (result.ok) {
+        const fresh = db.prepare('SELECT blotato_submission_id FROM posts WHERE id = ?').get(post.id);
+        submitted.push({ id: post.id, submission_id: fresh ? fresh.blotato_submission_id : null });
+      } else {
+        failed.push({ id: post.id, error: result.error || 'submit_failed' });
+      }
+    } catch (err) {
+      failed.push({ id: post.id, error: err.message });
+    }
+  }
+  return {
+    attempted: eligible.length,
+    submitted,
+    skipped,
+    failed,
+    dry_run: isDryRun(),
+  };
 }
 
 async function verifyOne(db, post) {
@@ -348,6 +548,31 @@ async function runCycle() {
     for (const requestId of generatedImageIds) {
       const row = db.prepare('SELECT * FROM image_requests WHERE id = ?').get(requestId);
       recordUsage(db, { kind: 'image_generated', brand_id: row ? row.brand_id : null, meta: { request_id: requestId } });
+      // Pre-generate the platform-fit derivative for every platform this
+      // request targeted, right after import — so by the time these images
+      // reach the composer/handoff, the fit derivatives are already cached
+      // (see fitImageForPlatform's cache check + the handoff substitution
+      // above, which also covers non-Codex images generated on the fly).
+      try {
+        const platforms = parseJsonColumn(row?.platforms, []);
+        const variants = parseJsonColumn(row?.variants, []);
+        for (const variant of variants) {
+          const absPath = resolveMediaAbsPath(variant?.path);
+          if (!absPath || !IMAGE_EXT_RE.test(absPath) || !fs.existsSync(absPath)) continue;
+          for (const platform of platforms) {
+            try {
+              const fit = await fitImageForPlatform(absPath, platform);
+              if (fit.actions && fit.actions.length && fit.actions[0] !== 'cached') {
+                console.log(`[worker] pre-fit image_request #${requestId} variant for ${platform}: ${fit.actions.join(', ')}`);
+              }
+            } catch (err) {
+              console.error(`[worker] pre-fit failed for image_request #${requestId} platform ${platform}: ${err.message}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`[worker] pre-fit sweep error for image_request #${requestId}: ${err.message}`);
+      }
     }
   } catch (err) {
     console.error('[worker] image import error', err);
@@ -363,9 +588,39 @@ async function runCycle() {
   await runExportPhase(db, { changed });
 
   status.nextRunAt = new Date(Date.now() + FIVE_MINUTES_MS).toISOString();
+
+  return {
+    handoffCount,
+    verifyCount,
+    imagesImported: generatedImageIds.length,
+    changed,
+    ranAt: status.lastRunAt,
+  };
+}
+
+// Guards POST /api/worker/run-now against overlapping with either the
+// 5-minute interval tick or another concurrent run-now call — runCycle
+// mutates shared DB state (retry_count, verify_attempts, etc.) and is not
+// safe to run twice at once.
+let cycleInFlight = null;
+
+async function runCycleNow() {
+  if (cycleInFlight) return { busy: true };
+  cycleInFlight = runCycle();
+  try {
+    const summary = await cycleInFlight;
+    return { busy: false, summary };
+  } finally {
+    cycleInFlight = null;
+  }
 }
 
 let intervalHandle = null;
+let startupTimeoutHandle = null;
+
+// Delay before the startup catch-up sweep (default 3s after boot). Test-only
+// override so tests don't have to wait out a real 3s timer.
+const STARTUP_DELAY_MS = Number(process.env.POSTDECK_WORKER_STARTUP_DELAY_MS) || 3000;
 
 function startWorker() {
   if (!workerEnabled()) {
@@ -376,9 +631,15 @@ function startWorker() {
   console.log(
     `[worker] starting — every ${FIVE_MINUTES_MS / 60000}min, dryRun=${isDryRun()}`
   );
-  // Kick one cycle off shortly after boot, then every 5 minutes.
-  runCycle();
-  intervalHandle = setInterval(runCycle, FIVE_MINUTES_MS);
+  // Computer-was-off catch-up: run one full cycle a few seconds after boot
+  // (not waiting for the first 5-min tick), so posts that were due while the
+  // machine was asleep/off get picked up promptly. Goes through runCycleNow
+  // so it shares the overlap guard with run-now/the interval tick.
+  startupTimeoutHandle = setTimeout(() => {
+    startupTimeoutHandle = null;
+    runCycleNow();
+  }, STARTUP_DELAY_MS);
+  intervalHandle = setInterval(runCycleNow, FIVE_MINUTES_MS);
   status.nextRunAt = new Date(Date.now() + FIVE_MINUTES_MS).toISOString();
   return intervalHandle;
 }
@@ -388,21 +649,31 @@ function stopWorker() {
     clearInterval(intervalHandle);
     intervalHandle = null;
   }
+  if (startupTimeoutHandle) {
+    clearTimeout(startupTimeoutHandle);
+    startupTimeoutHandle = null;
+  }
 }
 
 export {
   startWorker,
   stopWorker,
   runCycle,
+  runCycleNow,
   runHandoffPhase,
   runVerifyPhase,
   handoffOne,
   verifyOne,
+  buildBlotatoPayload,
   submitNow,
+  resolveBatch,
+  runSubmitBatch,
   getWorkerStatus,
   isDryRun,
   workerEnabled,
   getHandoffWindowHours,
   runExportPhase,
   isAssistedManual,
+  isMissedWindow,
+  MISSED_WINDOW_MSG,
 };
