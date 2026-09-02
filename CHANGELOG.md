@@ -3,6 +3,172 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-09-02 - Full audit: `docs/AUDIT_2026-09-02.md`
+
+Ran a full strong-model audit (security, agent orchestrator, speed, UI/UX, data/ops, docs/repo)
+against the running instance and the `working` vs `main` git state. It found the two issues
+fixed in B23 below plus the docs/repo drift cleaned up in this pass. Full findings and the
+build plan live in the audit doc; the provider-layer redesign it called for has its own spec,
+`docs/PROVIDER_LAYER_SPEC.md`.
+
+## 2026-09-02 - B23: audit wave (security, deps, provider layer)
+
+- **Origin/Host request guard.** State-changing routes now reject any request whose `Origin`
+  is present and not the app's own, or whose `Host` isn't `127.0.0.1`/`localhost` - closes the
+  CSRF / DNS-rebinding gap the audit flagged (S1).
+- **In-process submit claim.** `submitNow()` and the 5-minute handoff sweep now share a claim
+  around `handoffOne`, plus a status re-read right before the network call, so a "Submit now"
+  click racing the sweep can't double-post the same item to Blotato (S2).
+- **Dependency upgrade, 0 vulnerabilities.** `fastify` 4 -> 5, `@fastify/static` 6 -> 10,
+  `@fastify/multipart` 8 -> 10. `npm audit` is clean. Full suite green: 328 (see `npm test`).
+- **Migration v11**: index on `metrics(post_id)` - every analytics rollup joins on it.
+- **Daily SQLite backup** of `postdeck.db` to
+  `~/Library/Application Support/PostDeck/backups/`, keeping the last 14. New
+  `POSTDECK_BACKUP_DIR` (override) and `POSTDECK_BACKUP_KEEP` (default 14) env vars.
+- **Provider layer**, per `docs/PROVIDER_LAYER_SPEC.md`: new `src/providers/` registry.
+  Grok added as an HTTP-only provider (`XAI_API_KEY`). The chat agent, profile generation,
+  inspiration, and vision paths now route through the registry instead of each keeping a
+  private CLI-calling copy, so the Settings AI-provider switch actually covers every AI call
+  site. New `GET /api/ai/providers`, `POST /api/draft/compare` accepts any provider set,
+  30 s server-side status cache (`?fresh=1` bypass), new `agent_provider` setting.
+- **Frontend**: providers now render from `/api/ai/providers` instead of a hardcoded list,
+  thumbnails load lazily, and `bootstrap()` fetches brands/accounts/platform-specs in
+  parallel instead of serially.
+- **`node src/seed.js` is now guarded.** It refuses to run against a database that already has
+  brands unless `--force` is passed, because the seed is an upsert that overwrites brand names,
+  `voice_doc_path`, tone `voice_rules` and the seeded PrimeWright profile fields. Added after
+  the audit session ran it against the live DB by mistake (2026-09-02 18:44 UTC): accounts,
+  posts, metrics, colors, logos, hard rules and settings were untouched; brand names /
+  voice-doc paths / tone voice_rules / PrimeWright profile drafts were reset to seed values.
+  If any of those had been hand-edited in Settings > Brands / Tones or Profiles, re-enter them.
+- **Repo**: GitHub `main` was 53 commits behind `working`; `working` is pushed and `main`
+  fast-forwarded to it.
+
+## 2026-08-12 - Home attention items can be dismissed
+
+- Added a close control to every Home `Needs attention` row and a `Dismiss all` action in the
+  panel header.
+- Dismissals persist in the browser across navigation, reloads, and app restarts.
+- Dismissal keys include the exact underlying condition, so a new failed post, another draft,
+  a changed handoff gap, or a changed metrics set appears again instead of being muted forever.
+- Closing an item does not open its linked post or page.
+- This ships P1 from `docs/FIX_WAVE_NOTIF_IMAGES_SPEC.md`. The P2 image-request review work remains
+  separate and unbuilt.
+
+## 2026-08-12 - B22: publishing workflow redesign
+
+CB's real PrimeWright posting session exposed that the app had the necessary endpoints but made
+the normal decision too hard to complete. The redesign consolidates the state-machine actions
+into a calmer review-first workflow. Suite **317 passing** (was 315).
+
+- Calendar and agenda posts open in a full-height right-side review drawer with the platform
+  preview, editable copy, timing, and delivery choice visible together.
+- One delivery control now drives one primary action: `Save draft`, `Schedule post`, `Add to
+  queue`, or `Post now`. Approval is part of scheduling instead of a competing button.
+- Added quick schedule presets for later today, tomorrow at 9 AM, and Friday at noon.
+- Quick Compose uses the same delivery language, exposes only the matching final action, and uses
+  account cards with connection state, selection checks, Select all, and Clear.
+- Full Composer replaces the internal `Save & approve` wording with `Schedule post` and requires a
+  date/time for that action. Saving without delivery remains an explicit draft.
+- Added a link-placement indicator and `Move link higher` helper. PrimeWright's documented default
+  is hook, link, then explanation.
+- Renamed the ambiguous `Send to Blotato now` control to `Send schedule to Blotato early`, clarified
+  that it does not publish immediately, and moved it under Advanced actions.
+- Generalized `Mark as posted manually` to connected platforms so a post published directly in
+  LinkedIn can be reconciled without calling Blotato or leaving a duplicate draft. The action
+  requires the live URL, confirms the post already exists, and records a `manual_publish` event.
+- Added an Analytics source notice: Blotato's web app now displays analytics, but no engagement
+  endpoint appears in its documented public API. CSV import remains the reliable bridge.
+- Browser QA ran against a temporary dry-run database with worker and sync disabled. Production
+  PostDeck data and social accounts were untouched.
+
+## 2026-08-10 - B21: draft variations, honest char counts, Post now
+
+Three defects found by CB writing a real post in Quick Compose. Spec:
+`docs/archive/B21_COMPOSER_FIXES_SPEC.md`. Suite **315 passing** (was 309).
+
+- **"Draft with AI" no longer eats the idea it was given.** The idea and the draft shared one
+  textarea, and the handler did `copyArea.value = draft`. So the first press destroyed the
+  idea, and every press after that fed the previous *draft* back in as the prompt: a rewrite
+  of a rewrite, drifting further each time, with no history and no undo. The seed now lives in
+  its own "Your idea" field which `Draft with AI` always reads from. If the seed is empty and
+  the operator typed straight into the big box (the old muscle memory), that text is **moved**
+  into the seed rather than consumed.
+- **Variant strip.** Every draft is appended, never substituted, and rendered as `v1 v2 v3…`
+  chips under the copy box; clicking one swaps it in, and hand-edits stay attached to the
+  version they were made on. Pressing the button again is now additive. Render-scoped only, no
+  migration: an unsaved variant is not an asset.
+- **Character counts stopped lying.** `mostRestrictiveLimit()` took `Math.min()` across every
+  selected platform and showed that single number, so a normal 1,100-character LinkedIn post
+  with X also selected reported as wildly over limit - that was X's 280, not LinkedIn's 3000.
+  One blended figure cannot be honest when one box feeds several platforms, so the counter now
+  renders **one chip per selected platform** (`Linkedin 1132/3000`, `Twitter 1132/280`), and
+  only the platforms actually over turn red. Verified against CB's exact case. The full
+  composer already scoped its count to the active tab and was left alone.
+  Worth recording: the old counter only toggled a CSS class. **Nothing anywhere blocked save
+  or approve on length.** It was misleading, never blocking.
+- **`POST /api/posts/:id/publish-now`** - posting immediately used to mean inventing a
+  `publish_at` you didn't want, approving, opening the post, then Send to Blotato now. Four
+  steps for the simplest intent. This is one server-side action on purpose: the client must not
+  sequence approve-then-submit and leave a post half-approved when the second call fails. Every
+  refusal (`not_found` / `wrong_status` / `assisted_manual` / `tiktok_fields_missing`) happens
+  **before anything is written**, so a rejected publish-now leaves the row exactly as found.
+  UTM is applied only on the draft crossing, so a re-publish never double-tags. Dry-run is
+  honored by the existing `submitNow`.
+- **`Post now` button** in Quick Compose, styled `destructive` rather than `primary` because it
+  is the one irreversible control in the modal and shouldn't look like a peer of Save draft. It
+  confirms first, names the target accounts, and **tells the truth about the mode** - the
+  dry-run confirm says nothing will publish, so nobody learns to click through a real warning
+  out of habit. If every target fails the modal stays open rather than closing over orphaned
+  drafts, matching the queue flow's rule.
+- New `test/publish-now.test.js` (6): happy path sets `publish_at` and submits, assisted-manual
+  refused with the row untouched, wrong status, the TikTok gate, unknown id, and UTM applied
+  exactly once.
+
+## 2026-08-02 - B20: bulk approve + draft-first detail page
+
+First session that loaded and approved a **whole week** of drafts at once (6 CHolmesIV posts,
+Aug 3-7). That exposed three things one-or-two-post sessions never did. Spec:
+`docs/archive/B20_BULK_APPROVE_SPEC.md`. Suite **309 passing** (was 300).
+
+- **Bulk approve** - new `POST /api/posts/approve-batch` taking `{post_ids}` and returning
+  `{approved, skipped, dry_run}`. It is N single approves, not a shortcut past the gate: each
+  post independently gets the `scheduled_local` promotion when it has a `publish_at`, the
+  TikTok required-fields check, and the approve-gate UTM pass. One bad post never blocks its
+  siblings - it comes back in `skipped` with a reason (`not_found`, `wrong_status`,
+  `tiktok_fields_missing`). Quiet hours stays a client-side soft confirm, matching the
+  single-post path, and the frontend runs it **once per batch** instead of N times.
+- **`applyApproveUtm()` extracted to `src/utm.js`** and called from both the PATCH handler and
+  the new batch route, so the two approve paths cannot drift. Behavior-preserving: the
+  existing `utm.test.js` + `server.approve-gate.test.js` pass untouched, and a new test asserts
+  bulk-approved and PATCH-approved posts come out byte-identical.
+- **Multi-select on the agenda** (Calendar -> Upcoming). Rows became
+  `div.agenda-row-wrap > [checkbox, button.agenda-row]` (a checkbox cannot live inside a
+  `<button>`); the row button keeps its popover behavior. Checkboxes appear only on
+  bulk-actionable posts (draft/approved/scheduled_local), with a spacer keeping published rows
+  aligned. Each day group and the unscheduled group gets a select-all with proper
+  indeterminate state. Selection is scoped to the render and cleared on reload, so a stale id
+  can never reach a bulk action.
+- **Sticky bulk action bar**: `N selected · Approve N · Reschedule N… · Trash N · Clear`.
+  Reschedule applies **one** timestamp to everything selected and says so - a spread is a
+  parking-lot item, not something to fake. Trash reuses the existing hard-delete endpoint, so
+  only draft/canceled can go.
+- **Approve from the calendar/agenda popover** (`openPostPopover`) when a post is a draft. This
+  was the actual friction: the only Approve button in the app lived on the full detail page,
+  so reviewing a week meant opening every post.
+- **Detail page is draft-first now.** `Edit` moved directly under the status actions. Metrics
+  is **not rendered at all** for a post that has never been handed off (asking for impressions
+  on a post that does not exist yet was pure scroll) and returns automatically once it
+  publishes; `failed_verify` counts as may-be-live and keeps its metrics. Status history
+  collapses into a `<details>` for unpublished posts.
+- Shared `approvePost()` / `confirmQuietHours()` helpers in `public/app.js` so the detail page,
+  the popover, and the bulk bar run one approve implementation.
+- Fixed in passing: `drawAgenda` early-returned when there were no scheduled days, which would
+  have skipped the bulk bar whenever only unscheduled drafts existed.
+- New `test/bulk-approve.test.js` (7): happy path, scheduled_local vs approved promotion,
+  mixed-status skipping, the TikTok gate, 400 on empty/malformed body, unknown ids, and
+  UTM parity with the single-post path.
+
 ## 2026-07-19 (night) - Composer v3, manual send controls, reliability + image pipeline
 
 Driven by CB's live testing (the composer verdict: "you don't want to use this to create
@@ -21,7 +187,7 @@ a post") and a real incident: scheduled posts silently never reached Blotato.
   into the full page.
 - **Incident: posts silently skipped.** CB's CHolmesIV LinkedIn account had `manual=1`
   (flipped mid-rework 7/18) - the worker deliberately never hands manual accounts to
-  Blotato and wrote NO error. Flag cleared; post handed off (submission <redacted-id>). Fix
+  Blotato and wrote NO error. Flag cleared; post handed off (submission b8abf2a9). Fix
   class shipped: **manual-account badges** ("won't auto-post") on chips/popover/review,
   and missed-window flagging.
 - **Send controls (CB: "I just don't have a button")**: per-post **"Send to Blotato now"**
@@ -53,7 +219,7 @@ a post") and a real incident: scheduled posts silently never reached Blotato.
 ## 2026-07-19 - B19 flow wave: preview, review mode, calendar popover/agenda, icons, shortcuts
 
 Eight features from CB's hands-on testing session + Blotato/Sprout inspiration. Spec:
-`docs/B19_FLOW_WAVE_SPEC.md`. Suite 257 -> 268.
+`docs/archive/B19_FLOW_WAVE_SPEC.md`. Suite 257 -> 268.
 
 - **Network post preview (F1)**: feed-card mockup per platform (avatar, brand, platform
   icon) with a visible "see more" fold line - LinkedIn ~210 chars, FB ~477, IG ~125,
@@ -116,8 +282,8 @@ Eight features from CB's hands-on testing session + Blotato/Sprout inspiration. 
 ## 2026-07-18 - D2 design consistency pass (Seeds-informed) shipped
 
 - Adopted Sprout Social's design-system discipline (their public "Seeds" system) while
-  keeping PostDeck's ink/gold identity. Spec: `docs/D2_CONSISTENCY_PASS_SPEC.md`; full
-  view-by-view audit that drove the work: `docs/D2_AUDIT.md`.
+  keeping PostDeck's ink/gold identity. Spec: `docs/archive/D2_CONSISTENCY_PASS_SPEC.md`; full
+  view-by-view audit that drove the work: `docs/archive/D2_AUDIT.md`.
 - **Component system**: one button system (sm 28px / md 36px / lg 44px x primary /
   secondary / ghost / destructive) with hover/active/focus-visible/disabled/pending states -
   collapsed 8 ad-hoc button heights onto 3; defined the dead `.btn-secondary` class; inputs/
@@ -191,7 +357,7 @@ Eight features from CB's hands-on testing session + Blotato/Sprout inspiration. 
 
 - Ran a competitive analysis of Hootsuite + Sprout Social (2025-2026 feature sets) against
   the current PostDeck inventory. Result spec'd as three waves in
-  `docs/B16_B18_COMPETITIVE_WAVE_SPEC.md`: **B16** queue slots (Sprout-style recurring
+  `docs/archive/B16_B18_COMPETITIVE_WAVE_SPEC.md`: **B16** queue slots (Sprout-style recurring
   time slots + "Add to queue") and a grouped left navigation rail; **B17** campaign/tag
   system + calendar gap-finding (per-day counts, empty-day treatment, brand coverage
   strip); **B18** best-time-to-post nudge in the composer, "Redraft the winner" from
@@ -233,10 +399,10 @@ first posts out (per CB: log the churn):
   in `Social Media/config/.env`, loaded by `src/env.js` (imported first in server.js). Key +
   live posting were fine all along. Do NOT create `postdeck/.env` (it shadows config/.env).
 - **listAccounts parse bug (my check, not shipped):** Blotato returns accounts under `items`,
-  not `data`. Resolved the real account map: FB `<redacted-id>`, LinkedIn `<redacted-id>`, Twitter `<redacted-id>`,
+  not `data`. Resolved the real account map: FB `41416`, LinkedIn `21735`, Twitter `18887`,
   with per-brand page subaccounts (see SOCIAL_STATUS.md).
-- **PrimeWright accounts wired:** LinkedIn #8 -> acct <redacted-id> / page <redacted-id>; Facebook #9 ->
-  acct <redacted-id> / page <redacted-id>; both manual=0 (worker-eligible).
+- **PrimeWright accounts wired:** LinkedIn #8 -> acct 21735 / page 142893330; Facebook #9 ->
+  acct 41416 / page 1223593834169963; both manual=0 (worker-eligible).
 - **Flipped `BLOTATO_DRY_RUN=0`** in config/.env -> posting is LIVE.
 - **Scheduling window gotcha:** the worker only hands a post to Blotato within 48h of its
   publish_at. Posts scheduled >48h out show NOTHING in Blotato's upcoming until then - which
@@ -492,9 +658,9 @@ Even after logging in, drafting failed. Root causes, all fixed:
 - Added `listSubaccounts(accountId)` helper in `src/blotato.js` so PostDeck can query the
   official pages/subaccounts surface instead of relying on guessed page mappings.
 - Live validation result:
-  - **Di-Hy X** submits successfully via connected account `<redacted-id>`.
+  - **Di-Hy X** submits successfully via connected account `18887`.
   - **Di-Hy LinkedIn** submits successfully when mapped as connected LinkedIn account
-    `<redacted-id>` plus company `pageId` `<redacted-id>`.
+    `21735` plus company `pageId` `72992521`.
   - **Di-Hy Facebook** still fails with `Page / subaccount not found`, which means the
     top-level Facebook connection is present but the Di-Hy business page is not yet exposed
     as a valid Blotato page/subaccount target.

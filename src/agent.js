@@ -23,7 +23,8 @@
 // chain (draft_copy -> create_draft_post -> create_image_request). Stops
 // when the model returns no actions, or after MAX_ROUNDS.
 
-import { execFile } from 'node:child_process';
+import { execFile as execFileLegacy } from 'node:child_process';
+import { runDraft } from './ai.js';
 import { getDb, nowIso } from './db.js';
 import { scrubText } from './scrub.js';
 import { recordUsage } from './usage.js';
@@ -58,9 +59,28 @@ function maxBudgetUsd() {
   return process.env.POSTDECK_DRAFT_BUDGET || '0.10';
 }
 
+/** Which provider drives the chat agent: agent_provider setting, falling
+ * back to draft_provider, then claude. */
+function agentProviderName(db) {
+  return getRawSetting(db, 'agent_provider') || getRawSetting(db, 'draft_provider') || 'claude';
+}
+
+/** Provider-agnostic: returns the model's raw text (already unwrapped from any
+ * CLI envelope by src/ai.js). Model/budget only apply to the claude CLI. */
+async function runAgentModel(db, prompt) {
+  const providerName = agentProviderName(db);
+  return runDraft(providerName, {
+    prompt,
+    model: providerName === 'claude' ? draftModel() : undefined,
+    budget: providerName === 'claude' ? maxBudgetUsd() : undefined,
+  });
+}
+
+// Legacy single-provider shell, kept only so the exported parser contract
+// (envelope in -> {reply,actions} out) stays testable. Not on the runtime path.
 function runClaudeCli(prompt) {
   return new Promise((resolve, reject) => {
-    const child = execFile(
+    const child = execFileLegacy(
       claudeBin(),
       [
         '-p',
@@ -126,9 +146,14 @@ function parseAgentOutput(stdout) {
     e.statusCode = 503;
     throw e;
   }
+  return parseAgentText(resultText);
+}
+
+/** Parse the model's raw text (any provider) into {reply, actions}. */
+function parseAgentText(resultText) {
   // Tolerant parse: strip fences anywhere, try direct, then extract the first
   // balanced {...} object out of any surrounding prose the model added.
-  let s = resultText.trim().replace(/```(?:json)?/gi, '').trim();
+  let s = String(resultText).trim().replace(/```(?:json)?/gi, '').trim();
   try {
     return JSON.parse(s);
   } catch {
@@ -758,20 +783,18 @@ async function runAgent(db = getDb(), { message, history = [], brand_id = null }
     round++;
     const prompt = buildAgentPrompt({ message, history, context, priorResults });
 
-    let stdout;
+    let resultText;
     try {
-      stdout = await runClaudeCli(prompt);
+      resultText = await runAgentModel(db, prompt);
     } catch (err) {
-      const wrapped = new Error(
-        `Agent unavailable: could not run claude CLI (${err.code === 'ENOENT' ? 'not found on PATH' : err.message})`
-      );
-      wrapped.statusCode = 503;
+      const wrapped = new Error(err.statusCode ? err.message : `Agent unavailable: ${err.message}`);
+      wrapped.statusCode = err.statusCode || 503;
       throw wrapped;
     }
 
     let parsed;
     try {
-      parsed = parseAgentOutput(stdout);
+      parsed = parseAgentText(resultText);
     } catch (err) {
       const wrapped = new Error(`Agent unavailable: ${err.message}`);
       wrapped.statusCode = 503;
@@ -798,4 +821,4 @@ async function runAgent(db = getDb(), { message, history = [], brand_id = null }
   return { reply, actions: actionsLog, history: nextHistory };
 }
 
-export { runAgent, buildAgentPrompt, parseAgentOutput, executeAction, TOOL_CATALOG };
+export { runAgent, buildAgentPrompt, parseAgentOutput, parseAgentText, executeAction, agentProviderName, TOOL_CATALOG };

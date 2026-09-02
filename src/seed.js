@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { getDb, nowIso } from './db.js';
+import { getDb, nowIso, DB_PATH } from './db.js';
 import { seedProfilesFromFile } from './profiles.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -144,7 +144,26 @@ export function seed() {
 }
 
 // CLI entry point
+// Audit 2026-09-02 guard: seeding is an upsert that overwrites brand names,
+// voice_doc_path, tone voice_rules and seeded profile fields. Running it by
+// accident against a populated live DB silently discards hand edits made in
+// Settings. Refuse unless the DB is empty, or --force is passed explicitly.
+function assertSafeToSeed() {
+  if (process.argv.includes('--force')) return;
+  const db = getDb();
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM brands').get();
+  if (n > 0) {
+    console.error(
+      `[seed] refusing: this database already has ${n} brand(s) (${DB_PATH}). ` +
+        'Seeding overwrites brand names, voice docs, tone voice_rules and seeded profiles. ' +
+        'Re-run with --force if that is what you want.'
+    );
+    process.exit(2);
+  }
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  assertSafeToSeed();
   try {
     const summary = seed();
     console.log('[seed] done:', summary);

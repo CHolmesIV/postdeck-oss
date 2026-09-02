@@ -1,4 +1,6 @@
 import './env.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // Blotato REST client (raw fetch, no MCP — see SPEC.md "Decision 2").
 //
@@ -147,16 +149,50 @@ async function request(pathName, { method = 'GET', body, headers = {} } = {}) {
 
 /**
  * Upload a media file to Blotato ahead of post creation.
- * BEST-GUESS shape: docs mention a "Presigned Upload" flow for local files but
- * the quickstart page didn't show the exact request body. We send the file
- * path as `filePath` — adjust once the full API reference is confirmed.
- * @param {string} filePath - absolute or media/-relative path to the asset.
+ * Blotato accepts a publicly accessible URL or base64-encoded image data in
+ * its required `url` field. Convert a local asset to a data URL so PostDeck's
+ * local media library can be used without a separate public file host.
+ * @param {string} filePathOrUrl - absolute local asset path or remote URL.
  * @returns {Promise<{id: string, url: string}>}
  */
-async function uploadMedia(filePath) {
+async function uploadMedia(filePathOrUrl) {
+  // Fail loudly BEFORE calling Blotato. Silently forwarding a bad value here is
+  // exactly what produced the historic "/v2/media 400: must have required
+  // property 'url'" failures (an undefined ref) and would let a nonexistent
+  // local path through as a literal `url` string that Blotato rejects.
+  if (typeof filePathOrUrl !== 'string' || filePathOrUrl.trim() === '') {
+    throw new BlotatoError('uploadMedia: missing media reference (empty path/url)', {
+      retryable: false,
+    });
+  }
+
+  const isRemoteOrData = /^(https?:|data:)/i.test(filePathOrUrl);
+  let url = filePathOrUrl;
+
+  if (!isRemoteOrData) {
+    // A local path — it MUST exist on disk, or we have nothing valid to send.
+    if (!fs.existsSync(filePathOrUrl)) {
+      throw new BlotatoError(
+        `uploadMedia: media file not found on disk: ${filePathOrUrl}`,
+        { retryable: false }
+      );
+    }
+    const ext = path.extname(filePathOrUrl).toLowerCase();
+    const mime = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.mp4': 'video/mp4',
+      '.mov': 'video/quicktime',
+    }[ext] || 'application/octet-stream';
+    url = `data:${mime};base64,${fs.readFileSync(filePathOrUrl).toString('base64')}`;
+  }
+
   return request('/v2/media', {
     method: 'POST',
-    body: { filePath },
+    body: { url },
   });
 }
 

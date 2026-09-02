@@ -10,6 +10,7 @@
 //     copy_assist.js and draft.js.
 
 import { execFile } from 'node:child_process';
+import { runDraft, visionProviderName } from './ai.js';
 
 // ---------- extractFromUrl (pure code, no model) ----------
 
@@ -212,21 +213,29 @@ function runClaudeCli(prompt) {
  */
 async function extractFromImage(imagePath) {
   const prompt = buildImageExtractPrompt(imagePath);
+  // First configured provider that can see images (claude today). The model
+  // must open the file itself, so allow exactly the Read tool.
+  const providerName = visionProviderName();
 
-  let stdout;
+  let resultText;
   try {
-    stdout = await runClaudeCli(prompt);
+    resultText = await runDraft(providerName, {
+      prompt,
+      model: providerName === 'claude' ? visionModel() : undefined,
+      budget: providerName === 'claude' ? maxBudgetUsd() : undefined,
+      tools: 'Read',
+      timeoutMs: 60_000,
+    });
   } catch (err) {
-    const wrapped = new Error(
-      `Image extraction unavailable: could not run claude CLI (${err.code === 'ENOENT' ? 'not found on PATH' : err.message})`
-    );
-    wrapped.statusCode = 503;
+    const wrapped = new Error(err.statusCode ? err.message.replace(/^AI drafting unavailable/, 'Image extraction unavailable') : `Image extraction unavailable: ${err.message}`);
+    wrapped.statusCode = err.statusCode || 503;
     throw wrapped;
   }
 
   let parsed;
   try {
-    parsed = parseImageExtractOutput(stdout);
+    const cleaned = String(resultText).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    parsed = JSON.parse(cleaned);
   } catch (err) {
     const wrapped = new Error(`Image extraction unavailable: ${err.message}`);
     wrapped.statusCode = 503;

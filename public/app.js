@@ -181,7 +181,7 @@ async function sendToBlotatoNow(postId, { onDone } = {}) {
 }
 // Shared button + sub-line, used by the popover/modal/review "send now" spot.
 function sendNowControl(post, { onDone, size = 'sm' } = {}) {
-  const btn = el('button', { class: `button secondary ${size}`, type: 'button' }, 'Send to Blotato now');
+  const btn = el('button', { class: `button secondary ${size}`, type: 'button' }, 'Send schedule to Blotato early');
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     await sendToBlotatoNow(post.id, { onDone });
@@ -189,7 +189,7 @@ function sendNowControl(post, { onDone, size = 'sm' } = {}) {
   });
   return el('div', { class: 'send-now-wrap' }, [
     btn,
-    el('div', { class: 'send-now-sub' }, 'hands off now - still publishes at the scheduled time'),
+    el('div', { class: 'send-now-sub' }, 'This does not publish now. It only hands the existing schedule to Blotato early.'),
   ]);
 }
 // Manual-account inline banner (item 4) - shown wherever a manual-account
@@ -378,6 +378,7 @@ const state = {
   accounts: [],
   tonesByBrand: {}, // not exposed via API yet directly; fetched per-need
   platformSpecs: {}, // config/platform-specs.json, via GET /api/platform-specs
+  providers: [], // GET /api/ai/providers - see aiProviders() below
 };
 
 // ---------------- B15: AI provider switcher (Claude / Codex) ----------------
@@ -385,24 +386,38 @@ const state = {
 // module var just remembers the last choice for the rest of the session so
 // switching brands/tabs in the composer doesn't reset it back to the setting.
 let sessionDraftProvider = null;
-const AI_PROVIDERS = [
-  { value: 'claude', label: 'Claude' },
-  { value: 'codex', label: 'Codex' },
+// Fallback used when GET /api/ai/providers fails or hasn't shipped yet.
+const AI_PROVIDERS_FALLBACK = [
+  { name: 'claude', label: 'Claude', kind: 'cli', configured: true },
+  { name: 'codex', label: 'Codex', kind: 'cli', configured: true },
 ];
+// state.providers (populated in bootstrap from GET /api/ai/providers) is the
+// source of truth for every provider-aware control below. aiProviders()
+// returns only the configured ones, shaped like the old {value,label} list
+// so existing call sites need minimal changes.
+function aiProviders() {
+  const list = (state.providers && state.providers.length) ? state.providers : AI_PROVIDERS_FALLBACK;
+  return list.filter((p) => p.configured).map((p) => ({ value: p.name, label: p.label, kind: p.kind, raw: p }));
+}
+function providerLabel(name) {
+  const found = aiProviders().find((p) => p.value === name);
+  return found ? found.label : name === 'codex' ? 'Codex' : 'Claude';
+}
 
-// Small segmented control - two buttons, one active. Shared by the
-// Draft-with-AI box and the copy-assist panel (they read the same
-// currentProvider closure var in renderComposer).
+// Small segmented control - one button per configured provider, one active.
+// Shared by the Draft-with-AI box and the copy-assist panel (they read the
+// same currentProvider closure var in renderComposer).
 function providerSwitch(initial, onChange) {
   const wrap = el('div', { class: 'provider-switch' });
   let value = initial;
-  const buttons = AI_PROVIDERS.map((p) =>
+  const providers = aiProviders();
+  const buttons = providers.map((p) =>
     el('button', {
       type: 'button',
       class: p.value === value ? 'active' : '',
       onclick: () => {
         value = p.value;
-        for (const [i, b] of buttons.entries()) b.classList.toggle('active', AI_PROVIDERS[i].value === value);
+        for (const [i, b] of buttons.entries()) b.classList.toggle('active', providers[i].value === value);
         onChange(value);
       },
     }, p.label)
@@ -433,6 +448,9 @@ function setStickyBrand(id) {
   localStorage.setItem(STICKY_BRAND_KEY, id || '');
 }
 
+// Convention: all dynamic content must go through el() / document.createTextNode -
+// never assign innerHTML with interpolated user- or AI-generated text. The only
+// sanctioned innerHTML template is platformIcon() over the static PLATFORM_ICON_PATHS map.
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -715,7 +733,7 @@ function renderPostPreview(platform, { copy = '', mediaUrl = null, brand = null 
 
   const header = el('div', { class: 'feed-preview-header' });
   if (brand && brand.logo_path) {
-    header.appendChild(el('img', { class: 'feed-preview-avatar', src: brand.logo_path, alt: `${brand.name || 'Brand'} logo` }));
+    header.appendChild(el('img', { class: 'feed-preview-avatar', src: brand.logo_path, alt: `${brand.name || 'Brand'} logo`, loading: 'lazy', decoding: 'async' }));
   } else {
     let initial = '?';
     if (brand && brand.name) initial = brand.name.trim().charAt(0).toUpperCase();
@@ -866,9 +884,16 @@ async function router() {
 window.addEventListener('hashchange', router);
 
 async function bootstrap() {
-  state.brands = await api('/api/brands');
-  state.accounts = await api('/api/accounts');
-  state.platformSpecs = await api('/api/platform-specs').catch(() => ({}));
+  const [brands, accounts, platformSpecs, providers] = await Promise.all([
+    api('/api/brands'),
+    api('/api/accounts'),
+    api('/api/platform-specs').catch(() => ({})),
+    api('/api/ai/providers').catch(() => AI_PROVIDERS_FALLBACK),
+  ]);
+  state.brands = brands;
+  state.accounts = accounts;
+  state.platformSpecs = platformSpecs;
+  state.providers = providers;
   if (!location.hash) location.hash = '#/home';
   router();
 }
@@ -906,17 +931,19 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
     // worker status is best-effort; don't block the calendar if it 404s
   }
 
-  const brandFilter = el('select', { id: 'cal-brand' }, [
+  // `.sm` -> compact (28px) height, matching the `.cal-nav-btn` controls they
+  // now share a toolbar line with (header consolidation pass).
+  const brandFilter = el('select', { id: 'cal-brand', class: 'sm' }, [
     el('option', { value: '' }, 'All brands'),
     ...state.brands.map((b) => el('option', { value: b.id, selected: String(b.id) === String(initialBrand) ? 'selected' : undefined }, b.name)),
   ]);
-  const platformFilter = el('select', { id: 'cal-platform' }, [
+  const platformFilter = el('select', { id: 'cal-platform', class: 'sm' }, [
     el('option', { value: '' }, 'All platforms'),
     ...['twitter', 'linkedin', 'facebook', 'instagram', 'tiktok', 'reddit', 'blog'].map((p) =>
       el('option', { value: p }, p)
     ),
   ]);
-  const viewToggle = el('select', { id: 'cal-view' }, [
+  const viewToggle = el('select', { id: 'cal-view', class: 'sm' }, [
     el('option', { value: 'week', selected: defaultMode === 'week' ? 'selected' : undefined }, 'Week'),
     el('option', { value: 'month', selected: defaultMode === 'month' ? 'selected' : undefined }, 'Month'),
     el('option', { value: 'upcoming', selected: defaultMode === 'upcoming' ? 'selected' : undefined }, 'Upcoming'),
@@ -924,7 +951,7 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
   // B17a: tag/campaign filter - populated from GET /api/tags, filtered
   // client-side against each post's tags[] (same pattern as brand/platform).
   await loadAllTags();
-  const tagFilter = el('select', { id: 'cal-tag' }, [
+  const tagFilter = el('select', { id: 'cal-tag', class: 'sm' }, [
     el('option', { value: '' }, 'All tags/campaigns'),
     ...allTagsCache.map((t) => el('option', { value: t.id }, `${t.kind === 'campaign' ? '🏷 ' : ''}${t.name}`)),
   ]);
@@ -982,19 +1009,20 @@ async function renderCalendarInto(view, { initialBrand = getStickyBrand(), defau
     }
   });
 
-  // L4: nav (view toggle + prev/today/next + period label) LEFT, refresh
-  // middle-right, filters (brand/platform/tag) RIGHTMOST.
-  const toolbar = el('div', { class: 'cal-toolbar' }, [
-    el('div', { class: 'cal-toolbar-group' }, [viewToggle, prevBtn, todayBtn, nextBtn, periodLabel]),
-    el('div', { class: 'cal-toolbar-group' }, [refreshBtn, bulkSendBtn]),
-    el('div', { class: 'cal-toolbar-group cal-toolbar-filters' }, [
-      el('span', {}, 'Brand:'), brandFilter,
-      el('span', {}, 'Platform:'), platformFilter,
-      el('span', {}, 'Tag:'), tagFilter,
-    ]),
+  // Header consolidation pass: title + view-mode + date-nav + refresh +
+  // Send-to-Blotato all on ONE compact toolbar line via `pageHeader`'s
+  // title-left/actions-right split (same primitive other views use for
+  // their header row) - replaces the old title row + separate 3-group
+  // `.cal-toolbar` row. Brand/Platform/Tag filters get their own slim line
+  // right below instead of sharing this one, so the grid starts higher.
+  view.appendChild(pageHeader('Calendar / Queue', viewToggle, prevBtn, todayBtn, nextBtn, periodLabel, refreshBtn, bulkSendBtn));
+
+  const filterBar = el('div', { class: 'cal-filter-bar' }, [
+    el('div', { class: 'cal-toolbar-group' }, [el('span', { class: 'cal-filter-label' }, 'Brand'), brandFilter]),
+    el('div', { class: 'cal-toolbar-group' }, [el('span', { class: 'cal-filter-label' }, 'Platform'), platformFilter]),
+    el('div', { class: 'cal-toolbar-group' }, [el('span', { class: 'cal-filter-label' }, 'Tag'), tagFilter]),
   ]);
-  view.appendChild(pageHeader('Calendar / Queue'));
-  view.appendChild(toolbar);
+  view.appendChild(filterBar);
 
   const coverageStrip = el('div', { class: 'cal-coverage-strip' });
   view.appendChild(coverageStrip);
@@ -1214,11 +1242,49 @@ function redistributeForm(getBrandId) {
   return container;
 }
 
-function attentionRow(label, href, kind = 'warn') {
-  return el('a', { class: `attention-row attention-${kind}`, href }, [
+const ATTENTION_DISMISSED_KEY = 'pd_attention_dismissed';
+
+function getDismissedAttention() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ATTENTION_DISMISSED_KEY) || '[]');
+    return new Set(Array.isArray(parsed) ? parsed.filter((key) => typeof key === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function dismissAttention(key) {
+  const dismissed = getDismissedAttention();
+  dismissed.add(key);
+  // Prevent this single-operator store from growing forever as conditions
+  // re-arm. The newest 200 exact states are more than enough history.
+  localStorage.setItem(ATTENTION_DISMISSED_KEY, JSON.stringify([...dismissed].slice(-200)));
+}
+
+function attentionStateKey(category, values) {
+  return `${category}:${values.map((value) => String(value ?? '')).sort().join('|')}`;
+}
+
+function attentionRow(label, href, kind, key, onDismiss) {
+  const row = el('div', { class: `attention-row attention-${kind}`, 'data-attention-key': key });
+  row.appendChild(el('a', { class: 'attention-row-link', href }, [
     el('span', { class: 'attention-dot' }),
     el('span', { class: 'attention-label' }, label),
-  ]);
+  ]));
+  row.appendChild(el('button', {
+    class: 'attention-dismiss',
+    type: 'button',
+    title: 'Dismiss this item',
+    'aria-label': `Dismiss: ${label}`,
+    onclick: (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissAttention(key);
+      row.remove();
+      if (typeof onDismiss === 'function') onDismiss();
+    },
+  }, '×'));
+  return row;
 }
 
 // Handoff-window guard mirrors the composer's own TikTok required-fields
@@ -1235,39 +1301,49 @@ function postMissingHandoffRequirements(p) {
   return reasons;
 }
 
+// Dense-Home redesign: fully no-ops (appends nothing at all) when there is
+// nothing to surface, instead of rendering an "all clear" card - the caller
+// (renderHome) relies on this to keep the section from taking any vertical
+// space at all when the queue is clean.
 function buildAttentionSection(container, posts, analyticsData, homeBrand, profiles = []) {
   container.innerHTML = '';
-  const card = el('div', { class: 'card home-section' });
-  card.appendChild(el('h2', {}, 'Needs attention'));
-  const list = el('div', { class: 'attention-list' });
-
   const rows = [];
+  const dismissed = getDismissedAttention();
+  const addRow = (label, href, kind, key) => {
+    if (dismissed.has(key)) return;
+    rows.push(attentionRow(label, href, kind, key, () => {
+      if (!container.querySelector('.attention-row')) container.innerHTML = '';
+    }));
+  };
 
   // B13: profiles marked stale (manual mark-stale, or a future auto-detect)
   // surface here so a business-fact change doesn't quietly go unnoticed.
   for (const p of (profiles || []).filter((p) => p.status === 'stale')) {
-    rows.push(
-      attentionRow(
-        `${brandName(p.brand_id)} ${humanizePlatformName(p.platform)} profile marked stale - review it`,
-        '#/profiles',
-        'warn'
-      )
+    addRow(
+      `${brandName(p.brand_id)} ${humanizePlatformName(p.platform)} profile marked stale - review it`,
+      '#/profiles',
+      'warn',
+      attentionStateKey('stale-profile', [p.id, p.updated_at || p.status])
     );
   }
 
   for (const p of posts.filter((p) => p.status === 'failed')) {
-    rows.push(
-      attentionRow(
-        `Failed - ${brandName(p.brand_id)} · ${p.platform}: ${(p.copy || '(no copy)').slice(0, 50)}`,
-        `#/post/${p.id}`,
-        'bad'
-      )
+    addRow(
+      `Failed - ${brandName(p.brand_id)} · ${p.platform}: ${(p.copy || '(no copy)').slice(0, 50)}`,
+      `#/post/${p.id}`,
+      'bad',
+      attentionStateKey('failed-post', [p.id, p.updated_at || p.error_message || 'failed'])
     );
   }
 
   const drafts = posts.filter((p) => p.status === 'draft');
   if (drafts.length) {
-    rows.push(attentionRow(`Review drafts (${drafts.length})`, '#/review', 'warn'));
+    addRow(
+      `Review drafts (${drafts.length})`,
+      '#/review',
+      'warn',
+      attentionStateKey('review-drafts', drafts.map((p) => p.id))
+    );
   }
 
   const now = Date.now();
@@ -1280,12 +1356,12 @@ function buildAttentionSection(container, posts, analyticsData, homeBrand, profi
     return postMissingHandoffRequirements(p).length > 0;
   });
   for (const p of handoffGaps) {
-    rows.push(
-      attentionRow(
-        `Due ${fmtDate(p.publish_at)} - ${brandName(p.brand_id)} · ${p.platform}: ${postMissingHandoffRequirements(p).join(', ')}`,
-        `#/post/${p.id}`,
-        'warn'
-      )
+    const reasons = postMissingHandoffRequirements(p);
+    addRow(
+      `Due ${fmtDate(p.publish_at)} - ${brandName(p.brand_id)} · ${p.platform}: ${reasons.join(', ')}`,
+      `#/post/${p.id}`,
+      'warn',
+      attentionStateKey('handoff-gap', [p.id, p.publish_at, ...reasons])
     );
   }
 
@@ -1293,14 +1369,29 @@ function buildAttentionSection(container, posts, analyticsData, homeBrand, profi
     (p) => !homeBrand || String(p.brand_id) === String(homeBrand)
   );
   if (metricsDue.length) {
-    rows.push(attentionRow(`${metricsDue.length} post(s) need metrics entered (48h+ since publish)`, '#/analytics', 'info'));
+    addRow(
+      `${metricsDue.length} post(s) need metrics entered (48h+ since publish)`,
+      '#/analytics',
+      'info',
+      attentionStateKey('metrics-due', metricsDue.map((p) => p.id))
+    );
   }
 
-  if (!rows.length) {
-    list.appendChild(emptyState('All clear - nothing needs attention right now.'));
-  } else {
-    rows.forEach((r) => list.appendChild(r));
-  }
+  if (!rows.length) return;
+
+  const card = el('div', { class: 'card home-panel home-panel-attention' });
+  const list = el('div', { class: 'attention-list' });
+  rows.forEach((r) => list.appendChild(r));
+  const dismissAll = el('button', {
+    class: 'button ghost sm attention-dismiss-all',
+    type: 'button',
+    onclick: () => {
+      rows.forEach((row) => dismissAttention(row.dataset.attentionKey));
+      container.innerHTML = '';
+      toast('Attention items dismissed. New or changed conditions will reappear.');
+    },
+  }, 'Dismiss all');
+  card.appendChild(el('div', { class: 'home-panel-head' }, [el('h2', {}, 'Needs attention'), dismissAll]));
   card.appendChild(list);
   container.appendChild(card);
 }
@@ -1336,16 +1427,28 @@ function weekChip(p, { allBrands = true } = {}) {
   return chip;
 }
 
+// Dense-Home redesign: shared panel header - a title + an optional trailing
+// link (e.g. "Open calendar ->") on the same line, so a panel's h2 doesn't
+// need its own bespoke layout per section.
+function homePanelHead(title, linkLabel, href) {
+  const kids = [el('h2', {}, title)];
+  if (linkLabel && href) kids.push(el('a', { href, class: 'home-panel-link' }, linkLabel));
+  return el('div', { class: 'home-panel-head' }, kids);
+}
+
 function buildWeekSection(container, posts, allBrands = true) {
   container.innerHTML = '';
-  const card = el('div', { class: 'card home-section' });
+  const card = el('div', { class: 'card home-panel' });
   const now = Date.now();
   const weekEnd = now + 7 * 24 * 3600 * 1000;
   const upcoming = posts
     .filter((p) => p.publish_at && new Date(p.publish_at).getTime() >= now && new Date(p.publish_at).getTime() <= weekEnd)
     .sort((a, b) => new Date(a.publish_at) - new Date(b.publish_at));
 
-  card.appendChild(el('h2', {}, `This week - ${upcoming.length} scheduled`));
+  // Biggest length reducer for Home: the full calendar used to be embedded
+  // below this strip. It's gone - this link is the only way back to it from
+  // Home now.
+  card.appendChild(homePanelHead(`This week - ${upcoming.length} scheduled`, 'Open calendar →', '#/calendar'));
   const strip = el('div', { class: 'week-strip' });
   if (!upcoming.length) {
     strip.appendChild(el('div', { class: 'week-strip-empty' }, 'Nothing scheduled in the next 7 days.'));
@@ -1358,7 +1461,7 @@ function buildWeekSection(container, posts, allBrands = true) {
 
 function buildPlatformChipsSection(container, posts, homeBrand) {
   container.innerHTML = '';
-  const card = el('div', { class: 'card home-section' });
+  const card = el('div', { class: 'card home-panel' });
   card.appendChild(el('h2', {}, 'Platform status'));
   const accounts = homeBrand ? state.accounts.filter((a) => String(a.brand_id) === String(homeBrand)) : state.accounts;
   const row = el('div', { class: 'platform-chips' });
@@ -1392,7 +1495,7 @@ const ANALYTICS_PERIODS = ['7d', '30d', '90d', 'all_time'];
 
 function buildMiniAnalyticsSection(container, analyticsData, homeBrand) {
   container.innerHTML = '';
-  const card = el('div', { class: 'card home-section' });
+  const card = el('div', { class: 'card home-panel' });
   card.appendChild(el('h2', {}, 'Analytics - last 30 days'));
 
   if (!analyticsData || !analyticsData.brands || !analyticsData.brands.length) {
@@ -1447,19 +1550,23 @@ function buildMiniAnalyticsSection(container, analyticsData, homeBrand) {
 }
 
 // ---- F6: brand setup completeness card ----
-// One collapsible row per brand, checks over existing endpoints only (no
-// backend changes): Blotato account connected, queue slots defined, link
-// tracking (neutral off/on - never a warning, it's optional), brand profile
-// current (no stale profiles + at least one exists), voice/tone set (a
-// per-brand tone profile with rules, OR the shared global voice). Each item
-// jumps to the relevant view/brand context. A brand at 100% collapses by
-// default (via makeCollapsible's per-key localStorage persistence) so a
-// fully-set-up roster doesn't clutter Home once it's done.
+// Dense-Home redesign: was one collapsible card per brand (~5 rows each,
+// ~25 rows total for a 5-brand roster). Now a single compact readiness
+// matrix - one row per brand, checks laid out as small dot/mark columns
+// under an abbreviated header row (~6 rows total regardless of roster
+// size). Same checks/data logic as before, just a denser presentation:
+// Blotato account connected, queue slots defined, link tracking (neutral
+// off/on - never a warning, it's optional), brand profile current (no
+// stale profiles + at least one exists), voice/tone set (a per-brand tone
+// profile with rules, OR the shared global voice). Each dot still jumps to
+// the relevant view/brand context.
+const SETUP_CHECK_LABELS = ['Blotato', 'Slots', 'Tracking', 'Profile', 'Voice'];
+
 async function buildSetupCard(container) {
   container.innerHTML = '';
-  const card = el('div', { class: 'card home-section' });
+  const card = el('div', { class: 'card home-panel' });
   card.appendChild(el('h2', {}, 'Setup'));
-  const body = el('div', { class: 'setup-card-body' });
+  const body = el('div', { class: 'setup-matrix-wrap' });
   body.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'Checking brand setup…'));
   card.appendChild(body);
   container.appendChild(card);
@@ -1491,30 +1598,31 @@ async function buildSetupCard(container) {
       const hasToneRules = (tones || []).some((t) => (t.voice_rules || '').trim().length > 0);
       const jumpToBrand = (hash) => { setStickyBrand(String(b.id)); location.hash = hash; };
 
+      // Order matches SETUP_CHECK_LABELS above - keep the two in sync.
       const checks = [
         {
-          label: 'Blotato account connected',
+          title: 'Blotato account connected',
           done: brandAccounts.length > 0,
           jump: () => jumpToBrand('#/composer'),
         },
         {
-          label: 'Queue slots defined',
+          title: 'Queue slots defined',
           done: (slots || []).length > 0,
           jump: () => jumpToBrand('#/settings'),
         },
         {
-          label: 'Link tracking',
+          title: 'Link tracking',
           neutral: true,
           state: b.utm_enabled ? 'on' : 'off',
           jump: () => jumpToBrand('#/settings'),
         },
         {
-          label: 'Brand profile current',
+          title: 'Brand profile current',
           done: brandProfiles.length > 0 && !brandProfiles.some((p) => p.status === 'stale'),
           jump: () => { location.hash = '#/profiles'; },
         },
         {
-          label: 'Voice/tone set',
+          title: 'Voice/tone set',
           done: hasToneRules || globalVoiceSet,
           jump: () => jumpToBrand('#/settings'),
         },
@@ -1525,31 +1633,41 @@ async function buildSetupCard(container) {
   );
 
   body.innerHTML = '';
+  const matrix = el('div', { class: 'setup-matrix' });
+
+  // Header row: blank brand-name cell, then one abbreviated label per check.
+  matrix.appendChild(el('div', { class: 'setup-matrix-head' }, 'Brand'));
+  SETUP_CHECK_LABELS.forEach((label) => matrix.appendChild(el('div', { class: 'setup-matrix-head' }, label)));
+
   for (const { brand, checks, complete } of perBrand) {
-    const rowCard = el('div', { class: 'card setup-brand-card' });
-    rowCard.appendChild(el('h2', {}, complete ? `${brand.name} ✓` : brand.name));
-    const list = el('div', { class: 'setup-check-list' });
+    matrix.appendChild(
+      el('div', { class: 'setup-brand-name', title: brand.name }, [
+        brand.name,
+        complete ? el('span', { class: 'setup-complete-check', title: 'Fully set up' }, '✓') : null,
+      ])
+    );
     for (const c of checks) {
-      const mark = c.neutral ? c.state : (c.done ? '✓' : '—');
-      list.appendChild(
-        el(
-          'button',
-          {
-            type: 'button',
-            class: 'setup-check-item' + (!c.neutral && !c.done ? ' setup-check-incomplete' : ''),
-            onclick: c.jump,
-          },
-          [
-            el('span', { class: 'setup-check-mark' }, mark),
-            el('span', { class: 'setup-check-label' }, c.label),
-          ]
-        )
+      let mark = '';
+      let cls = 'setup-dot';
+      let title = c.title;
+      if (c.neutral) {
+        const on = c.state === 'on';
+        cls += on ? ' neutral-on' : ' neutral-off';
+        mark = on ? '●' : '';
+        title += on ? ': on' : ': off';
+      } else {
+        cls += c.done ? ' done' : ' open';
+        mark = c.done ? '✓' : '';
+        title += c.done ? ': done' : ': missing - click to fix';
+      }
+      matrix.appendChild(
+        el('div', { class: 'setup-dot-cell' }, [
+          el('button', { type: 'button', class: cls, title, onclick: c.jump }, mark),
+        ])
       );
     }
-    rowCard.appendChild(list);
-    makeCollapsible(rowCard, { open: !complete, key: `setup_${brand.id}` });
-    body.appendChild(rowCard);
   }
+  body.appendChild(matrix);
 }
 
 async function renderHome(view) {
@@ -1578,16 +1696,20 @@ async function renderHome(view) {
   view.appendChild(homeQuickCreateBar(() => homeBrand, toggleRedistribute));
   view.appendChild(redistributeHost);
 
+  // Dense-Home redesign (bento grid): Needs Attention stays full-width above
+  // the grid (and renders nothing at all when clean - see
+  // buildAttentionSection). This Week / Platform Status / Analytics / Setup
+  // become `.home-panel` tiles inside a `.home-grid` that reflows 2-up on
+  // desktop, 1-up on narrow viewports. The full embedded calendar that used
+  // to live at the bottom of Home is gone - "Open calendar ->" in the This
+  // Week panel header is the replacement entry point (#/calendar).
   const attentionHost = el('div');
-  const setupHost = el('div');
   const weekHost = el('div');
   const platformHost = el('div');
   const analyticsHost = el('div');
-  const calendarCard = el('div', { class: 'home-section' });
-  calendarCard.appendChild(el('h2', { style: 'margin:8px 0 12px;' }, 'Calendar'));
-  const calendarHost = el('div');
-  calendarCard.appendChild(calendarHost);
-  view.append(attentionHost, setupHost, weekHost, platformHost, analyticsHost, calendarCard);
+  const setupHost = el('div');
+  const grid = el('div', { class: 'home-grid' }, [weekHost, platformHost, analyticsHost, setupHost]);
+  view.append(attentionHost, grid);
 
   async function refresh() {
     const [posts, analyticsData, profiles] = await Promise.all([
@@ -1601,7 +1723,6 @@ async function renderHome(view) {
     buildWeekSection(weekHost, filteredPosts, !homeBrand);
     buildPlatformChipsSection(platformHost, filteredPosts, homeBrand);
     buildMiniAnalyticsSection(analyticsHost, analyticsData, homeBrand);
-    await renderCalendarInto(calendarHost, { initialBrand: homeBrand, defaultMode: 'week' });
     buildSetupCard(setupHost); // F6: independent of the homeBrand filter (always all brands), fire-and-forget so it doesn't block first paint
   }
 
@@ -1859,19 +1980,17 @@ function drawGrid(grid, posts, mode, refDate, { allBrands = true } = {}) {
   function dayCellFor(d, { muted = false } = {}) {
     const key = dateKeyLocal(d);
     const dayPosts = byDay[key] || [];
-    const counts = dayPlatformCounts[key] || {};
     // Empty-day treatment only for real (non-adjacent-month) days at or after
     // today - past-empty and out-of-month cells are normal/already muted.
     const isEmpty = !muted && key >= todayKey && dayPosts.length === 0;
-    const countDots = mode === 'month' && Object.keys(counts).length
-      ? el('div', { class: 'cal-day-counts' }, Object.entries(counts).map(([plat, n]) =>
-          el('span', {
-            class: 'cal-count-dot',
-            style: `background:${platformDotColor(plat)}`,
-            title: `${plat}: ${n}`,
-          }, n > 1 ? String(n) : '')
-        ))
-      : '';
+    // chip-fix: month mode renders every post for the day as its own chip
+    // (dayCellFor doesn't cap the chip count), so this per-platform count-dot
+    // row was purely redundant - on a single-post day it was a lone floating
+    // dot duplicating that chip's own platform icon. Suppressed entirely in
+    // month mode rather than kept as an overflow summary, since there is no
+    // overflow to summarize. Left unused rather than deleted in case week
+    // mode (or a future chip cap) wants it back.
+    const countDots = '';
     const cell = el(
       'div',
       { class: 'cal-day' + (muted ? ' cal-muted' : '') + (key === todayKey ? ' cal-today' : '') + (isEmpty ? ' cal-day-empty' : '') },
@@ -1985,7 +2104,12 @@ function agendaDayLabel(key, todayKey) {
   return date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
 }
 
-function agendaRow(p, { allBrands = true } = {}) {
+// B20/P1: an agenda row is now a wrapper holding a selection checkbox next to
+// the clickable row. A checkbox cannot be nested inside a <button>, which is
+// why the row itself stays a button and the checkbox is its sibling.
+// `selection` is the Set owned by drawAgenda; when it is absent (any other
+// caller) the row renders exactly as it did before.
+function agendaRow(p, { allBrands = true, selection = null, onSelectionChange = null } = {}) {
   const time = p.publish_at
     ? new Date(p.publish_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
     : '--:--';
@@ -2003,7 +2127,30 @@ function agendaRow(p, { allBrands = true } = {}) {
     ]
   );
   row.addEventListener('click', () => openPostPopover(p.id, row, { onChange: () => { if (typeof currentCalendarReload === 'function') currentCalendarReload(); } }));
-  return row;
+
+  if (!selection) return row;
+
+  const wrap = el('div', { class: 'agenda-row-wrap' });
+  if (isBulkActionable(p)) {
+    const check = el('input', {
+      type: 'checkbox',
+      class: 'agenda-check',
+      title: 'Select for bulk action',
+      'aria-label': `Select post ${p.id}`,
+    });
+    check.checked = selection.has(p.id);
+    check.addEventListener('change', () => {
+      if (check.checked) selection.add(p.id);
+      else selection.delete(p.id);
+      if (onSelectionChange) onSelectionChange();
+    });
+    wrap.appendChild(check);
+  } else {
+    // keeps rows aligned when a published/submitted post can't be selected
+    wrap.appendChild(el('span', { class: 'agenda-check-spacer' }));
+  }
+  wrap.appendChild(row);
+  return wrap;
 }
 
 // Renders the agenda list (respects the calendar's existing brand/platform/tag
@@ -2013,17 +2160,77 @@ function drawAgenda(host, posts, { allBrands = true } = {}) {
   host.innerHTML = '';
   const { unscheduled, days, todayKey } = computeAgendaGroups(posts);
 
+  // B20/P1: selection is scoped to this render and dropped on every reload, so
+  // a stale id can never survive into a bulk action.
+  const selection = new Set();
+  const byId = new Map(posts.map((p) => [p.id, p]));
+  const groupCheckboxes = [];
+  let bulkBar = null;
+
+  function selectedPosts() {
+    return [...selection].map((id) => byId.get(id)).filter(Boolean);
+  }
+
+  function onSelectionChange() {
+    for (const { check, ids } of groupCheckboxes) {
+      const picked = ids.filter((id) => selection.has(id)).length;
+      check.checked = picked > 0 && picked === ids.length;
+      check.indeterminate = picked > 0 && picked < ids.length;
+    }
+    renderBulkBar();
+  }
+
+  function clearSelection() {
+    selection.clear();
+    host.querySelectorAll('input.agenda-check').forEach((c) => { c.checked = false; });
+    onSelectionChange();
+  }
+
+  function reload() {
+    if (typeof currentCalendarReload === 'function') currentCalendarReload();
+  }
+
+  // A group title row gets its own select-all box covering only the
+  // bulk-actionable posts in that group.
+  function groupSelectAll(groupPosts) {
+    const ids = groupPosts.filter(isBulkActionable).map((p) => p.id);
+    if (!ids.length) return null;
+    const check = el('input', {
+      type: 'checkbox',
+      class: 'agenda-check agenda-check-group',
+      title: 'Select all in this group',
+      'aria-label': 'Select all posts in this group',
+    });
+    check.addEventListener('click', (e) => e.stopPropagation()); // don't toggle the collapse
+    check.addEventListener('change', () => {
+      for (const id of ids) {
+        if (check.checked) selection.add(id);
+        else selection.delete(id);
+      }
+      host.querySelectorAll('input.agenda-check').forEach((c) => {
+        const lbl = c.getAttribute('aria-label') || '';
+        const m = lbl.match(/^Select post (\d+)$/);
+        if (m) c.checked = selection.has(Number(m[1]));
+      });
+      onSelectionChange();
+    });
+    groupCheckboxes.push({ check, ids });
+    return check;
+  }
+
+  const rowOpts = { allBrands, selection, onSelectionChange };
+
   if (unscheduled.length) {
     const caret = el('span', {}, '▸');
     const unschedTitle = el(
       'div',
       { class: 'agenda-group-title agenda-unscheduled', role: 'button', tabindex: '0' },
-      [caret, ` Unscheduled drafts (${unscheduled.length})`]
+      [groupSelectAll(unscheduled), caret, ` Unscheduled drafts (${unscheduled.length})`]
     );
     const unschedBody = el(
       'div',
       { class: 'agenda-group-body' },
-      unscheduled.map((p) => agendaRow(p, { allBrands }))
+      unscheduled.map((p) => agendaRow(p, rowOpts))
     );
     unschedBody.hidden = true; // collapsed by default per spec
     function toggle() {
@@ -2037,41 +2244,178 @@ function drawAgenda(host, posts, { allBrands = true } = {}) {
     host.appendChild(el('div', {}, [unschedTitle, unschedBody]));
   }
 
+  // Note: this no longer early-returns. The unscheduled group above can be
+  // non-empty while `days` is empty, and returning here would skip the bulk
+  // bar's definition path for exactly that case.
   if (!days.length) {
     host.appendChild(el('div', { class: 'agenda-empty' }, 'Nothing scheduled in the next 14 days.'));
-    return;
   }
 
   for (const day of days) {
     host.appendChild(
       el('div', {}, [
-        el('div', { class: 'agenda-group-title' }, agendaDayLabel(day.key, todayKey)),
-        el('div', { class: 'agenda-group-body' }, day.posts.map((p) => agendaRow(p, { allBrands }))),
+        el('div', { class: 'agenda-group-title' }, [
+          groupSelectAll(day.posts),
+          agendaDayLabel(day.key, todayKey),
+        ]),
+        el('div', { class: 'agenda-group-body' }, day.posts.map((p) => agendaRow(p, rowOpts))),
       ])
     );
+  }
+
+  // ---- the sticky bulk action bar ----
+  // Every action here is the plural of an existing single-post action: approve
+  // goes through /api/posts/approve-batch (N single approves server-side),
+  // reschedule and trash loop the same per-post endpoints the popover uses.
+  function renderBulkBar() {
+    if (bulkBar) { bulkBar.remove(); bulkBar = null; }
+    const n = selection.size;
+    if (!n) return;
+
+    const picked = selectedPosts();
+    const draftCount = picked.filter((p) => p.status === 'draft').length;
+
+    const bar = el('div', { class: 'agenda-bulk-bar' });
+    bar.appendChild(el('span', { class: 'agenda-bulk-count' }, `${n} selected`));
+
+    if (draftCount) {
+      bar.appendChild(
+        el('button', {
+          class: 'button primary sm',
+          type: 'button',
+          onclick: async () => {
+            const drafts = picked.filter((p) => p.status === 'draft');
+            const earliest = drafts
+              .map((p) => p.publish_at)
+              .filter(Boolean)
+              .sort()[0];
+            // one quiet-hours confirm for the batch, not N of them
+            if (!(await confirmQuietHours(earliest, { count: drafts.length }))) return;
+            try {
+              const res = await api('/api/posts/approve-batch', {
+                method: 'POST',
+                body: { post_ids: drafts.map((p) => p.id) },
+              });
+              const skipped = res.skipped || [];
+              let msg = `Approved ${res.approved.length}.`;
+              if (skipped.length) {
+                const reasons = [...new Set(skipped.map((s) => s.reason.replace(/_/g, ' ')))].join(', ');
+                msg += ` Skipped ${skipped.length} (${reasons}).`;
+              }
+              toast(msg, skipped.length ? 'warn' : 'ok');
+              clearSelection();
+              reload();
+            } catch (err) {
+              toast(`Could not approve: ${err.message}`, 'error');
+            }
+          },
+        }, `Approve ${draftCount}`)
+      );
+    }
+
+    // Reschedule: applies ONE timestamp to every selected post. Deliberately
+    // not a spread - a spread is a parking-lot item, and pretending this is
+    // one would silently stack posts at times CB didn't choose.
+    const rescheduleRow = el('div', { class: 'agenda-bulk-reschedule', hidden: true });
+    const dtInput = el('input', { type: 'datetime-local' });
+    const applyBtn = el('button', { class: 'button primary sm', type: 'button' }, 'Apply to all');
+    rescheduleRow.append(dtInput, applyBtn);
+    const reschedulable = picked.filter((p) => RESCHEDULABLE_STATUSES.includes(p.status));
+    if (reschedulable.length) {
+      bar.appendChild(
+        el('button', {
+          class: 'button ghost sm',
+          type: 'button',
+          onclick: () => { rescheduleRow.hidden = !rescheduleRow.hidden; },
+        }, `Reschedule ${reschedulable.length}…`)
+      );
+      applyBtn.onclick = async () => {
+        if (!dtInput.value) { toast('Pick a date and time first.', 'warn'); return; }
+        const publish_at = new Date(dtInput.value).toISOString();
+        let done = 0;
+        const failed = [];
+        for (const p of reschedulable) {
+          try {
+            await api(`/api/posts/${p.id}`, { method: 'PATCH', body: { publish_at } });
+            done += 1;
+          } catch {
+            failed.push(p.id);
+          }
+        }
+        toast(failed.length ? `Rescheduled ${done}, ${failed.length} failed.` : `Rescheduled ${done}.`,
+          failed.length ? 'warn' : 'ok');
+        clearSelection();
+        reload();
+      };
+    }
+
+    const trashable = picked.filter((p) => ['draft', 'canceled'].includes(p.status));
+    if (trashable.length) {
+      bar.appendChild(
+        el('button', {
+          class: 'button destructive sm',
+          type: 'button',
+          onclick: async () => {
+            if (!confirm(`Permanently delete ${trashable.length} post(s)? This cannot be undone.`)) return;
+            let done = 0;
+            const failed = [];
+            for (const p of trashable) {
+              try {
+                await api(`/api/posts/${p.id}`, { method: 'DELETE' });
+                done += 1;
+              } catch {
+                failed.push(p.id);
+              }
+            }
+            toast(failed.length ? `Deleted ${done}, ${failed.length} failed.` : `Deleted ${done}.`,
+              failed.length ? 'warn' : 'ok');
+            clearSelection();
+            reload();
+          },
+        }, `Trash ${trashable.length}`)
+      );
+    }
+
+    bar.appendChild(el('button', { class: 'button ghost sm', type: 'button', onclick: clearSelection }, 'Clear'));
+    bulkBar = el('div', {}, [bar, rescheduleRow]);
+    host.appendChild(bulkBar);
   }
 }
 
 function postChip(p, { allBrands = true } = {}) {
   const draggable = RESCHEDULABLE_STATUSES.includes(p.status);
-  // B17a: a post carrying a campaign tag gets its chip's left border colored
+  // B17a: a post carrying a campaign tag gets its chip's leading dot colored
   // by that campaign (falls back to the brand color otherwise), and tag
-  // names join the hover tooltip.
+  // names join the hover tooltip. (Was a border-left side-stripe; side-stripe
+  // accent borders are a banned pattern, so the color signal now lives on
+  // the small leading .chip-dot instead - see chip-fix.)
   const tags = p.tags || [];
   const campaignTag = tags.find((t) => t.kind === 'campaign');
-  const borderColor = campaignTag ? (campaignTag.color || brandColor(p.brand_id)) : brandColor(p.brand_id);
+  const dotColor = campaignTag ? (campaignTag.color || brandColor(p.brand_id)) : brandColor(p.brand_id);
   const tagNames = tags.map((t) => t.name).join(', ');
+  // The inline status pill used to be appended here too, but it didn't fit a
+  // narrow month cell and broke the single-line row (chip-fix). Status is
+  // still fully available via this hover title and the click popover below;
+  // on the calendar itself it now only shows as a struck-through / dashed /
+  // red-bordered chip for canceled / submitted_dry & failed_verify / failed
+  // (see the .chip[data-status=...] rules in styles.css).
   const chip = el(
     'a',
     {
       href: `#/post/${p.id}`,
       class: 'chip' + (campaignTag ? ' chip-campaign' : ''),
-      style: `border-left-color:${borderColor}`,
+      'data-status': p.status,
       title: `${brandName(p.brand_id)} - ${p.platform} - ${p.status}${draggable ? ' (drag to reschedule)' : ''}${tagNames ? ` - tags: ${tagNames}` : ''}`,
       draggable: draggable ? 'true' : 'false',
     },
-    (p.copy || '(no copy)').slice(0, 24)
+    []
   );
+  chip.appendChild(el('span', { class: 'chip-dot', style: `background:${dotColor}` }));
+  if (allBrands) chip.appendChild(brandIdentityDisc(p.brand_id));
+  chip.appendChild(platformIcon(p.platform, { size: 12 }));
+  chip.appendChild(el('span', { class: 'chip-text' }, (p.copy || '(no copy)').slice(0, 24)));
+  const warnGlyph = manualWarnGlyph(p);
+  if (warnGlyph) chip.appendChild(warnGlyph);
   if (draggable) {
     chip.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/plain', String(p.id));
@@ -2080,12 +2424,6 @@ function postChip(p, { allBrands = true } = {}) {
   } else {
     chip.addEventListener('dragstart', (e) => e.preventDefault());
   }
-  const badge = el('span', { class: `pill status-${p.status}`, style: 'margin-left:4px;font-size:9px;' }, p.status);
-  chip.appendChild(badge);
-  const warnGlyph = manualWarnGlyph(p);
-  if (warnGlyph) chip.appendChild(warnGlyph);
-  if (allBrands) chip.prepend(brandIdentityDisc(p.brand_id));
-  chip.prepend(platformIcon(p.platform, { size: 12 }));
   // F7a: quick-action popover instead of a full-page navigation (keep href
   // for middle-click / accessibility, but a plain click opens the pop-out).
   // "See more" inside the popover reaches the full quick-view modal.
@@ -2195,6 +2533,7 @@ function closePostPopover() {
 // overflow the viewport. Called once on open and again after the reschedule
 // row expands (its height changes the ideal position).
 function positionPostPopover(pop, anchorEl) {
+  if (pop.classList.contains('review-drawer')) return;
   const rect = anchorEl.getBoundingClientRect();
   const margin = 8;
   const pw = pop.offsetWidth;
@@ -2211,21 +2550,99 @@ function positionPostPopover(pop, anchorEl) {
   pop.style.top = `${top}px`;
 }
 
+function firstUrlInfo(copy) {
+  const match = String(copy || '').match(/https?:\/\/[^\s)\]}>,]+/i);
+  if (!match) return null;
+  const before = String(copy || '').slice(0, match.index);
+  const paragraph = before.split(/\n\s*\n|\n/).filter((line) => line.trim()).length + 1;
+  return { url: match[0], index: match.index, paragraph };
+}
+
+// PrimeWright and conversion-led posts use hook -> link -> explanation. This
+// helper moves the first URL-bearing line directly below the opening line
+// without rewriting any copy around it.
+function moveFirstLinkHigher(copy) {
+  const lines = String(copy || '').split('\n');
+  const linkIndex = lines.findIndex((line) => /https?:\/\//i.test(line));
+  const hookIndex = lines.findIndex((line) => line.trim());
+  if (linkIndex < 0 || hookIndex < 0 || linkIndex <= hookIndex + 1) return String(copy || '');
+  const [linkLine] = lines.splice(linkIndex, 1);
+  lines.splice(hookIndex + 1, 0, linkLine);
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function quickScheduleValue(kind) {
+  const d = new Date();
+  d.setSeconds(0, 0);
+  if (kind === 'later') d.setHours(Math.max(d.getHours() + 2, 15), 0, 0, 0);
+  if (kind === 'tomorrow') { d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); }
+  if (kind === 'friday') {
+    let delta = (5 - d.getDay() + 7) % 7;
+    if (delta === 0 && d.getHours() >= 12) delta = 7;
+    d.setDate(d.getDate() + delta);
+    d.setHours(12, 0, 0, 0);
+  }
+  return dateToLocalInputValue(d);
+}
+
+// ---- B20: the shared Approve action ----
+// The soft quiet-hours confirm (B6) is a warning, never a hard block, and it
+// now has three call sites: the detail page, the calendar/agenda popover, and
+// the agenda bulk bar. Kept here so they cannot drift apart.
+// Returns false only when the operator explicitly backs out.
+async function confirmQuietHours(publishAt, { count = 1 } = {}) {
+  if (!publishAt) return true;
+  try {
+    const check = await api(`/api/settings/quiet-hours-check?publish_at=${encodeURIComponent(publishAt)}`);
+    if (check.within_quiet_hours) {
+      const subject = count > 1 ? `The earliest of these ${count} posts is` : 'This post is';
+      return confirm(
+        `${subject} scheduled for ${fmtDate(publishAt)}, inside quiet hours (${check.quiet_start}-${check.quiet_end}). Approve anyway?`
+      );
+    }
+  } catch {
+    // quiet-hours check is best-effort; a failure never blocks Approve
+  }
+  return true;
+}
+
+// Approves one post. Returns true when it went through, false when the operator
+// declined the quiet-hours confirm. Throws on a real API failure.
+async function approvePost(post) {
+  if (!(await confirmQuietHours(post.publish_at))) return false;
+  await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { status: 'approved' } });
+  return true;
+}
+
+// Posts whose status still allows local action (approve/reschedule/trash) -
+// drives which agenda rows get a selection checkbox.
+const BULK_ACTIONABLE_STATUSES = ['draft', 'approved', 'scheduled_local'];
+function isBulkActionable(post) {
+  return BULK_ACTIONABLE_STATUSES.includes(post.status);
+}
+
+// A post that has been handed off has real metrics to enter; one that hasn't
+// does not. failed_verify counts as "may well be live", so its metrics stay
+// reachable (B20 / P3).
+function hasEverPublished(post) {
+  return ['submitted', 'published', 'failed_verify'].includes(post.status);
+}
+
 function openPostPopover(postId, anchorEl, { onChange } = {}) {
   closePostPopover();
 
-  const pop = el('div', { class: 'chip-popover', role: 'dialog' });
+  const scrim = el('div', { class: 'review-drawer-scrim' });
+  const pop = el('div', { class: 'chip-popover review-drawer', role: 'dialog', 'aria-label': 'Review post' });
+  scrim.appendChild(pop);
   pop.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;' }, 'Loading…'));
-  document.body.appendChild(pop);
+  document.body.appendChild(scrim);
   positionPostPopover(pop, anchorEl);
 
   function onKey(e) { if (e.key === 'Escape') closePostPopover(); }
-  function onOutside(e) { if (!pop.contains(e.target) && e.target !== anchorEl && !anchorEl.contains?.(e.target)) closePostPopover(); }
+  function onOutside(e) { if (e.target === scrim) closePostPopover(); }
   document.addEventListener('keydown', onKey);
-  // Defer registration so the same click that opened the popover (which is
-  // still bubbling) doesn't immediately close it via onOutside.
-  setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
-  currentPostPopover = { overlay: pop, onKey, onOutside };
+  scrim.addEventListener('mousedown', onOutside);
+  currentPostPopover = { overlay: scrim, onKey, onOutside };
 
   function refresh() {
     if (typeof onChange === 'function') onChange();
@@ -2236,25 +2653,26 @@ function openPostPopover(postId, anchorEl, { onChange } = {}) {
     .then((post) => {
       pop.innerHTML = '';
       const brand = state.brands.find((b) => b.id === post.brand_id);
-      const copyLines = (post.copy || '(no copy)').split('\n').slice(0, 3).join('\n');
+      const editable = RESCHEDULABLE_STATUSES.includes(post.status);
+      const mediaUrl = post.media && post.media.length ? (post.media[0].url || null) : null;
 
       pop.appendChild(
-        el('div', { class: 'chip-popover-header' }, [
-          platformIcon(post.platform, { size: 15 }),
-          el('span', { class: 'chip-popover-platform' }, ` ${post.platform}`),
+        el('div', { class: 'review-drawer-header' }, [
+          el('div', {}, [
+            el('div', { class: 'review-drawer-eyebrow' }, 'Review post'),
+            el('div', { class: 'review-drawer-title' }, [platformIcon(post.platform, { size: 17 }), ` ${brand ? brand.name : brandName(post.brand_id)}`]),
+          ]),
           el('button', { class: 'button ghost sm modal-close', type: 'button', title: 'Close', onclick: closePostPopover }, '✕'),
         ])
       );
       pop.appendChild(
-        el('div', { class: 'chip-popover-meta' }, [
-          el('span', { class: 'pill', style: `border-left-color:${brandColor(post.brand_id)}` }, brand ? brand.name : brandName(post.brand_id)),
+        el('div', { class: 'review-drawer-meta' }, [
+          el('span', { class: 'account-summary' }, [platformIcon(post.platform, { size: 14 }), ` ${humanizePlatformName(post.platform)}`]),
           el('span', { class: `pill status-${post.status}` }, post.status),
+          post.publish_at ? el('span', { class: 'review-drawer-date' }, fmtDate(post.publish_at)) : null,
         ])
       );
-      pop.appendChild(el('div', { class: 'chip-popover-date' }, fmtDate(post.publish_at)));
-      pop.appendChild(el('div', { class: 'chip-popover-copy' }, copyLines));
 
-      // item 4: manual-account / missed-window banners
       if (isMissedWindowPost(post)) {
         pop.appendChild(missedWindowBanner(post, { onResolved: () => { closePostPopover(); refresh(); } }));
       } else if (['scheduled_local', 'approved'].includes(post.status) && isManualPost(post)) {
@@ -2263,37 +2681,129 @@ function openPostPopover(postId, anchorEl, { onChange } = {}) {
       const fcReminder = firstCommentReminder(post);
       if (fcReminder) pop.appendChild(fcReminder);
 
-      const actions = el('div', { class: 'chip-popover-actions' });
+      const previewHost = el('div', { class: 'review-drawer-preview' });
+      const copyArea = el('textarea', { rows: '8', class: 'review-drawer-copy', readonly: editable ? null : 'readonly' });
+      copyArea.value = post.copy || '';
+      if (editable) autosizeTextarea(copyArea);
+      const linkInsight = el('div', { class: 'link-placement-insight' });
+      const linkMoveBtn = el('button', { class: 'button ghost sm', type: 'button' }, 'Move link higher');
+      function renderPreviewAndInsight() {
+        previewHost.innerHTML = '';
+        previewHost.appendChild(renderPostPreview(post.platform, { copy: copyArea.value, mediaUrl, brand }));
+        linkInsight.innerHTML = '';
+        const info = firstUrlInfo(copyArea.value);
+        if (!info) {
+          linkInsight.appendChild(el('span', {}, 'No link in this post.'));
+          linkMoveBtn.hidden = true;
+        } else {
+          const high = info.paragraph <= 2;
+          linkInsight.appendChild(el('span', { class: high ? 'link-position-good' : 'link-position-warn' }, high ? 'Link is high in the post.' : `Link is in paragraph ${info.paragraph}. PrimeWright links should sit directly below the hook.`));
+          linkMoveBtn.hidden = !editable || high;
+        }
+      }
+      copyArea.addEventListener('input', renderPreviewAndInsight);
+      linkMoveBtn.onclick = () => {
+        copyArea.value = moveFirstLinkHigher(copyArea.value);
+        autosizeTextarea(copyArea);
+        renderPreviewAndInsight();
+      };
+      pop.append(
+        el('section', { class: 'review-drawer-section' }, [el('div', { class: 'review-drawer-label' }, 'Preview'), previewHost]),
+        el('section', { class: 'review-drawer-section' }, [
+          el('div', { class: 'review-drawer-label-row' }, [el('div', { class: 'review-drawer-label' }, 'Post text'), linkMoveBtn]),
+          copyArea,
+          linkInsight,
+        ])
+      );
+      renderPreviewAndInsight();
 
-      // item 1: Send to Blotato now
-      if (canSendToBlotatoNow(post)) {
-        actions.appendChild(sendNowControl(post, { onDone: () => { closePostPopover(); refresh(); } }));
+      if (!editable) {
+        if (post.public_url) pop.appendChild(el('a', { href: post.public_url, target: '_blank', class: 'button secondary md' }, 'View published post'));
+        return;
       }
 
-      // Reschedule - hidden for submitted/published (mirrors RESCHEDULABLE_STATUSES).
-      if (RESCHEDULABLE_STATUSES.includes(post.status)) {
-        const rescheduleRow = el('div', { class: 'chip-popover-reschedule', hidden: true });
-        const dtInput = el('input', { type: 'datetime-local', value: isoToLocalInput(post.publish_at) });
-        const saveBtn = el('button', { class: 'button primary sm', type: 'button' }, 'Save');
-        rescheduleRow.append(dtInput, saveBtn);
-        const rescheduleBtn = el('button', {
-          class: 'button ghost sm',
-          type: 'button',
-          onclick: () => { rescheduleRow.hidden = !rescheduleRow.hidden; positionPostPopover(pop, anchorEl); },
-        }, 'Reschedule');
-        saveBtn.onclick = async () => {
-          try {
-            const publish_at = dtInput.value ? new Date(dtInput.value).toISOString() : null;
-            await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { publish_at } });
-            toast('Post rescheduled.');
-            closePostPopover();
-            refresh();
-          } catch (err) {
-            toast(`Could not reschedule: ${err.message}`, 'error');
+      let delivery = post.status === 'draft' ? 'draft' : 'schedule';
+      const deliveryChoices = el('div', { class: 'delivery-choice-grid' });
+      const schedulePanel = el('div', { class: 'delivery-schedule-panel' });
+      const dtInput = el('input', { type: 'datetime-local', value: isoToLocalInput(post.publish_at) });
+      const schedulePresets = el('div', { class: 'schedule-preset-row' });
+      [['later', 'Later today'], ['tomorrow', 'Tomorrow 9 AM'], ['friday', 'Friday noon']].forEach(([value, label]) => {
+        schedulePresets.appendChild(el('button', { class: 'chip-btn', type: 'button', onclick: () => { dtInput.value = quickScheduleValue(value); } }, label));
+      });
+      schedulePanel.append(dtInput, schedulePresets);
+      const primaryBtn = el('button', { class: 'button primary md review-drawer-primary', type: 'button' }, 'Save draft');
+      const actionMsg = el('div');
+      const deliveryDefs = [
+        ['draft', 'Keep draft', 'Save it for review. Nothing sends.'],
+        ['schedule', 'Schedule', 'Approve it for the selected time.'],
+        ['queue', 'Add to queue', 'Use the next open brand slot.'],
+        ['now', 'Post now', 'Publish immediately after confirmation.'],
+      ];
+      function renderDelivery() {
+        deliveryChoices.innerHTML = '';
+        deliveryDefs.forEach(([value, title, note]) => {
+          deliveryChoices.appendChild(el('button', {
+            class: `delivery-choice${delivery === value ? ' active' : ''}`,
+            type: 'button',
+            onclick: () => { delivery = value; renderDelivery(); },
+          }, [el('strong', {}, title), el('span', {}, note)]));
+        });
+        schedulePanel.hidden = delivery !== 'schedule';
+        primaryBtn.textContent = delivery === 'draft' ? 'Save draft' : delivery === 'schedule' ? 'Schedule post' : delivery === 'queue' ? 'Add to queue' : 'Post now';
+        primaryBtn.className = `button ${delivery === 'now' ? 'destructive' : 'primary'} md review-drawer-primary`;
+      }
+      renderDelivery();
+
+      primaryBtn.onclick = async () => {
+        actionMsg.innerHTML = '';
+        primaryBtn.disabled = true;
+        try {
+          if (delivery === 'draft') {
+            await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { copy: copyArea.value, status: 'draft', publish_at: null } });
+            toast('Draft saved.');
+          } else if (delivery === 'schedule') {
+            if (!dtInput.value) throw new Error('Choose a date and time first.');
+            const publish_at = new Date(dtInput.value).toISOString();
+            if (!(await confirmQuietHours(publish_at))) return;
+            await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { copy: copyArea.value, publish_at, status: 'approved' } });
+            toast('Post scheduled.');
+          } else if (delivery === 'queue') {
+            await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { copy: copyArea.value } });
+            const queued = await api(`/api/posts/${post.id}/queue`, { method: 'POST', body: {} });
+            toast(`Queued for ${fmtDate(queued.publish_at)}.`);
+          } else {
+            let dryMode = false;
+            try { dryMode = !!(await api('/api/worker/status')).dryRun; } catch { dryMode = false; }
+            const question = dryMode
+              ? `Post to ${humanizePlatformName(post.platform)} now?\n\nDRY RUN is on, so nothing will publish.`
+              : `Post to ${humanizePlatformName(post.platform)} RIGHT NOW?\n\nThis is immediate, and Blotato cannot delete it after sending.`;
+            if (!confirm(question)) return;
+            await api(`/api/posts/${post.id}`, { method: 'PATCH', body: { copy: copyArea.value } });
+            const result = await api(`/api/posts/${post.id}/publish-now`, { method: 'POST', body: {} });
+            toast(result.dry_run ? 'Post now completed in dry run.' : 'Post sent live.');
           }
-        };
-        actions.append(rescheduleBtn, rescheduleRow);
-      }
+          closePostPopover();
+          refresh();
+        } catch (err) {
+          actionMsg.appendChild(inlineBanner(err.message, 'error'));
+        } finally {
+          primaryBtn.disabled = false;
+        }
+      };
+
+      pop.appendChild(el('section', { class: 'review-drawer-section delivery-section' }, [
+        el('div', { class: 'review-drawer-label' }, 'What should happen?'),
+        deliveryChoices,
+        schedulePanel,
+        actionMsg,
+        primaryBtn,
+      ]));
+
+      const advanced = el('details', { class: 'review-drawer-advanced' });
+      advanced.appendChild(el('summary', {}, 'Advanced actions'));
+      const actions = el('div', { class: 'review-drawer-advanced-actions' });
+
+      if (canSendToBlotatoNow(post)) actions.appendChild(sendNowControl(post, { onDone: () => { closePostPopover(); refresh(); } }));
 
       // Move to drafts - only for approved/scheduled_local.
       if (['approved', 'scheduled_local'].includes(post.status)) {
@@ -2314,6 +2824,20 @@ function openPostPopover(postId, anchorEl, { onChange } = {}) {
           }, 'Move to drafts')
         );
       }
+
+      const manualUrl = el('input', { type: 'url', placeholder: 'Paste the live post URL' });
+      const markManualBtn = el('button', { class: 'button secondary sm', type: 'button' }, 'Mark as posted manually');
+      markManualBtn.onclick = async () => {
+        if (!manualUrl.value.trim()) { toast('Paste the live post URL first.', 'error'); return; }
+        if (!confirm('Confirm this post already exists on the social platform. PostDeck will mark it published without sending anything to Blotato.')) return;
+        try {
+          await api(`/api/posts/${post.id}/mark-posted`, { method: 'POST', body: { public_url: manualUrl.value.trim() } });
+          toast('Marked as published.');
+          closePostPopover();
+          refresh();
+        } catch (err) { toast(`Could not mark published: ${err.message}`, 'error'); }
+      };
+      actions.appendChild(el('div', { class: 'manual-reconcile-row' }, [manualUrl, markManualBtn]));
 
       // Delete (draft/canceled, hard delete) or Cancel post (scheduled/approved).
       if (['draft', 'canceled'].includes(post.status)) {
@@ -2382,15 +2906,9 @@ function openPostPopover(postId, anchorEl, { onChange } = {}) {
       );
       actions.appendChild(copyToBrandRow);
 
-      actions.appendChild(
-        el('button', {
-          class: 'button ghost sm',
-          type: 'button',
-          onclick: () => { closePostPopover(); openPostModal(post.id); },
-        }, 'See more')
-      );
-
-      pop.appendChild(actions);
+      actions.appendChild(el('button', { class: 'button ghost sm', type: 'button', onclick: () => { closePostPopover(); location.hash = `#/post/${post.id}`; } }, 'Open full details'));
+      advanced.appendChild(actions);
+      pop.appendChild(advanced);
       positionPostPopover(pop, anchorEl);
     })
     .catch((err) => {
@@ -2797,7 +3315,10 @@ function openQuickCompose(prefill = {}) {
   }
 
   const brandChipRow = el('div', { class: 'chip-row' });
-  const accountChipRow = el('div', { class: 'chip-row' });
+  const accountChipRow = el('div', { class: 'account-choice-grid' });
+  const selectAllAccountsBtn = el('button', { class: 'button ghost sm', type: 'button' }, 'Select all');
+  const clearAccountsBtn = el('button', { class: 'button ghost sm', type: 'button' }, 'Clear');
+  const accountSelectTools = el('div', { class: 'field-label-actions' }, [selectAllAccountsBtn, clearAccountsBtn]);
   const charCountEl = el('div', { class: 'char-count' });
   const foldCountEl = el('div', { class: 'fold-count' });
   const previewToggleBtn = el('button', { class: 'button ghost sm', type: 'button' }, 'Preview');
@@ -2813,7 +3334,49 @@ function openQuickCompose(prefill = {}) {
   const draftBtn = el('button', { class: 'button primary sm', type: 'button' }, 'Draft with AI');
   const copyArea = el('textarea', { rows: '6', placeholder: "What's the post about…", id: 'qc-copy-area' });
   autosizeTextarea(copyArea);
-  copyArea.addEventListener('input', updateCharCount);
+
+  // ---- B21/P1: the seed idea lives in its own field ----
+  // Before this, the idea and the draft shared one textarea, so the first
+  // "Draft with AI" press destroyed the idea and every press after that fed
+  // the previous DRAFT back in as the prompt - a copy of a copy, drifting
+  // further each time, with no way back to the original thought.
+  const seedInput = el('textarea', {
+    rows: '2',
+    class: 'qc-seed',
+    placeholder: 'Your idea, in your words. Draft with AI always rewrites from this.',
+  });
+  autosizeTextarea(seedInput);
+  const variantRow = el('div', { class: 'qc-variant-row' });
+  const variants = [];        // every draft this session, oldest first
+  let activeVariant = -1;     // index into variants, -1 = hand-written copy
+
+  function renderVariants() {
+    variantRow.innerHTML = '';
+    if (variants.length < 2) return; // a single draft is not a choice
+    variantRow.appendChild(el('span', { class: 'qc-variant-label' }, 'Versions'));
+    variants.forEach((_, i) => {
+      variantRow.appendChild(
+        el('button', {
+          type: 'button',
+          class: 'chip-btn sm' + (i === activeVariant ? ' active-tag' : ''),
+          title: `Switch to version ${i + 1}`,
+          onclick: () => {
+            activeVariant = i;
+            copyArea.value = variants[i];
+            renderVariants();
+            updateCharCount();
+          },
+        }, `v${i + 1}`)
+      );
+    });
+  }
+
+  copyArea.addEventListener('input', () => {
+    // keep hand-edits attached to the version they were made on, so switching
+    // away and back does not silently throw typing away
+    if (activeVariant >= 0) variants[activeVariant] = copyArea.value;
+    updateCharCount();
+  });
 
   const imageSelect = el('select', { class: 'sm' }, [el('option', { value: '' }, '(no image)')]);
   const imageReqBtn = el('button', { class: 'button secondary sm', type: 'button' }, 'Request image (Codex)');
@@ -2841,9 +3404,35 @@ function openQuickCompose(prefill = {}) {
   ]);
 
   const saveBtn = el('button', { class: 'button primary md', type: 'button' }, 'Save draft');
-  const saveApproveBtn = el('button', { class: 'button secondary md', type: 'button' }, 'Save & approve');
+  const saveApproveBtn = el('button', { class: 'button primary md', type: 'button' }, 'Schedule post');
+  // B21/P3: styled destructive, not primary. It is the one irreversible control
+  // in this modal and should not sit next to Save draft looking like a peer.
+  const postNowBtn = el('button', { class: 'button destructive md', type: 'button' }, 'Post now');
   const openFullBtn = el('button', { class: 'button ghost md', type: 'button' }, 'Open full composer →');
   const actionMsg = el('div');
+  let deliveryMode = prefill.publishAt ? 'schedule' : 'draft';
+  const deliveryChoiceRow = el('div', { class: 'qc-delivery-grid' });
+
+  function renderQuickDelivery() {
+    deliveryChoiceRow.innerHTML = '';
+    [
+      ['draft', 'Draft', 'Save for review'],
+      ['schedule', 'Schedule', 'Choose a date'],
+      ['queue', 'Queue', 'Next open slot'],
+      ['now', 'Post now', 'Publish immediately'],
+    ].forEach(([value, title, note]) => {
+      deliveryChoiceRow.appendChild(el('button', {
+        class: `delivery-choice${deliveryMode === value ? ' active' : ''}`,
+        type: 'button',
+        onclick: () => { deliveryMode = value; renderQuickDelivery(); },
+      }, [el('strong', {}, title), el('span', {}, note)]));
+    });
+    scheduleControls.hidden = deliveryMode !== 'schedule';
+    saveBtn.hidden = deliveryMode !== 'draft';
+    saveApproveBtn.hidden = deliveryMode !== 'schedule';
+    queueBtn.hidden = deliveryMode !== 'queue';
+    postNowBtn.hidden = deliveryMode !== 'now';
+  }
 
   function currentAccounts() {
     return state.accounts.filter((a) => String(a.brand_id) === String(brandId));
@@ -2852,6 +3441,13 @@ function openQuickCompose(prefill = {}) {
     const accounts = currentAccounts();
     return [...selectedAccounts].map((id) => accounts.find((a) => a.id === id)?.platform).filter(Boolean);
   }
+  // B21/P2: this used to be Math.min() across every selected platform and was
+  // the single number shown to the operator - so writing a normal 1,100-char
+  // LinkedIn post with X also selected reported it as wildly over limit. That
+  // number was X's 280, not LinkedIn's 3000. One blended figure cannot be
+  // honest when one box feeds several platforms, so the counter now shows one
+  // chip per platform instead (see updateCharCount). Kept for the callers that
+  // genuinely want the tightest constraint.
   function mostRestrictiveLimit() {
     const limits = selectedPlatforms().map((p) => textLimitFor(p)).filter((n) => n != null);
     return limits.length ? Math.min(...limits) : null;
@@ -2870,11 +3466,31 @@ function openQuickCompose(prefill = {}) {
     return best;
   }
   function updateCharCount() {
-    const limit = mostRestrictiveLimit();
-    if (limit == null) { charCountEl.textContent = ''; charCountEl.classList.remove('over'); }
-    else {
-      charCountEl.textContent = `${copyArea.value.length} / ${limit}`;
-      charCountEl.classList.toggle('over', copyArea.value.length > limit);
+    // B21/P2: one chip per selected platform, each naming itself, so an
+    // over-limit warning always says WHICH platform is over.
+    const len = copyArea.value.length;
+    const platforms = [...new Set(selectedPlatforms())];
+    charCountEl.innerHTML = '';
+    charCountEl.classList.remove('over');
+    const counted = platforms
+      .map((p) => ({ platform: p, limit: textLimitFor(p) }))
+      .filter((x) => x.limit != null);
+    if (!counted.length) {
+      charCountEl.textContent = platforms.length ? `${len} chars` : '';
+    } else if (counted.length === 1) {
+      charCountEl.textContent = `${len} / ${counted[0].limit}`;
+      charCountEl.classList.toggle('over', len > counted[0].limit);
+    } else {
+      for (const { platform, limit } of counted) {
+        const over = len > limit;
+        if (over) charCountEl.classList.add('over');
+        charCountEl.appendChild(
+          el('span', {
+            class: 'qc-count-chip' + (over ? ' over' : ''),
+            title: `${humanizePlatformName(platform)} allows ${limit} characters`,
+          }, `${humanizePlatformName(platform)} ${len}/${limit}`)
+        );
+      }
     }
     const best = mostRestrictiveFoldPlatform();
     foldCountEl.className = 'fold-count';
@@ -2956,7 +3572,8 @@ function openQuickCompose(prefill = {}) {
       accountChipRow.appendChild(
         el('button', {
           type: 'button',
-          class: 'chip-btn' + (active ? ' active-tag' : ''),
+          class: 'account-choice' + (active ? ' active' : ''),
+          'aria-pressed': active ? 'true' : 'false',
           onclick: () => {
             if (active) selectedAccounts.delete(a.id);
             else selectedAccounts.add(a.id);
@@ -2964,10 +3581,30 @@ function openQuickCompose(prefill = {}) {
             updateCharCount();
             updateBestTime();
           },
-        }, [platformIcon(a.platform, { size: 13 }), ` ${a.platform}${manual ? ' (manual)' : ''}`])
+        }, [
+          el('span', { class: 'account-choice-icon' }, platformIcon(a.platform, { size: 15 })),
+          el('span', { class: 'account-choice-copy' }, [
+            el('strong', {}, humanizePlatformName(a.platform)),
+            el('span', {}, manual ? 'Manual posting' : 'Connected to Blotato'),
+          ]),
+          el('span', { class: 'account-choice-check', 'aria-hidden': 'true' }, active ? '✓' : ''),
+        ])
       );
     }
   }
+
+  selectAllAccountsBtn.onclick = () => {
+    selectedAccounts = new Set(currentAccounts().map((a) => a.id));
+    renderAccountChips();
+    updateCharCount();
+    updateBestTime();
+  };
+  clearAccountsBtn.onclick = () => {
+    selectedAccounts.clear();
+    renderAccountChips();
+    updateCharCount();
+    updateBestTime();
+  };
 
   async function renderMedia() {
     imageSelect.innerHTML = '';
@@ -3004,10 +3641,17 @@ function openQuickCompose(prefill = {}) {
       aiMsg.appendChild(inlineBanner('Pick at least one account first.', 'error'));
       return;
     }
-    const ideaText = copyArea.value.trim() || 'Write an engaging post';
+    // B21/P1: always rewrite from the SEED, never from the last draft. If the
+    // seed is empty (operator typed straight into the big box, which is the
+    // old muscle memory), adopt that text as the seed once instead of eating it.
+    if (!seedInput.value.trim() && copyArea.value.trim()) {
+      seedInput.value = copyArea.value.trim();
+      autosizeTextarea(seedInput);
+    }
+    const ideaText = seedInput.value.trim() || 'Write an engaging post';
     draftBtn.disabled = true;
     draftBtn.classList.add('is-pending');
-    draftBtn.textContent = 'Drafting…';
+    draftBtn.textContent = variants.length ? 'Drafting another…' : 'Drafting…';
     try {
       const tp = await findToneProfileId(brandId, toneSelect.value).catch(() => null);
       const result = await api('/api/draft', {
@@ -3016,9 +3660,20 @@ function openQuickCompose(prefill = {}) {
       });
       const draft = result.drafts?.[platforms[0]];
       if (draft) {
+        // Append as a new version rather than overwriting the last one, so
+        // pressing the button again is additive and nothing is ever lost.
+        variants.push(draft);
+        activeVariant = variants.length - 1;
         copyArea.value = draft;
+        autosizeTextarea(copyArea);
+        renderVariants();
         updateCharCount();
-        aiMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft applied - edit freely, or open the full composer for per-platform variants.'));
+        aiMsg.appendChild(
+          el('div', { class: 'msg-banner msg-ok' },
+            variants.length > 1
+              ? `Version ${variants.length} added - click v1…v${variants.length} to compare, or press again for another.`
+              : 'Draft applied - edit freely, or press again for a second version.')
+        );
       } else {
         aiMsg.appendChild(inlineBanner('No draft returned.', 'error'));
       }
@@ -3105,6 +3760,7 @@ function openQuickCompose(prefill = {}) {
   saveApproveBtn.addEventListener('click', async () => {
     actionMsg.innerHTML = '';
     if (!selectedAccounts.size) { actionMsg.appendChild(inlineBanner('Pick at least one account first.', 'error')); return; }
+    if (!publishAtInput.value) { actionMsg.appendChild(inlineBanner('Choose a date and time first.', 'error')); return; }
     saveApproveBtn.disabled = true;
     saveApproveBtn.classList.add('is-pending');
     try {
@@ -3113,7 +3769,7 @@ function openQuickCompose(prefill = {}) {
         await api(`/api/posts/${row.id}`, { method: 'PATCH', body: { status: 'approved' } });
       }
       const ideaUsed = await markIdeaUsedIfNeeded();
-      toast(ideaUsed ? 'Saved and approved. Idea used.' : 'Saved and approved.');
+      toast(ideaUsed ? 'Post scheduled. Idea used.' : 'Post scheduled.');
       close({ force: true });
       if (typeof currentCalendarReload === 'function') currentCalendarReload();
     } catch (err) {
@@ -3121,6 +3777,72 @@ function openQuickCompose(prefill = {}) {
     } finally {
       saveApproveBtn.disabled = false;
       saveApproveBtn.classList.remove('is-pending');
+    }
+  });
+
+  // ---- B21/P3: Post now ----
+  // Publishing immediately used to mean inventing a publish_at, approving,
+  // opening the post, then Send to Blotato now. This does it in one action:
+  // save the copy on screen, then hand each created post to publish-now, which
+  // approves + timestamps + submits server-side.
+  postNowBtn.addEventListener('click', async () => {
+    actionMsg.innerHTML = '';
+    if (!selectedAccounts.size) { actionMsg.appendChild(inlineBanner('Pick at least one account first.', 'error')); return; }
+    if (!copyArea.value.trim()) { actionMsg.appendChild(inlineBanner('Nothing to post - the copy is empty.', 'error')); return; }
+
+    const accounts = currentAccounts();
+    const names = [...selectedAccounts]
+      .map((id) => accounts.find((a) => a.id === id))
+      .filter(Boolean)
+      .map((a) => humanizePlatformName(a.platform))
+      .join(', ');
+    // The confirm tells the truth about which mode we are in, so nobody learns
+    // to click through a real warning out of habit during dry-run testing.
+    let dryMode = false;
+    try {
+      dryMode = !!(await api('/api/worker/status')).dryRun;
+    } catch {
+      dryMode = false; // unknown - assume live and warn accordingly
+    }
+    const question = dryMode
+      ? `Post to ${names} now?\n\nDRY RUN is on, so nothing will actually be published.`
+      : `Post to ${names} RIGHT NOW, for real?\n\nThis publishes immediately, and Blotato cannot delete a post once it is sent.`;
+    if (!confirm(question)) return;
+
+    postNowBtn.disabled = true;
+    postNowBtn.classList.add('is-pending');
+    try {
+      const created = await createPosts(null);
+      const failures = [];
+      let sawDryRun = false;
+      for (const row of created) {
+        try {
+          const res = await api(`/api/posts/${row.id}/publish-now`, { method: 'POST', body: {} });
+          if (res.dry_run) sawDryRun = true;
+        } catch (err) {
+          failures.push(`${row.platform}: ${err.message}`);
+        }
+      }
+      if (created.length && failures.length === created.length) {
+        // Nothing went out. Keep the modal open so the saved drafts aren't
+        // orphaned out of sight - same rule the queue flow follows.
+        actionMsg.appendChild(
+          inlineBanner(`Could not post: ${failures.join(' · ')}. The post(s) were saved as drafts.`, 'error')
+        );
+        return;
+      }
+      const sent = created.length - failures.length;
+      let msg = sawDryRun ? `Posted ${sent} (dry run - nothing went live).` : `Posted ${sent} live.`;
+      if (failures.length) msg += ` ${failures.length} failed and stayed drafts.`;
+      await markIdeaUsedIfNeeded();
+      toast(msg, failures.length ? 'warn' : 'ok');
+      close({ force: true });
+      if (typeof currentCalendarReload === 'function') currentCalendarReload();
+    } catch (err) {
+      actionMsg.appendChild(inlineBanner(`Could not post: ${err.message}`, 'error'));
+    } finally {
+      postNowBtn.disabled = false;
+      postNowBtn.classList.remove('is-pending');
     }
   });
 
@@ -3184,9 +3906,26 @@ function openQuickCompose(prefill = {}) {
     location.hash = '#/composer';
   });
 
+  const scheduleControls = el('div', { class: 'qc-schedule-controls' }, [
+    el('div', { class: 'qc-inline-controls' }, [publishAtInput]),
+    el('div', { class: 'schedule-preset-row' }, [
+      el('button', { class: 'chip-btn', type: 'button', onclick: () => { publishAtInput.value = quickScheduleValue('later'); } }, 'Later today'),
+      el('button', { class: 'chip-btn', type: 'button', onclick: () => { publishAtInput.value = quickScheduleValue('tomorrow'); } }, 'Tomorrow 9 AM'),
+      el('button', { class: 'chip-btn', type: 'button', onclick: () => { publishAtInput.value = quickScheduleValue('friday'); } }, 'Friday noon'),
+    ]),
+    bestTimeHost,
+  ]);
+
   card.append(
     el('div', { class: 'field-row', style: 'margin-top:10px;' }, [el('label', {}, 'Brand'), brandChipRow]),
-    el('div', { class: 'field-row', style: 'margin-top:8px;' }, [el('label', {}, 'Post to'), accountChipRow]),
+    el('div', { class: 'field-row', style: 'margin-top:8px;' }, [
+      el('div', { class: 'field-label-row' }, [el('label', {}, 'Post to'), accountSelectTools]),
+      accountChipRow,
+    ]),
+    el('div', { class: 'field-row', style: 'margin-top:10px;' }, [
+      el('label', {}, 'Your idea'),
+      seedInput,
+    ]),
     el('div', { class: 'qc-copy-row', style: 'margin-top:10px;' }, [
       el('div', { class: 'toolbar qc-copy-toolbar' }, [
         el('label', {}, 'Tone'),
@@ -3197,6 +3936,7 @@ function openQuickCompose(prefill = {}) {
       ]),
       foldCountEl,
       copyArea,
+      variantRow,
       previewHost,
       aiMsg,
     ]),
@@ -3209,15 +3949,15 @@ function openQuickCompose(prefill = {}) {
       ]),
     ]),
     imageStatus,
-    el('div', { class: 'field-row', style: 'margin-top:8px;' }, [
-      el('label', {}, 'Publish at'),
-      el('div', { class: 'qc-inline-controls' }, [publishAtInput, queueBtn]),
+    el('div', { class: 'field-row qc-delivery-section', style: 'margin-top:12px;' }, [
+      el('label', {}, 'What should happen?'),
+      deliveryChoiceRow,
+      scheduleControls,
     ]),
-    bestTimeHost,
     firstCommentRow,
     scheduleMsg,
     actionMsg,
-    el('div', { class: 'toolbar qc-action-bar' }, [openFullBtn, saveApproveBtn, saveBtn])
+    el('div', { class: 'toolbar qc-action-bar' }, [openFullBtn, postNowBtn, queueBtn, saveApproveBtn, saveBtn])
   );
 
   if (prefill.copy) copyArea.value = prefill.copy;
@@ -3226,6 +3966,7 @@ function openQuickCompose(prefill = {}) {
   renderAccountChips();
   renderMedia();
   updateCharCount();
+  renderQuickDelivery();
   updateBestTime();
 
   document.addEventListener('keydown', onKey);
@@ -3675,20 +4416,14 @@ async function renderPostDetail(view, params) {
         type: 'button',
         onclick: async () => {
           // Soft quiet-hours warning (B6) - confirm, never a hard block.
-          if (post.publish_at) {
-            try {
-              const check = await api(`/api/settings/quiet-hours-check?publish_at=${encodeURIComponent(post.publish_at)}`);
-              if (check.within_quiet_hours) {
-                const proceed = confirm(
-                  `This post is scheduled for ${fmtDate(post.publish_at)}, inside quiet hours (${check.quiet_start}-${check.quiet_end}). Approve anyway?`
-                );
-                if (!proceed) return;
-              }
-            } catch {
-              // quiet-hours check is best-effort; don't block Approve if it fails
-            }
+          // B20: shared with the popover + bulk bar via approvePost().
+          try {
+            if (!(await approvePost(post))) return;
+            toast('Post updated.');
+            router();
+          } catch (err) {
+            toast(`Could not update: ${err.message}`, 'error');
           }
-          transition(post.id, 'approved');
         },
       }, 'Approve')
     );
@@ -3725,54 +4460,69 @@ async function renderPostDetail(view, params) {
     }
   }
 
-  // metrics
-  view.appendChild(el('h2', {}, 'Metrics'));
-  const metricsTable = el('div', {}, (post.metrics || []).map((m) =>
-    el('div', { class: 'card' }, `${m.captured_at}: impressions ${m.impressions ?? '-'}, comments ${m.comments ?? '-'}, shares ${m.shares ?? '-'}, saves ${m.saves ?? '-'}, follows ${m.follows ?? '-'}, dms ${m.dms ?? '-'}, leads ${m.leads ?? '-'}`)
-  ));
-  view.appendChild(metricsTable);
+  // ---- B20/P3: Metrics + Status history render BELOW Edit, not above it ----
+  // Deferred into a function so Edit (the thing you actually want on a draft)
+  // sits directly under the status actions. Metrics is skipped entirely for a
+  // post that has never been handed off: asking for impressions on a post that
+  // does not exist yet was pure scroll, and it comes back automatically once
+  // the post publishes. Status history collapses in the same case.
+  function appendMetricsAndHistory() {
+    if (hasEverPublished(post)) {
+      view.appendChild(el('h2', {}, 'Metrics'));
+      const metricsTable = el('div', {}, (post.metrics || []).map((m) =>
+        el('div', { class: 'card' }, `${m.captured_at}: impressions ${m.impressions ?? '-'}, comments ${m.comments ?? '-'}, shares ${m.shares ?? '-'}, saves ${m.saves ?? '-'}, follows ${m.follows ?? '-'}, dms ${m.dms ?? '-'}, leads ${m.leads ?? '-'}`)
+      ));
+      view.appendChild(metricsTable);
 
-  const form = el('div', { class: 'card' });
-  const fields = ['impressions', 'comments', 'shares', 'saves', 'profile_visits', 'follows', 'dms', 'leads'];
-  const inputs = {};
-  const fieldGrid = el('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;' });
-  for (const f of fields) {
-    const input = el('input', { type: 'number', placeholder: f });
-    inputs[f] = input;
-    fieldGrid.appendChild(el('div', { class: 'field-row' }, [el('label', {}, f), input]));
-  }
-  form.appendChild(fieldGrid);
-  const notes = el('textarea', { placeholder: 'notes', rows: '2' });
-  form.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'notes'), notes]));
-  form.appendChild(
-    el('button', {
-      class: 'button primary md',
-      type: 'button',
-      onclick: async () => {
-        const body = { notes: notes.value };
-        for (const f of fields) {
-          const v = inputs[f].value;
-          if (v !== '') body[f] = Number(v);
-        }
-        try {
-          await api(`/api/posts/${post.id}/metrics`, { method: 'POST', body });
-          toast('Metrics saved.');
-          router();
-        } catch (err) {
-          toast(`Could not save metrics: ${err.message}`, 'error');
-        }
-      },
-    }, 'Save metrics')
-  );
-  view.appendChild(form);
+      const form = el('div', { class: 'card' });
+      const fields = ['impressions', 'comments', 'shares', 'saves', 'profile_visits', 'follows', 'dms', 'leads'];
+      const inputs = {};
+      const fieldGrid = el('div', { style: 'display:grid;grid-template-columns:repeat(4,1fr);gap:8px;' });
+      for (const f of fields) {
+        const input = el('input', { type: 'number', placeholder: f });
+        inputs[f] = input;
+        fieldGrid.appendChild(el('div', { class: 'field-row' }, [el('label', {}, f), input]));
+      }
+      form.appendChild(fieldGrid);
+      const notes = el('textarea', { placeholder: 'notes', rows: '2' });
+      form.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'notes'), notes]));
+      form.appendChild(
+        el('button', {
+          class: 'button primary md',
+          type: 'button',
+          onclick: async () => {
+            const body = { notes: notes.value };
+            for (const f of fields) {
+              const v = inputs[f].value;
+              if (v !== '') body[f] = Number(v);
+            }
+            try {
+              await api(`/api/posts/${post.id}/metrics`, { method: 'POST', body });
+              toast('Metrics saved.');
+              router();
+            } catch (err) {
+              toast(`Could not save metrics: ${err.message}`, 'error');
+            }
+          },
+        }, 'Save metrics')
+      );
+      view.appendChild(form);
+    }
 
-  view.appendChild(el('h2', {}, 'Status history'));
-  view.appendChild(
-    el('ul', { class: 'history-list' }, [
+    const historyList = el('ul', { class: 'history-list' }, [
       el('li', {}, `Created: ${post.created_at}`),
       el('li', {}, `Last updated: ${post.updated_at} - current status: ${post.status}`),
-    ])
-  );
+    ]);
+    if (hasEverPublished(post)) {
+      view.appendChild(el('h2', {}, 'Status history'));
+      view.appendChild(historyList);
+    } else {
+      const details = el('details', { class: 'history-details' });
+      details.appendChild(el('summary', {}, 'Status history'));
+      details.appendChild(historyList);
+      view.appendChild(details);
+    }
+  }
 
   // ---- Edit (B6): copy + platform_fields (TikTok flags / blog title-slug-hero) ----
   // Only while the post hasn't been handed off to Blotato yet - matches the
@@ -3823,6 +4573,8 @@ async function renderPostDetail(view, params) {
     );
     view.appendChild(editCard);
   }
+
+  appendMetricsAndHistory();
 }
 
 // ---------------- Ideas board ----------------
@@ -3949,7 +4701,7 @@ async function renderLibrary(view) {
     const isImage = /\.(png|jpe?g|gif|webp)$/i.test(f.filename);
     grid.appendChild(
       el('div', { class: 'media-card' }, [
-        isImage ? el('img', { src: f.url, alt: f.filename }) : el('div', { style: 'height:100px;display:flex;align-items:center;justify-content:center;color:var(--muted);' }, 'file'),
+        isImage ? el('img', { src: f.url, alt: f.filename, loading: 'lazy', decoding: 'async' }) : el('div', { style: 'height:100px;display:flex;align-items:center;justify-content:center;color:var(--muted);' }, 'file'),
         el('div', { class: 'meta' }, f.filename),
       ])
     );
@@ -4521,7 +5273,7 @@ async function renderComposer(view) {
         const altBox = altTextEditor(attachedImage);
         const altBtn = el('button', { class: 'cv3-media-alt-btn', type: 'button', title: 'Edit alt text', onclick: () => { altBox.hidden = !altBox.hidden; } }, 'alt');
         const tile = el('div', { class: 'cv3-media-tile' }, [
-          el('img', { src: attachedImage.url }),
+          el('img', { src: attachedImage.url, loading: 'lazy', decoding: 'async' }),
           altBtn,
           el('button', { class: 'cv3-media-x', type: 'button', title: 'Remove image', onclick: () => { attachedImage = null; renderMediaStrip(); refreshActiveEditor(); } }, '✕'),
         ]);
@@ -4545,13 +5297,13 @@ async function renderComposer(view) {
         if (pendingImageRequest.chosen_path) {
           const chosen = variants.find((v) => v.path === pendingImageRequest.chosen_path) || {};
           const tile = el('div', { class: 'cv3-media-tile' }, [
-            el('img', { src: chosen.url || pendingImageRequest.chosen_path }),
+            el('img', { src: chosen.url || pendingImageRequest.chosen_path, loading: 'lazy', decoding: 'async' }),
             el('button', { class: 'cv3-media-x', type: 'button', title: 'Remove', onclick: () => { pendingImageRequest = null; renderMediaStrip(); } }, '✕'),
           ]);
           mediaStrip.appendChild(tile);
         } else if (variants.length) {
           for (const v of variants) {
-            const tile = el('div', { class: 'cv3-media-tile', title: 'Click to use this variant' }, [el('img', { src: v.url || v.path })]);
+            const tile = el('div', { class: 'cv3-media-tile', title: 'Click to use this variant' }, [el('img', { src: v.url || v.path, loading: 'lazy', decoding: 'async' })]);
             tile.style.cursor = 'pointer';
             tile.addEventListener('click', async () => {
               try {
@@ -4919,9 +5671,10 @@ async function renderComposer(view) {
       col.appendChild(el('h3', {}, label));
       if (!side || side.error) {
         const errText = side?.error || 'unavailable';
-        const friendly = providerValue === 'codex'
-          ? `Codex unavailable - sign into the Codex CLI (codex login). (${errText})`
-          : `Claude unavailable - sign into the Claude CLI (claude /login). (${errText})`;
+        const found = aiProviders().find((p) => p.value === providerValue);
+        const friendly = found && found.kind === 'http'
+          ? `${label} unavailable - check the API key is configured. (${errText})`
+          : `${label} unavailable - sign into the ${label} CLI. (${errText})`;
         col.appendChild(el('div', { class: 'msg-banner msg-error compare-col-error' }, friendly));
         return col;
       }
@@ -4963,7 +5716,8 @@ async function renderComposer(view) {
           aiMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, 'Pick at least one account and type an idea in Default first.'));
           return;
         }
-        compareHost.appendChild(el('div', { class: 'msg-banner', style: 'color:var(--muted);' }, 'Running Claude and Codex - this can take a moment…'));
+        const providers = aiProviders();
+        compareHost.appendChild(el('div', { class: 'msg-banner', style: 'color:var(--muted);' }, `Running ${providers.map((p) => p.label).join(', ')} - this can take a moment…`));
         try {
           const tp = await findToneProfileId(brandId, toneSelect.value);
           const cmp = await api('/api/draft/compare', {
@@ -4972,7 +5726,7 @@ async function renderComposer(view) {
           });
           compareHost.innerHTML = '';
           const grid = el('div', { class: 'compare-grid' });
-          for (const p of AI_PROVIDERS) grid.appendChild(compareColumn(p.label, p.value, cmp?.[p.value]));
+          for (const p of providers) grid.appendChild(compareColumn(p.label, p.value, cmp?.[p.value]));
           compareHost.appendChild(grid);
         } catch (err) {
           compareHost.innerHTML = '';
@@ -4988,14 +5742,15 @@ async function renderComposer(view) {
 
     // ---- AI status pill (moved from the old "Draft with AI" card header) ----
     const aiStatusHost = el('div', { class: 'ai-status-host', style: 'margin-bottom:6px;' });
-    async function refreshAiStatus() {
+    async function refreshAiStatus(fresh) {
       aiStatusHost.innerHTML = '';
-      let status;
+      let providers;
       try {
-        status = await api('/api/ai/status');
+        providers = await api(fresh ? '/api/ai/providers?fresh=1' : '/api/ai/providers');
       } catch {
         return;
       }
+      if (Array.isArray(providers) && providers.length) state.providers = providers;
       function appendHint(text) {
         aiStatusHost.appendChild(el('div', { class: 'hint', style: 'margin-top:6px;color:var(--muted);' }, text));
       }
@@ -5009,26 +5764,28 @@ async function renderComposer(view) {
           }
         };
       }
-      function providerStatusRow(provider, s = {}) {
+      function providerStatusRow(p) {
+        const label = p.label || providerLabel(p.name);
+        const s = p.status || {};
         const installed = s.installed === true;
         const loggedIn = s.loggedIn === true;
         const unknownLogin = installed && s.loggedIn == null;
-        const label = provider === 'codex' ? 'Codex' : 'Claude';
-        const pillText =
-          provider === 'codex'
-            ? loggedIn ? 'Codex: logged in' : unknownLogin ? 'Codex: installed' : installed ? 'Codex: not logged in' : 'Codex CLI not found'
-            : loggedIn ? 'Claude: logged in' : installed ? 'Claude: not logged in' : 'Claude CLI not found';
-        const pillClass = loggedIn ? 'ai-pill-ok' : 'ai-pill-warn';
+        let pillText;
+        if (p.kind === 'http') {
+          pillText = p.configured ? `${label}: API key configured` : `${label}: API key not set`;
+        } else {
+          pillText = loggedIn ? `${label}: logged in` : unknownLogin ? `${label}: installed` : installed ? `${label}: not logged in` : `${label} CLI not found`;
+        }
+        const pillClass = (p.kind === 'http' ? p.configured : loggedIn) ? 'ai-pill-ok' : 'ai-pill-warn';
         const row = el('div', { class: 'ai-status-row' }, [el('span', { class: `ai-pill ${pillClass}` }, pillText)]);
-        const showLogin = installed && !loggedIn;
-        if (showLogin) row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: startProviderLogin(provider, label) }, `Log in to ${label}`));
-        row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: refreshAiStatus }, 'Recheck'));
+        const showLogin = p.kind !== 'http' && installed && !loggedIn;
+        if (showLogin) row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: startProviderLogin(p.name, label) }, `Log in to ${label}`));
+        row.appendChild(el('button', { class: 'btn-secondary', type: 'button', onclick: () => refreshAiStatus(true) }, 'Recheck'));
         return row;
       }
-      aiStatusHost.appendChild(providerStatusRow('claude', status.claude || {}));
-      aiStatusHost.appendChild(providerStatusRow('codex', status.codex || {}));
+      for (const p of providers) aiStatusHost.appendChild(providerStatusRow(p));
     }
-    refreshAiStatus();
+    refreshAiStatus(false);
 
     const copyCard = el('div', { class: 'cv3-copy-card' }, [
       copyTabsRow,
@@ -5039,6 +5796,11 @@ async function renderComposer(view) {
       fieldsEditorHost,
       aiMsg,
       compareHost,
+    ]);
+
+    // Live Preview - lives in the right column (sticky) so it stays visible
+    // while the operator types in the left column's copy textarea.
+    const previewCard = el('div', { class: 'cv3-preview-card' }, [
       previewToggleBtn,
       previewBody,
     ]);
@@ -5249,7 +6011,7 @@ async function renderComposer(view) {
     }
 
     // =========================================================
-    // Sticky action bar - Save draft / Save & approve / summary / Advanced toggle
+    // Sticky action bar - draft or explicit schedule / summary / Advanced toggle
     // =========================================================
     const savedMsg = el('div');
     const summaryEl = el('span', { class: 'cv3-summary' });
@@ -5311,13 +6073,17 @@ async function renderComposer(view) {
         const created = await createPostsForSelection();
         if (!created.length) return;
         createdPostIds = created.map((p) => p.id);
-        savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft(s) saved. Go to Calendar to approve.'));
+        savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Draft saved. Review it in Calendar when ready.'));
       },
     }, 'Save draft');
     const saveApproveBtn = el('button', {
       class: 'button secondary md', type: 'button',
       onclick: async () => {
         savedMsg.innerHTML = '';
+        if (!publishAtInput.value) {
+          savedMsg.appendChild(inlineBanner('Choose a publish date and time before scheduling.', 'error'));
+          return;
+        }
         const created = await createPostsForSelection();
         if (!created.length) return;
         createdPostIds = created.map((p) => p.id);
@@ -5325,12 +6091,12 @@ async function renderComposer(view) {
           try {
             await api(`/api/posts/${row.id}`, { method: 'PATCH', body: { status: 'approved' } });
           } catch (err) {
-            savedMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Saved but could not approve #${row.id}: ${err.message}`));
+            savedMsg.appendChild(el('div', { class: 'msg-banner msg-error' }, `Saved as a draft but could not schedule #${row.id}: ${err.message}`));
           }
         }
-        savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Saved and approved.'));
+        savedMsg.appendChild(el('div', { class: 'msg-banner msg-ok' }, 'Post scheduled.'));
       },
-    }, 'Save & approve');
+    }, 'Schedule post');
 
     let advancedOpen = localStorage.getItem('pd_composer_advanced_open') === '1';
     const advancedToggleBtn = el('button', {
@@ -5358,19 +6124,30 @@ async function renderComposer(view) {
     ]);
 
     // =========================================================
-    // Assemble the page, top to bottom, per spec.
+    // Assemble the page as a 2-column working layout:
+    // LEFT (editor) = accounts row + AI/copy tools + textarea + media strip.
+    // RIGHT (sticky) = live Preview + compact metadata/scheduling group +
+    // Save actions pinned at the bottom. Advanced stays full-width below.
     // =========================================================
-    body.append(
+    const leftCol = el('div', { class: 'cv3-col-left' }, [
       accountsRow,
       manageHost,
       copyCard,
       mediaStrip,
+    ]);
+    const rightCol = el('div', { class: 'cv3-col-right' }, [
+      previewCard,
       detailsLine,
       scheduleLine,
       savedMsg,
       queueMsg,
       imageReqMsg,
       actionBar,
+    ]);
+    body.classList.add('cv3-grid');
+    body.append(
+      leftCol,
+      rightCol,
       el('div', { class: 'cv3-advanced' }, [advancedBody]),
     );
 
@@ -5568,8 +6345,13 @@ function svgLineChart(points, { width = 420, height = 140, color = '#3d7ab8' } =
   return svg;
 }
 
+// Analytics redesign (2026-07-20 feedback): a tight, scannable stat strip -
+// small-to-medium numbers with clear labels in a row. Deliberately NOT the
+// giant-number/gradient "hero metric" template used elsewhere (that pattern
+// is banned for this view per the redesign brief) - this is plain, compact
+// text so 6 stats + the charts below fit without a wall of whitespace.
 function statRow(totals) {
-  return el('div', { style: 'display:grid;grid-template-columns:repeat(6,1fr);gap:8px;text-align:center;' }, [
+  return el('div', { class: 'analytics-stat-strip' }, [
     ['Posts', totals.posts_published],
     ['Impressions', totals.impressions],
     ['Engagement', totals.engagement],
@@ -5577,9 +6359,9 @@ function statRow(totals) {
     ['DMs', totals.dms],
     ['Leads', totals.leads],
   ].map(([label, value]) =>
-    el('div', {}, [
-      el('div', { style: 'font-size:20px;font-weight:bold;' }, String(value)),
-      el('div', { style: 'font-size:11px;color:var(--muted);' }, label),
+    el('div', { class: 'analytics-stat-tile' }, [
+      el('div', { class: 'analytics-stat-value' }, String(value)),
+      el('div', { class: 'analytics-stat-label' }, label),
     ])
   ));
 }
@@ -5602,6 +6384,12 @@ async function renderAnalytics(view) {
   // R1: title -> actions; export/import next, campaign filter (the only
   // narrowing filter on this view) rightmost.
   view.appendChild(pageHeader('Analytics', importBtn, el('span', {}, 'Campaign:'), campaignSelect));
+  view.appendChild(
+    inlineBanner(
+      'Blotato now shows analytics in its web app, but its documented public API does not currently expose engagement metrics. PostDeck keeps CSV import as the reliable bridge until Blotato publishes an analytics endpoint or export contract.',
+      'info'
+    )
+  );
   view.appendChild(analyticsBody);
   campaignSelect.onchange = () => renderAnalyticsBody(campaignSelect.value);
   await renderAnalyticsBody('');
@@ -5641,19 +6429,23 @@ function redraftButton(p) {
   }, 'Redraft');
 }
 
-// Item 6 (2026-07-19 feedback): inline quick-entry for the metrics-due list
-// - impressions/comments/shares mirror the 3 most prominent fields on the
+// Item 6 (2026-07-19 feedback), reworked 2026-07-20 into a dense table row -
+// impressions/comments/shares mirror the 3 most prominent fields on the
 // full manual metrics form (renderPostDetail's `fields` list starts with
 // impressions/comments/shares; saves/profile_visits/follows/dms/leads stay
 // full-form-only). Enter in any field or the checkmark button both save via
 // the SAME POST /api/posts/:id/metrics route the full form uses - no new
 // endpoint. On success the row is removed from the due list in place and a
 // toast confirms, matching the rest of the app's save feedback pattern.
-function metricsDueRow(p, dueContainer) {
-  const impressionsInput = el('input', { type: 'number', class: 'sm', placeholder: 'impressions', style: 'width:90px;' });
-  const commentsInput = el('input', { type: 'number', class: 'sm', placeholder: 'comments', style: 'width:80px;' });
-  const sharesInput = el('input', { type: 'number', class: 'sm', placeholder: 'shares', style: 'width:70px;' });
-  const rowMsg = el('div', { style: 'font-size:11px;' });
+// The column labels live in the table's <th> header (see metrics-due-table
+// below), not in per-input placeholders, so the inputs stay compact without
+// truncating any label text - that was the original complaint (2. "impressi…
+// comme… share").
+function metricsDueRow(p) {
+  const impressionsInput = el('input', { type: 'number', class: 'sm', placeholder: '0', 'aria-label': 'Impressions', min: '0' });
+  const commentsInput = el('input', { type: 'number', class: 'sm', placeholder: '0', 'aria-label': 'Comments', min: '0' });
+  const sharesInput = el('input', { type: 'number', class: 'sm', placeholder: '0', 'aria-label': 'Shares', min: '0' });
+  const rowMsg = el('div', { class: 'metrics-due-row-msg' });
   const saveBtn = el('button', { class: 'button primary sm', type: 'button', title: 'Save metrics' }, '✓');
 
   async function save() {
@@ -5682,103 +6474,147 @@ function metricsDueRow(p, dueContainer) {
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
   }
 
-  const row = el('div', { style: 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);' }, [
-    el('div', { style: 'display:flex;flex-direction:column;gap:2px;min-width:180px;' }, [
-      el('a', { href: `#/post/${p.id}` }, [platformIcon(p.platform, { size: 12 }), ` #${p.id} - ${brandName(p.brand_id)} - ${p.platform}`]),
-      el('span', { style: 'color:var(--muted);font-size:11px;' }, `published ${fmtDate(p.updated_at)}`),
+  const row = el('tr', {}, [
+    el('td', {}, [
+      el('div', { class: 'metrics-due-post-cell' }, [
+        el('a', { href: `#/post/${p.id}` }, [platformIcon(p.platform, { size: 12 }), ` #${p.id} - ${brandName(p.brand_id)} - ${p.platform}`]),
+      ]),
     ]),
-    el('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;' }, [
-      impressionsInput, commentsInput, sharesInput, saveBtn,
-    ]),
-    rowMsg,
+    el('td', { class: 'metrics-due-date' }, fmtDate(p.updated_at)),
+    el('td', {}, impressionsInput),
+    el('td', {}, commentsInput),
+    el('td', {}, sharesInput),
+    el('td', {}, [saveBtn, rowMsg]),
   ]);
   return row;
 }
 
+// Analytics redesign (2026-07-20 feedback): rollups now lead the view -
+// per-brand totals/charts render first so "Analytics" shows analytics
+// first, not a chore list. "Metrics due" is demoted to a compact,
+// collapsed-by-default panel appended at the end (see metricsDuePanel).
 function renderAnalyticsSections(view, data) {
+  if (data.brands.length) {
+    const stack = el('div', { class: 'analytics-brand-stack' });
+    for (const brand of data.brands) {
+      stack.appendChild(brandRollupCard(brand));
+    }
+    view.appendChild(stack);
+  } else if (!data.metrics_due.length) {
+    view.appendChild(emptyState('No analytics yet - publish some posts and add metrics to see rollups here.'));
+  }
+
   if (data.metrics_due.length) {
-    const due = el('div', { class: 'card' });
-    due.appendChild(el('h2', {}, `Metrics due (${data.metrics_due.length})`));
-    due.appendChild(el('div', { style: 'color:var(--muted);font-size:12px;margin-bottom:6px;' },
-      'Published posts older than 48h with no metrics entered yet.'));
-    for (const p of data.metrics_due) {
-      due.appendChild(metricsDueRow(p, due));
-    }
-    due.appendChild(el('div', { style: 'color:var(--muted);font-size:11px;margin-top:8px;text-align:center;' }, `— end of list (${data.metrics_due.length}) —`));
-    view.appendChild(due);
+    view.appendChild(metricsDuePanel(data.metrics_due));
   }
+}
 
-  for (const brand of data.brands) {
-    const card = el('div', { class: 'card' });
-    const header = el('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
+// One brand's rollup: totals strip + week-over-week + charts + top10 lists.
+// Uses `.home-panel` (less padding, no bottom margin - spacing comes from
+// the `.analytics-brand-stack` gap instead) so more than one brand's
+// summary is visible without heavy scrolling, matching Home's density.
+function brandRollupCard(brand) {
+  const card = el('div', { class: 'card home-panel' });
+  card.appendChild(
+    el('div', { style: 'display:flex;align-items:center;gap:8px;' }, [
       el('h2', { style: `border-left:4px solid ${brandColor(brand.brand_id)};padding-left:8px;` }, brand.name),
-    ]);
-    card.appendChild(header);
+    ])
+  );
 
-    const tabs = ['7d', '30d', '90d', 'all_time'];
-    const tabsRow = el('div', { class: 'tabs' });
-    const bodyHost = el('div');
-    card.appendChild(tabsRow);
-    card.appendChild(bodyHost);
+  const tabs = ['7d', '30d', '90d', 'all_time'];
+  const tabsRow = el('div', { class: 'tabs' });
+  const bodyHost = el('div');
+  card.appendChild(tabsRow);
+  card.appendChild(bodyHost);
 
-    let activeTab = '7d';
-    function renderTab() {
-      tabsRow.innerHTML = '';
-      bodyHost.innerHTML = '';
-      for (const t of tabs) {
-        tabsRow.appendChild(
-          el('button', { class: t === activeTab ? 'active' : '', onclick: () => { activeTab = t; renderTab(); } },
-            t === 'all_time' ? 'All-time' : t)
-        );
-      }
-      bodyHost.appendChild(statRow(brand.totals[activeTab]));
-
-      const wow = brand.week_over_week;
-      bodyHost.appendChild(
-        el('div', { style: 'margin-top:10px;' }, [
-          el('strong', {}, 'Week over week: '),
-          'Impressions', deltaBadge(wow.impressions),
-          '  Engagement', deltaBadge(wow.engagement),
-          '  Leads', deltaBadge(wow.leads),
-        ])
+  let activeTab = '7d';
+  function renderTab() {
+    tabsRow.innerHTML = '';
+    bodyHost.innerHTML = '';
+    for (const t of tabs) {
+      tabsRow.appendChild(
+        el('button', { class: t === activeTab ? 'active' : '', onclick: () => { activeTab = t; renderTab(); } },
+          t === 'all_time' ? 'All-time' : t)
       );
-
-      const platforms = Object.entries(brand.by_platform).filter(([, v]) => v.impressions > 0 || v.engagement > 0);
-      if (platforms.length) {
-        bodyHost.appendChild(el('h3', { style: 'margin-top:16px;' }, 'Impressions by platform (30d)'));
-        bodyHost.appendChild(svgBarChart(platforms.map(([p, v]) => ({ label: p, value: v.impressions }))));
-      }
-
-      bodyHost.appendChild(el('h3', { style: 'margin-top:16px;' }, 'Impressions trend (7d / 30d / 90d / all-time)'));
-      bodyHost.appendChild(
-        svgLineChart(
-          ['7d', '30d', '90d', 'all_time'].map((t) => ({
-            label: t === 'all_time' ? 'all' : t,
-            value: brand.totals[t].impressions,
-          }))
-        )
-      );
-
-      const top10 = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;' });
-      const impCol = el('div', {}, [el('h3', {}, 'Top 10 by impressions')]);
-      for (const p of brand.top10_by_impressions) {
-        impCol.appendChild(
-          el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_impressions} impressions`, redraftButton(p)])
-        );
-      }
-      const leadCol = el('div', {}, [el('h3', {}, 'Top 10 by leads')]);
-      for (const p of brand.top10_by_leads) {
-        leadCol.appendChild(
-          el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_leads} leads`, redraftButton(p)])
-        );
-      }
-      top10.append(impCol, leadCol);
-      bodyHost.appendChild(top10);
     }
-    renderTab();
+    bodyHost.appendChild(statRow(brand.totals[activeTab]));
 
-    view.appendChild(card);
+    const wow = brand.week_over_week;
+    bodyHost.appendChild(
+      el('div', { style: 'margin-top:8px;font-size:12.5px;' }, [
+        el('strong', {}, 'Week over week: '),
+        'Impressions', deltaBadge(wow.impressions),
+        '  Engagement', deltaBadge(wow.engagement),
+        '  Leads', deltaBadge(wow.leads),
+      ])
+    );
+
+    const platforms = Object.entries(brand.by_platform).filter(([, v]) => v.impressions > 0 || v.engagement > 0);
+    if (platforms.length) {
+      bodyHost.appendChild(el('h3', { style: 'margin:12px 0 4px;font-size:13px;' }, 'Impressions by platform (30d)'));
+      bodyHost.appendChild(svgBarChart(platforms.map(([p, v]) => ({ label: p, value: v.impressions }))));
+    }
+
+    bodyHost.appendChild(el('h3', { style: 'margin:12px 0 4px;font-size:13px;' }, 'Impressions trend (7d / 30d / 90d / all-time)'));
+    bodyHost.appendChild(
+      svgLineChart(
+        ['7d', '30d', '90d', 'all_time'].map((t) => ({
+          label: t === 'all_time' ? 'all' : t,
+          value: brand.totals[t].impressions,
+        }))
+      )
+    );
+
+    const top10 = el('div', { class: 'analytics-top10-grid' });
+    const impCol = el('div', {}, [el('h3', { style: 'margin:0 0 4px;font-size:13px;' }, 'Top 10 by impressions')]);
+    for (const p of brand.top10_by_impressions) {
+      impCol.appendChild(
+        el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_impressions} impressions`, redraftButton(p)])
+      );
+    }
+    const leadCol = el('div', {}, [el('h3', { style: 'margin:0 0 4px;font-size:13px;' }, 'Top 10 by leads')]);
+    for (const p of brand.top10_by_leads) {
+      leadCol.appendChild(
+        el('div', {}, [el('a', { href: `#/post/${p.id}` }, `#${p.id} ${p.platform}`), ` - ${p.total_leads} leads`, redraftButton(p)])
+      );
+    }
+    top10.append(impCol, leadCol);
+    bodyHost.appendChild(top10);
   }
+  renderTab();
+
+  return card;
+}
+
+// Metrics-due (2026-07-20 feedback item 2): was a tall full-width list of
+// big rows leading the page - now a compact, collapsed-by-default panel
+// (localStorage-persisted like the composer's collapsible sections) below
+// the rollups, with a dense table body so it's fast to tab through: one
+// row per post, column headers carry the field labels (not per-input
+// placeholders) so nothing truncates at a workable input width.
+function metricsDuePanel(metricsDue) {
+  const card = el('div', { class: 'card' });
+  card.appendChild(el('h2', {}, `Metrics due (${metricsDue.length})`));
+  card.appendChild(el('div', { class: 'metrics-due-hint' },
+    'Published posts older than 48h with no metrics entered yet.'));
+
+  const table = el('table', { class: 'metrics-due-table' });
+  table.appendChild(
+    el('tr', {}, [
+      el('th', {}, 'Post'),
+      el('th', {}, 'Published'),
+      el('th', {}, 'Impressions'),
+      el('th', {}, 'Comments'),
+      el('th', {}, 'Shares'),
+      el('th', {}, ''),
+    ])
+  );
+  for (const p of metricsDue) {
+    table.appendChild(metricsDueRow(p));
+  }
+  card.appendChild(el('div', { class: 'metrics-due-table-wrap' }, [table]));
+
+  return makeCollapsible(card, { open: false, key: 'analytics-metrics-due' });
 }
 
 // ---------------- Metrics import (item 7, 2026-07-19 feedback) ----------------
@@ -6238,7 +7074,7 @@ async function renderSettings(view) {
   const providerSelect = el(
     'select',
     {},
-    AI_PROVIDERS.map((p) =>
+    aiProviders().map((p) =>
       el('option', { value: p.value, selected: (settings.draft_provider || 'claude') === p.value ? 'selected' : undefined }, p.label)
     )
   );
@@ -6259,6 +7095,31 @@ async function renderSettings(view) {
     }
   };
   providerCard.appendChild(providerMsg);
+
+  // Chat agent provider - defaults to whatever draft_provider is, but can be
+  // set independently (e.g. drafting on Claude, chat agent on Codex).
+  const agentProviderSelect = el(
+    'select',
+    {},
+    aiProviders().map((p) =>
+      el('option', {
+        value: p.value,
+        selected: (settings.agent_provider || settings.draft_provider || 'claude') === p.value ? 'selected' : undefined,
+      }, p.label)
+    )
+  );
+  providerCard.appendChild(el('div', { class: 'field-row' }, [el('label', {}, 'Chat agent provider'), agentProviderSelect]));
+  const agentProviderMsg = el('div', { style: 'margin-top:10px;' });
+  agentProviderSelect.onchange = async () => {
+    agentProviderMsg.innerHTML = '';
+    try {
+      await api('/api/settings', { method: 'PATCH', body: { agent_provider: agentProviderSelect.value } });
+      toast('Saved.');
+    } catch (err) {
+      agentProviderMsg.appendChild(inlineBanner(err.message, 'error'));
+    }
+  };
+  providerCard.appendChild(agentProviderMsg);
 
   // ---- Image prompt system ----
   const imagePromptCard = el('div', { class: 'card settings-section settings-prompt-card' });
@@ -6363,7 +7224,7 @@ async function renderSettings(view) {
     function renderLogoPreview() {
       logoPreview.innerHTML = '';
       if (brand.logo_path) {
-        logoPreview.appendChild(el('img', { src: brand.logo_path, alt: `${brand.name} logo` }));
+        logoPreview.appendChild(el('img', { src: brand.logo_path, alt: `${brand.name} logo`, loading: 'lazy', decoding: 'async' }));
       } else {
         logoPreview.appendChild(el('div', { style: 'color:var(--muted);font-size:11px;' }, 'No logo uploaded yet.'));
       }
@@ -7510,7 +8371,7 @@ async function renderImages(view) {
         const variantRow = el('div', { class: 'image-variant-row' });
         for (const v of r.variants) {
           const vCard = el('div', { class: 'image-variant' }, [
-            el('img', { src: v.url, alt: v.notes || v.platform || 'variant' }),
+            el('img', { src: v.url, alt: v.notes || v.platform || 'variant', loading: 'lazy', decoding: 'async' }),
             el('div', { style: 'font-size:11px;color:var(--muted);margin-top:4px;' }, `${v.platform || ''} ${v.dims || ''}`),
             el('button', {
               class: 'button primary sm',

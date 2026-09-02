@@ -12,9 +12,9 @@ import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { getDb, nowIso } from './db.js';
 import { draftWithAi, PLATFORM_LIMITS } from './draft.js';
-import { getAuthStatus, startLogin } from './ai.js';
+import { getAuthStatus, startLogin, listProviders, configuredProviders } from './ai.js';
 import { markdownToHtml, escapeHtml } from './md.js';
-import { startWorker, submitNow, getWorkerStatus, resolveBatch, runSubmitBatch, runCycleNow, isDryRun } from './worker.js';
+import { startWorker, submitNow, getWorkerStatus, resolveBatch, runSubmitBatch, runCycleNow, isDryRun, isAssistedManual } from './worker.js';
 import { buildSocialState } from './export.js';
 import { validateTiktokFields } from './validate.js';
 import { getAllSettings, updateSettings, isWithinQuietHours } from './settings.js';
@@ -47,7 +47,7 @@ import {
   getTagsForPosts,
 } from './tags.js';
 import { bestTimes, daysSinceLastPost } from './besttime.js';
-import { appendUtm, getBrandUtmSettings, setBrandUtmSettings } from './utm.js';
+import { appendUtm, applyApproveUtm, getBrandUtmSettings, setBrandUtmSettings } from './utm.js';
 import { parseMetricsFile, normalizeRows, matchRows, applyImport } from './metrics-import.js';
 import {
   resolveVoice,
@@ -134,6 +134,40 @@ function buildServer() {
   const app = Fastify({ logger: true });
   const db = getDb();
   seedGlobalVoiceIfMissing(db);
+
+  // ---------- request-origin guard (audit S1) ----------
+  // The API binds 127.0.0.1 only, but that does not stop (a) a web page open
+  // in the same browser from firing fetch('http://127.0.0.1:4520/...', {method:
+  // 'POST'}) - classic localhost CSRF - or (b) DNS rebinding, where a hostile
+  // hostname resolves to 127.0.0.1 so the page's requests pass same-origin.
+  // With BLOTATO_DRY_RUN=0 either one reaches a real publish. Two cheap checks:
+  //   1. Host must be a loopback name (kills rebinding for every method).
+  //   2. Non-GET/HEAD/OPTIONS requests that carry an Origin header must carry
+  //      OUR origin (browsers always send Origin on cross-site POST/PATCH/...;
+  //      curl/tests send none, and same-origin fetches send the app's own).
+  // No auth is added - single operator, localhost, by design (SPEC.md).
+  const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+  app.addHook('onRequest', async (req, reply) => {
+    const rawHost = String(req.headers.host || '');
+    const hostname = rawHost.startsWith('[') ? rawHost.slice(0, rawHost.indexOf(']') + 1) : rawHost.split(':')[0];
+    if (rawHost && !LOOPBACK_HOSTS.has(hostname.toLowerCase())) {
+      reply.code(403);
+      return reply.send({ error: 'forbidden_host', message: 'PostDeck only answers to 127.0.0.1 / localhost.' });
+    }
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return;
+    const origin = req.headers.origin;
+    if (!origin || origin === 'null') return; // same-origin fetch, curl, tests
+    let originHost = null;
+    try {
+      originHost = new URL(origin).hostname;
+    } catch {
+      originHost = null;
+    }
+    if (!originHost || !LOOPBACK_HOSTS.has(originHost.toLowerCase())) {
+      reply.code(403);
+      return reply.send({ error: 'forbidden_origin', message: 'Cross-origin writes to PostDeck are refused.' });
+    }
+  });
 
   fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
@@ -354,10 +388,21 @@ function buildServer() {
   // subscription (NO API key). If it isn't logged in, drafting 503s. These
   // endpoints let the UI show a status pill and trigger login without the
   // operator opening a terminal.
-  app.get('/api/ai/status', async () => {
-    const [claude, codex] = await Promise.all([getAuthStatus('claude'), getAuthStatus('codex')]);
-    return { claude, codex };
+  app.get('/api/ai/status', async (req) => {
+    // Back-compat shape ({claude, codex, ...}) built from the cached provider
+    // list so a Composer render no longer spawns two CLIs every time.
+    const rows = await listProviders({ fresh: req.query && req.query.fresh === '1' });
+    const out = {};
+    for (const r of rows) out[r.name] = { ...r.status, provider: r.name };
+    if (!out.claude) out.claude = await getAuthStatus('claude');
+    if (!out.codex) out.codex = await getAuthStatus('codex');
+    return out;
   });
+
+  // Provider registry for the UI (docs/PROVIDER_LAYER_SPEC.md). Cached 30 s;
+  // ?fresh=1 bypasses (Recheck button). Unconfigured providers come back with
+  // configured:false so Settings can say how to enable them.
+  app.get('/api/ai/providers', async (req) => listProviders({ fresh: req.query && req.query.fresh === '1' }));
 
   app.post('/api/ai/login', async (req, reply) => {
     const provider = (req.body && req.body.provider) || req.query.provider || 'claude';
@@ -572,35 +617,15 @@ function buildServer() {
     // ---- B18c: UTM auto-append on the Approve gate (never on draft) ----
     // Rewrites bare links in the copy field once, when the post first crosses
     // into approved/scheduled_local, if the post's brand has utm_enabled.
-    if (enteringApprovedGate && existing.brand_id != null) {
-      const { enabled, template } = getBrandUtmSettings(db, existing.brand_id);
-      if (enabled) {
-        const brandRow = db.prepare('SELECT slug FROM brands WHERE id = ?').get(existing.brand_id);
-        // {campaign} resolves to the post's campaign tag when one is assigned,
-        // else appendUtm falls back to the brand slug.
-        const campaignRow = db
-          .prepare(
-            `SELECT t.name FROM tags t JOIN post_tags pt ON pt.tag_id = t.id
-             WHERE pt.post_id = ? AND t.kind = 'campaign' LIMIT 1`
-          )
-          .get(existing.id);
-        merged.copy = appendUtm(merged.copy, {
-          platform: existing.platform,
-          campaign: campaignRow?.name,
-          brand: brandRow?.slug,
-          template: template || undefined,
-        });
-        // The link usually lives in the first comment, not the body — apply
-        // the same append here so the approve-gate UTM pass covers both.
-        if (merged.first_comment) {
-          merged.first_comment = appendUtm(merged.first_comment, {
-            platform: existing.platform,
-            campaign: campaignRow?.name,
-            brand: brandRow?.slug,
-            template: template || undefined,
-          });
-        }
-      }
+    // B20: the body of this pass now lives in applyApproveUtm() so the bulk
+    // approve-batch route runs the identical logic.
+    if (enteringApprovedGate) {
+      const tagged = applyApproveUtm(db, existing, {
+        copy: merged.copy,
+        first_comment: merged.first_comment,
+      });
+      merged.copy = tagged.copy;
+      merged.first_comment = tagged.first_comment;
     }
 
     db.prepare(
@@ -833,11 +858,11 @@ function buildServer() {
     return { applied };
   });
 
-  // ---------- posts: reddit "Post now" manual flow ----------
-  // Reddit is assisted-manual (SPEC.md "Platform lineup") — the worker never
-  // submits it to Blotato. CB copies title/body, opens the subreddit, posts
-  // by hand, then marks it posted with the resulting URL. This is the only
-  // way a reddit post ever reaches 'published'.
+  // ---------- posts: reconcile a post published manually ----------
+  // This started as Reddit's assisted-manual completion step. B22 makes it
+  // available to every platform because CB may publish directly in LinkedIn
+  // or another network and then reconcile the local draft. This route only
+  // updates PostDeck. It never calls Blotato.
   app.post('/api/posts/:id/mark-posted', async (req, reply) => {
     const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
     if (!post) {
@@ -853,6 +878,11 @@ function buildServer() {
     db.prepare(
       `UPDATE posts SET status = 'published', public_url = @public_url, error_message = NULL, updated_at = @now WHERE id = @id`
     ).run({ public_url: b.public_url, now, id: req.params.id });
+    recordUsage(db, {
+      kind: 'manual_publish',
+      brand_id: post.brand_id,
+      meta: { post_id: Number(req.params.id), platform: post.platform, public_url: b.public_url },
+    });
     return db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
   });
 
@@ -1178,8 +1208,15 @@ ${bodyHtml}
       }
     }
 
-    const [claudeOut, codexOut] = await Promise.all([tryProvider('claude'), tryProvider('codex')]);
-    return { claude: claudeOut, codex: codexOut };
+    // Optional body.providers[] narrows the set; default is every configured
+    // provider. Response is keyed by provider name (claude/codex keys unchanged).
+    const requested = Array.isArray(b.providers) && b.providers.length ? b.providers : configuredProviders().map((p) => p.name);
+    const outs = await Promise.all(requested.map((name) => tryProvider(name)));
+    const result = {};
+    requested.forEach((name, i) => {
+      result[name] = outs[i];
+    });
+    return result;
   });
 
   app.get('/api/platform-limits', async () => PLATFORM_LIMITS);
@@ -1426,7 +1463,7 @@ ${bodyHtml}
     }
     try {
       // suggest-only convenience — never persists anything (SPEC.md B8 feature 6).
-      return await suggestProfiles({ brand: brand.name, niche, platforms });
+      return await suggestProfiles({ brand: brand.name, niche, platforms, provider: getRawSetting(db, 'draft_provider') || 'claude' });
     } catch (err) {
       reply.code(err.statusCode || 503);
       return { error: 'ai_unavailable', message: err.message };
@@ -1606,6 +1643,170 @@ ${bodyHtml}
   app.get('/api/worker/status', async () => getWorkerStatus());
 
   // ---------- batch submit + worker run-now ----------
+  // ---------- posts: publish now (B21) ----------
+  // Posting something immediately used to mean: invent a publish_at you don't
+  // want -> approve -> open the post -> Send to Blotato now. Four steps for the
+  // simplest intent (see docs/B21_COMPOSER_FIXES_SPEC.md).
+  //
+  // This is ONE server-side action on purpose: the client must not sequence
+  // approve-then-submit itself and leave a post half-approved when the second
+  // call fails. Every refusal happens BEFORE anything is written, so a rejected
+  // publish-now leaves the post exactly as it was found.
+  //
+  // Dry-run is honored by submitNow untouched - with BLOTATO_DRY_RUN=1 nothing
+  // real is posted and the response says so.
+  app.post('/api/posts/:id/publish-now', async (req, reply) => {
+    const existing = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+    if (!existing) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    if (!['draft', 'approved', 'scheduled_local'].includes(existing.status)) {
+      reply.code(409);
+      return {
+        error: 'wrong_status',
+        message: `Cannot publish a post in status '${existing.status}'.`,
+      };
+    }
+    if (isAssistedManual(db, existing)) {
+      reply.code(409);
+      return {
+        error: 'assisted_manual',
+        message: `${existing.platform} is assisted-manual (manual account or non-Blotato platform) - copy the text, post it by hand, then use "Mark posted".`,
+      };
+    }
+    if (existing.platform === 'tiktok') {
+      let pf = {};
+      try {
+        pf = JSON.parse(existing.platform_fields || '{}');
+      } catch {
+        pf = {};
+      }
+      const { ok, missing } = validateTiktokFields(pf);
+      if (!ok) {
+        reply.code(422);
+        return {
+          error: 'tiktok_fields_missing',
+          message: `TikTok post is missing required fields: ${missing.join(', ')}`,
+          missing,
+        };
+      }
+    }
+
+    // Only a post crossing IN from draft gets the approve-gate UTM pass - a
+    // post that was already approved has been tagged once and must not be
+    // tagged twice.
+    const enteringApprovedGate = existing.status === 'draft';
+    const tagged = enteringApprovedGate
+      ? applyApproveUtm(db, existing, { copy: existing.copy, first_comment: existing.first_comment })
+      : { copy: existing.copy, first_comment: existing.first_comment };
+
+    const now = nowIso();
+    db.prepare(
+      `UPDATE posts SET copy = @copy, first_comment = @first_comment,
+         publish_at = @publish_at, status = 'scheduled_local', updated_at = @now
+       WHERE id = @id`
+    ).run({
+      copy: tagged.copy,
+      first_comment: tagged.first_comment,
+      publish_at: now,
+      now,
+      id: existing.id,
+    });
+
+    const result = await submitNow(existing.id);
+    if (!result.ok) {
+      reply.code(502);
+      return { error: 'submit_failed', message: result.error, post: result.post || null };
+    }
+    return {
+      ok: true,
+      submitted: true,
+      dry_run: isDryRun(),
+      post: parseJsonColumns(result.post, ['media', 'platform_fields']),
+    };
+  });
+
+  // ---------- posts: bulk approve (B20) ----------
+  // Approving a whole week one post at a time was the friction that drove this
+  // (see docs/B20_BULK_APPROVE_SPEC.md). This is N single approves, not a
+  // shortcut around the gate: each post independently runs the same
+  // scheduled_local promotion, TikTok field validation, and approve-gate UTM
+  // pass (applyApproveUtm, shared with the PATCH handler) that a one-off
+  // approve does. One bad post never blocks its siblings - it comes back in
+  // `skipped` with a reason.
+  //
+  // Quiet hours is deliberately NOT enforced here: on the single-post path it
+  // is a soft client-side confirm, so the frontend runs that check once for the
+  // batch before calling this.
+  app.post('/api/posts/approve-batch', async (req, reply) => {
+    const body = req.body || {};
+    if (!Array.isArray(body.post_ids) || body.post_ids.length === 0) {
+      reply.code(400);
+      return { error: 'invalid_body', message: 'post_ids must be a non-empty array' };
+    }
+
+    const approved = [];
+    const skipped = [];
+    const now = nowIso();
+
+    for (const rawId of body.post_ids) {
+      const existing = db.prepare('SELECT * FROM posts WHERE id = ?').get(rawId);
+      if (!existing) {
+        skipped.push({ id: rawId, reason: 'not_found' });
+        continue;
+      }
+      if (existing.status !== 'draft') {
+        skipped.push({
+          id: existing.id,
+          reason: 'wrong_status',
+          message: `Post is '${existing.status}', only drafts can be approved.`,
+        });
+        continue;
+      }
+
+      // Same gate as PATCH: TikTok cosmetic fields must be complete.
+      if (existing.platform === 'tiktok') {
+        let pf = {};
+        try {
+          pf = JSON.parse(existing.platform_fields || '{}');
+        } catch {
+          pf = {};
+        }
+        const { ok, missing } = validateTiktokFields(pf);
+        if (!ok) {
+          skipped.push({
+            id: existing.id,
+            reason: 'tiktok_fields_missing',
+            message: `Missing required fields: ${missing.join(', ')}`,
+          });
+          continue;
+        }
+      }
+
+      // scheduled_local supersedes plain 'approved' when a publish_at is set.
+      const nextStatus = existing.publish_at ? 'scheduled_local' : 'approved';
+      const tagged = applyApproveUtm(db, existing, {
+        copy: existing.copy,
+        first_comment: existing.first_comment,
+      });
+
+      db.prepare(
+        `UPDATE posts SET copy = @copy, first_comment = @first_comment,
+           status = @status, updated_at = @now WHERE id = @id`
+      ).run({
+        copy: tagged.copy,
+        first_comment: tagged.first_comment,
+        status: nextStatus,
+        now,
+        id: existing.id,
+      });
+      approved.push({ id: existing.id, status: nextStatus });
+    }
+
+    return { approved, skipped, dry_run: isDryRun() };
+  });
+
   app.post('/api/posts/submit-batch', async (req, reply) => {
     const body = req.body || {};
     const hasIds = Array.isArray(body.post_ids);
@@ -1682,6 +1883,8 @@ ${bodyHtml}
     // B15: default AI provider for copy drafting ('claude'|'codex'), same
     // raw-settings-table pattern, default 'claude'.
     draft_provider: getRawSetting(db, 'draft_provider') ?? 'claude',
+    // Chat agent provider; empty/unset means "follow draft_provider".
+    agent_provider: getRawSetting(db, 'agent_provider') ?? getRawSetting(db, 'draft_provider') ?? 'claude',
   }));
 
   app.patch('/api/settings', async (req) => {
@@ -1695,6 +1898,7 @@ ${bodyHtml}
       image_prompt_layout,
       agent_can_publish,
       draft_provider,
+      agent_provider,
       ...rest
     } = b;
     const updated = updateSettings(db, rest);
@@ -1706,6 +1910,7 @@ ${bodyHtml}
     if (image_prompt_layout !== undefined) setRawSetting(db, 'image_prompt_layout', String(image_prompt_layout));
     if (agent_can_publish !== undefined) setRawSetting(db, 'agent_can_publish', String(agent_can_publish));
     if (draft_provider !== undefined) setRawSetting(db, 'draft_provider', String(draft_provider));
+    if (agent_provider !== undefined) setRawSetting(db, 'agent_provider', String(agent_provider));
     return {
       ...updated,
       global_voice: getGlobalVoice(db),
@@ -1716,6 +1921,7 @@ ${bodyHtml}
       image_prompt_layout: getRawSetting(db, 'image_prompt_layout') ?? DEFAULT_IMAGE_PROMPT_SETTINGS.layout,
       agent_can_publish: getRawSetting(db, 'agent_can_publish') ?? '0',
       draft_provider: getRawSetting(db, 'draft_provider') ?? 'claude',
+      agent_provider: getRawSetting(db, 'agent_provider') ?? getRawSetting(db, 'draft_provider') ?? 'claude',
     };
   });
 

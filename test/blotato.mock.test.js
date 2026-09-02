@@ -190,3 +190,22 @@ test('worker HANDOFF skips reddit posts — never submitted to Blotato', async (
   assert.equal(submitResult.ok, false, '"submit now" must also refuse reddit posts');
   assert.equal(postsCallCount, 0, 'Blotato /v2/posts must still never be called for a reddit post');
 });
+
+// Guard: uploadMedia must FAIL LOUDLY (before hitting the network) on a bad
+// media reference, rather than forwarding it and letting Blotato reject with
+// the opaque "/v2/media 400: must have required property 'url'". These are the
+// exact failure modes behind the 2026-07-23 image-post failures.
+test('uploadMedia throws on an empty/undefined media reference', async () => {
+  const blotato = await import('../src/blotato.js');
+  await assert.rejects(() => blotato.uploadMedia(undefined), /missing media reference/);
+  await assert.rejects(() => blotato.uploadMedia(''), /missing media reference/);
+  await assert.rejects(() => blotato.uploadMedia('   '), /missing media reference/);
+});
+
+test('uploadMedia throws when a local media file does not exist on disk', async () => {
+  const blotato = await import('../src/blotato.js');
+  await assert.rejects(
+    () => blotato.uploadMedia('media/does-not-exist-xyz.png'),
+    /media file not found on disk/
+  );
+});

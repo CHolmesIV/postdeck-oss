@@ -1,4 +1,4 @@
-# B16–B18 - Competitive Wave Spec (Hootsuite/Sprout gap analysis, 2026-07-18)
+# B16–B18 — Competitive Wave Spec (Hootsuite/Sprout gap analysis, 2026-07-18)
 
 Source: competitive research vs Hootsuite + Sprout Social (2025–2026 feature sets) crossed
 against the current PostDeck inventory. Filter applied: local-first, single operator, Blotato
@@ -12,19 +12,19 @@ competitor benchmarking (deferred API spend), paid/ads integration.
 
 ---
 
-## B16 - Queues + Navigation rail
+## B16 — Queues + Navigation rail
 
 The two highest-ROI items. Queue slots change the daily workflow; the nav rail fixes sprawl
 (13 routes reached by ad-hoc links).
 
-### B16a - Queue slots (Sprout's signature pattern)
+### B16a — Queue slots (Sprout's signature pattern)
 
 Mental model shift: instead of hand-picking `publish_at` per post, define recurring weekly
-slots per brand+platform and "Add to queue" - the post drops into the next open slot.
+slots per brand+platform and "Add to queue" — the post drops into the next open slot.
 
 **DB (migration)**
 - `queue_slots` table: `id, brand_id, platform, day_of_week (0-6), time_local (HH:MM),
-  active (default 1), created_at`. No per-account granularity - slot is brand+platform;
+  active (default 1), created_at`. No per-account granularity — slot is brand+platform;
   the composer's normal distribution picks accounts.
 - No change to `posts`; a queued post is just a normal post whose `publish_at` was computed
   at add-time. (Keep it dumb: no live re-flow when slots change; a "re-flow queue" action can
@@ -32,25 +32,25 @@ slots per brand+platform and "Add to queue" - the post drops into the next open 
 
 **Backend (`src/queue.js` + `server.js`)**
 - `GET/POST/PATCH/DELETE /api/queue-slots` (list per brand, create, toggle active, delete).
-- `nextOpenSlot(brand_id, platform, from)` - walks slots in weekly order, skips datetimes
+- `nextOpenSlot(brand_id, platform, from)` — walks slots in weekly order, skips datetimes
   already taken by a scheduled/submitted post for that brand+platform, respects quiet hours,
   returns the first open ISO datetime ≥ `from` (default now). Skip same-day slots already in
   the past.
-- `POST /api/posts/:id/queue` - computes next open slot (per platform in the post's
+- `POST /api/posts/:id/queue` — computes next open slot (per platform in the post's
   distribution; use the earliest across selected platforms as the single `publish_at`),
   sets it, returns the computed time so the UI can show "Queued for Tue 12:00pm".
 
 **Frontend**
 - Settings → new "Queues" collapsible per brand: weekly grid editor (add slot = day + time
   + platform), active toggle, delete. Seed suggestion button: "Daily 12:00 LinkedIn + Facebook".
-- Composer action bar: **"Add to queue"** button next to Schedule - fills `publish_at` with
+- Composer action bar: **"Add to queue"** button next to Schedule — fills `publish_at` with
   the computed slot and shows it (still editable before save; approval gate unchanged).
 - Calendar: queued posts render like any scheduled post (no special casing).
 
-**Tests** - `queue.test.js`: slot CRUD; `nextOpenSlot` ordering, collision skip, quiet-hours
+**Tests** — `queue.test.js`: slot CRUD; `nextOpenSlot` ordering, collision skip, quiet-hours
 skip, past-slot skip, week rollover; `POST /:id/queue` contract.
 
-### B16b - Left navigation rail (Sprout's flattened-nav rebuild)
+### B16b — Left navigation rail (Sprout's flattened-nav rebuild)
 
 - Persistent left rail in the app shell (outside the `#view` swap), grouped with collapsible
   headers (state in `localStorage pd_nav_*`):
@@ -59,22 +59,22 @@ skip, past-slot skip, week rollover; `POST /:id/queue` contract.
   - **Grow**: Analytics, Research, Inspiration
   - **Setup**: Profiles, Settings, Ops
 - Active-route highlight from the hash router; count badges where cheap (drafts awaiting on
-  Composer? keep minimal - only "needs attention" count on Home).
+  Composer? keep minimal — only "needs attention" count on Home).
 - Collapses to icon-only under the existing responsive breakpoint; FAB/chat/action-center
   positions re-checked.
 - Design language: existing tokens (Ink/Gold, `--grad-surface`, `.pill`), no new deps.
 
-**Tests** - nav is DOM-only; extend any existing shell/render test to assert rail links map
+**Tests** — nav is DOM-only; extend any existing shell/render test to assert rail links map
 to router table. Visual verify in-browser.
 
 ---
 
-## B17 - Campaign tags + calendar gap-finding
+## B17 — Campaign tags + calendar gap-finding
 
 Natural pair: tags give the calendar something to color/filter by; gap-finding makes the
 calendar answer "where am I dark?"
 
-### B17a - Tags & campaigns (Sprout's two-tier model, simplified)
+### B17a — Tags & campaigns (Sprout's two-tier model, simplified)
 
 **DB (migration)**
 - `tags` table: `id, name, kind ('tag'|'campaign'), color, brand_id NULLABLE (null = global),
@@ -82,7 +82,7 @@ calendar answer "where am I dark?"
 
 **Backend**
 - `GET/POST/PATCH/DELETE /api/tags`; `PUT /api/posts/:id/tags` (replace set).
-- Analytics: extend rollup queries to accept `?tag_id=` - per-tag totals + top posts
+- Analytics: extend rollup queries to accept `?tag_id=` — per-tag totals + top posts
   (campaign ROI-lite, on the existing manual-metrics data).
 
 **Frontend**
@@ -92,28 +92,28 @@ calendar answer "where am I dark?"
   hover shows tag names (title attr is fine).
 - Analytics: campaign selector → filtered rollup + "Campaign performance" card.
 
-**Tests** - `tags.test.js`: CRUD, join replace, analytics rollup filtered by tag.
+**Tests** — `tags.test.js`: CRUD, join replace, analytics rollup filtered by tag.
 
-### B17b - Calendar gap-finding (Sprout month view + Hootsuite gap positioning)
+### B17b — Calendar gap-finding (Sprout month view + Hootsuite gap positioning)
 
 - Month view: per-day post-count pill per platform (tiny colored dots + count); zero-post
   days get a subtle "empty" treatment (dashed cell tint) instead of blank.
 - Week view: same per-day counts in the column header.
-- **Coverage strip** above the grid: one row per active brand - "PrimeWright: 5 scheduled
+- **Coverage strip** above the grid: one row per active brand — "PrimeWright: 5 scheduled
   this week · Lunula: 0 ⚠". Click a warning → composer prefilled with that brand.
 - Pure frontend over existing `GET /api/posts` data; no backend change expected (add a
   `?from=&to=` range param only if the current fetch is insufficient).
 
-**Tests** - count/coverage computation extracted to pure helpers, unit-tested.
+**Tests** — count/coverage computation extracted to pure helpers, unit-tested.
 
 ---
 
-## B18 - Insight-at-decision-point + link tracking
+## B18 — Insight-at-decision-point + link tracking
 
 Rides on data already in the system. Hootsuite's pattern: surface the analytics insight at
 the exact moment of the decision, not in a separate tab.
 
-### B18a - Best-time nudge (composer, inline)
+### B18a — Best-time nudge (composer, inline)
 
 - `src/besttime.js`: `bestTimes(brand_id, platform)` →
   1. If ≥ N (=8) published posts with metrics for that brand+platform: bucket engagement by
@@ -124,13 +124,13 @@ the exact moment of the decision, not in a separate tab.
 - Composer schedule section: inline hint line "Best window: Tue–Thu 9–11am (from your data
   | default)" + click-to-apply chips that set `publish_at` to the next matching datetime.
   Also: "Last post to this platform: X days ago" (from existing posts data).
-- NOT ViralPost-style auto-scheduling - suggestion only; queue slots (B16) remain the
+- NOT ViralPost-style auto-scheduling — suggestion only; queue slots (B16) remain the
   automation. The nudge also shows on the Settings queue editor when creating slots.
 
-**Tests** - `besttime.test.js`: bucketing math on fixture metrics, fallback path, next-
+**Tests** — `besttime.test.js`: bucketing math on fixture metrics, fallback path, next-
 matching-datetime resolution.
 
-### B18b - Redraft-the-winner (OwlyWriter's repurpose feature)
+### B18b — Redraft-the-winner (OwlyWriter's repurpose feature)
 
 - Analytics top-posts lists gain a **"Redraft"** button per row → opens composer with the
   original as grounding: prompt = "fresh take on this proven post, same idea, new angle/hook"
@@ -140,29 +140,29 @@ matching-datetime resolution.
 - No schema change; reuses `/api/draft` with an extra grounding param (or the examples
   mechanism directly).
 
-**Tests** - extend draft tests: grounding included in prompt; scrub still applied.
+**Tests** — extend draft tests: grounding included in prompt; scrub still applied.
 
-### B18c - UTM auto-append
+### B18c — UTM auto-append
 
 - Settings: per-brand "Link tracking" toggle + template
   (default `utm_source={platform}&utm_medium=social&utm_campaign={campaign|brand}`).
-- On approve (not on draft - keep drafts clean): `src/utm.js` rewrites bare links in copy
+- On approve (not on draft — keep drafts clean): `src/utm.js` rewrites bare links in copy
   fields, appending params (skip links that already carry `utm_`; skip manual platforms?
-  no - manual copy benefits too). Idempotent.
+  no — manual copy benefits too). Idempotent.
 - Post-detail shows the final tracked link.
 
-**Tests** - `utm.test.js`: append, idempotency, existing-utm skip, campaign substitution,
+**Tests** — `utm.test.js`: append, idempotency, existing-utm skip, campaign substitution,
 multiple links, anchors/query edge cases.
 
 ---
 
 ## Deferred / later (parking lot, from the same analysis)
 
-- **List/agenda calendar view** - sortable upcoming-posts list with bulk actions. Worth it,
+- **List/agenda calendar view** — sortable upcoming-posts list with bulk actions. Worth it,
   but behind B16–B18.
-- **Streams-lite** - per-brand board of saved links (own pages, competitors, hashtag
+- **Streams-lite** — per-brand board of saved links (own pages, competitors, hashtag
   searches) for a manual morning sweep. Formalizes inspiration profiles.
-- **Queue re-flow** - recompute queued posts when slots change.
+- **Queue re-flow** — recompute queued posts when slots change.
 - **ICS export** of the calendar.
 
 ## Constraints (unchanged house rules)
@@ -174,10 +174,10 @@ multiple links, anchors/query edge cases.
 ## Build split (plan strong → build Sonnet parallel → review strong)
 
 - **B16 wave**: agent M = migration + `src/queue.js` + endpoints + tests; agent N = nav rail
-  (shell HTML/CSS/JS) - disjoint files, run parallel; strong review + browser smoke.
+  (shell HTML/CSS/JS) — disjoint files, run parallel; strong review + browser smoke.
 - **B17 wave**: agent O = tags migration + endpoints + analytics filter + tests; agent P =
-  calendar gap-finding + tag UI (frontend) - parallel.
+  calendar gap-finding + tag UI (frontend) — parallel.
 - **B18 wave**: agent Q = `besttime.js` + `utm.js` + endpoints + tests; agent R = composer
-  nudge + redraft button + settings UI - parallel.
+  nudge + redraft button + settings UI — parallel.
 - Each wave: full `npm test` green, CHANGELOG + BUILD_STATUS updated, commit to `working`,
   push; public snapshot refresh at the end of the whole run (standard archive+scrub).

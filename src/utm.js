@@ -109,8 +109,44 @@ function appendUtm(text, { platform, campaign, brand, template } = {}) {
   });
 }
 
+/**
+ * B20: the approve-gate UTM pass, extracted so the single-post PATCH handler and
+ * the bulk approve-batch route cannot drift apart. Given a post row that is
+ * crossing INTO approved/scheduled_local, returns the copy + first_comment it
+ * should be stored with. A no-op (returns the inputs unchanged) when the post
+ * has no brand or the brand has link tracking off.
+ *
+ * The link usually lives in the first comment rather than the body, so both
+ * fields get the same treatment. {campaign} resolves to the post's campaign tag
+ * when one is assigned, else appendUtm falls back to the brand slug.
+ */
+function applyApproveUtm(db, post, { copy, first_comment: firstComment } = {}) {
+  if (!post || post.brand_id == null) return { copy, first_comment: firstComment };
+  const { enabled, template } = getBrandUtmSettings(db, post.brand_id);
+  if (!enabled) return { copy, first_comment: firstComment };
+
+  const brandRow = db.prepare('SELECT slug FROM brands WHERE id = ?').get(post.brand_id);
+  const campaignRow = db
+    .prepare(
+      `SELECT t.name FROM tags t JOIN post_tags pt ON pt.tag_id = t.id
+       WHERE pt.post_id = ? AND t.kind = 'campaign' LIMIT 1`
+    )
+    .get(post.id);
+  const opts = {
+    platform: post.platform,
+    campaign: campaignRow?.name,
+    brand: brandRow?.slug,
+    template: template || undefined,
+  };
+  return {
+    copy: appendUtm(copy, opts),
+    first_comment: firstComment ? appendUtm(firstComment, opts) : firstComment,
+  };
+}
+
 export {
   appendUtm,
+  applyApproveUtm,
   getBrandUtmSettings,
   setBrandUtmSettings,
   DEFAULT_TEMPLATE,

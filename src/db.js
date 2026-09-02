@@ -288,6 +288,11 @@ const MIGRATIONS = [
   `
   ALTER TABLE posts ADD COLUMN first_comment TEXT;
   `,
+  // v11 - audit P3: every analytics/best-time rollup joins metrics on
+  // post_id; without this index each one is a full scan of metrics.
+  `
+  CREATE INDEX IF NOT EXISTS idx_metrics_post_id ON metrics(post_id);
+  `,
 ];
 
 function applyMigrations(db) {

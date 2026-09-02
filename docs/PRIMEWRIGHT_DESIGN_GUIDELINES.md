@@ -297,6 +297,21 @@ Timing:
 | Modal/sheet | 200-300ms |
 | Page transition | 200-350ms |
 
+## Social Post Copy And Link Placement
+
+PrimeWright social copy should read like a useful operator note, not an ad or an article abstract.
+
+- Lead with one direct hook that names the real decision, risk, or operational gap.
+- For a conversion-intent post, place the verified PrimeWright link directly below the hook or no
+  later than the second short paragraph. Do not bury the link at the bottom.
+- Add the explanation after the link. A useful default is `hook -> link -> practical context ->
+  takeaway or question`.
+- Keep paragraphs short and spoken. No em-dashes, inflated claims, generic AI phrasing, or padded
+  transitions.
+- The visual and caption should add different value. Do not repeat an image headline as the first
+  sentence of the caption.
+- Use the PostDeck preview and link-placement indicator before scheduling.
+
 ## Performance And Polish
 
 Design-related performance rules:

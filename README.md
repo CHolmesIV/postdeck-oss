@@ -1,13 +1,13 @@
 # PostDeck
 
 Local-first multi-brand social scheduler + content studio. Full architecture, data model,
-and build plan live in [`SPEC.md`](./SPEC.md) - read that first; current state is in
+and build plan live in [`SPEC.md`](./SPEC.md) — read that first; current state is in
 [`BUILD_STATUS.md`](./BUILD_STATUS.md) and history in [`CHANGELOG.md`](./CHANGELOG.md).
-Shipped through the composer v3 wave: Fastify + SQLite, dashboard, Blotato worker, Agentic OS
-bridge, analytics, Content Studio, image sizing + Codex handoff, chat agent, brand/profile
-settings, Claude/Codex drafting, editable image prompts, a designed local command-center UI,
-a single-form composer with per-network tabs and live preview, an image auto-fit pipeline,
-one-click send controls, sync status, and calendar/scheduling polish (see below).
+Shipped through **B22.1 + B23**: Fastify + SQLite, dashboard, Blotato worker, Agentic OS bridge,
+analytics, Content Studio, image sizing + Codex handoff, chat agent, brand/profile settings,
+a provider-registry AI layer (Claude/Codex/Grok) covering every AI call path, editable image
+prompts, a designed local command-center UI, and a security/dependency audit wave (see
+CHANGELOG **B23**).
 
 ## Delivery rule
 
@@ -29,12 +29,13 @@ full workflow, GitHub/source-of-truth rule, and parallel worktree hygiene.
 ```bash
 npm install
 
-# 1. real Blotato account IDs - copy the example and fill it in (gitignored)
+# 1. real Blotato account IDs — copy the example and fill it in (gitignored)
 cp config/accounts.seed.example.json config/accounts.seed.json
 # edit config/accounts.seed.json with real IDs
 
-# 2. env - copy and fill in at least BLOTATO_API_KEY, ANTHROPIC_API_KEY
+# 2. env — copy and fill in at least BLOTATO_API_KEY
 cp .env.example .env
+# optional: set XAI_API_KEY to enable Grok as a drafting/chat provider (see "AI providers" below)
 
 # 3. create the DB + tables (runs automatically on first use, or explicitly:)
 npm run migrate
@@ -42,7 +43,7 @@ npm run migrate
 # 4. seed brands, accounts, tone profiles
 node src/seed.js
 
-# 5. import existing brand-system CSVs (repeatable - matches on external_id)
+# 5. import existing brand-system CSVs (repeatable — matches on external_id)
 node src/import.js clusters "/path/to/brand-system/content_clusters.csv"
 node src/import.js posts    "/path/to/brand-system/posts.csv"
 node src/import.js leads    "/path/to/brand-system/lead_signals.csv"
@@ -99,23 +100,48 @@ node --test test/*.test.js
 ```
 
 Covers: hard-rules scrub (`scrub.test.js`), the Blotato worker against a local
-mock server (`blotato.mock.test.js` - never hits the real API), the Agentic OS
+mock server (`blotato.mock.test.js` — never hits the real API), the Agentic OS
 export shape (`export.test.js`), TikTok cosmetic-field validation
 (`validate.test.js`), and the Approve-gate/reschedule-guard/quiet-hours API
 surface end-to-end via Fastify `.inject()` (`server.approve-gate.test.js`).
+
+## AI providers
+
+Claude and Codex run as subscription CLIs (no API key needed - PostDeck reads your
+existing `claude`/`codex` login). Grok is the one deliberate exception: it is an
+HTTP-only vendor with no subscription CLI, so it's enabled by setting `XAI_API_KEY`
+in `.env`. Every AI call path (drafting, copy-assist, chat agent, profiles,
+inspiration, vision) routes through the same provider registry - see
+[`docs/PROVIDER_LAYER_SPEC.md`](./docs/PROVIDER_LAYER_SPEC.md) for the full design.
+
+`GET /api/ai/providers` lists whichever providers are configured; the frontend
+provider switch, compare grid, and Settings selects render from that response, so a
+provider with no key/login simply doesn't show up.
+
+Adding provider number four:
+
+1. Copy `src/providers/grok.js` to `src/providers/<name>.js`, change name/label/env
+   names/base URL.
+2. Add it to the array in `src/providers/index.js`.
+3. Add its env var to `.env.example`.
+
+## Backups
+
+A daily SQLite backup of `postdeck.db` runs in-process and writes to
+`~/Library/Application Support/PostDeck/backups/`, keeping the last 14.
 
 ## Worker env flags (all in `.env`, see `.env.example` for full comments)
 
 | Flag | Default | What it does |
 |---|---|---|
-| `BLOTATO_DRY_RUN` | `1` (ON) | **Hard safety default.** Only `0`/`false` makes the worker place real create-post/media-upload calls against Blotato. In dry-run, handoff logs what it *would* submit and marks the post `submitted_dry` instead of `submitted` - nothing ever touches the real API. |
+| `BLOTATO_DRY_RUN` | `1` (ON) | **Hard safety default.** Only `0`/`false` makes the worker place real create-post/media-upload calls against Blotato. In dry-run, handoff logs what it *would* submit and marks the post `submitted_dry` instead of `submitted` — nothing ever touches the real API. |
 | `POSTDECK_WORKER` | `1` (ON) | Only `0`/`false` stops the in-process worker (handoff + verify + export, every 5 min) from starting with the server. |
 | `POSTDECK_SYNC_ENABLED` | `1` (ON) | Only `0`/`false` disables the rsync of `state/social-state.json` to the Agentic OS VPS. |
-| `BLOTATO_API_BASE` | `https://backend.blotato.com` | REST base - never the MCP server (see SPEC.md Decision 2). |
+| `BLOTATO_API_BASE` | `https://backend.blotato.com` | REST base — never the MCP server (see SPEC.md Decision 2). |
 | `POSTDECK_CAPTURE_DIR` | `./capture-inbox/` | Watched once per worker cycle for `.md`/`.txt` idea drops (see below). |
 
 `handoff_window_hours` (default 48) and the new **quiet hours** (`quiet_start`
-`22:00`, `quiet_end` `07:00`) are NOT env vars - they live in the `settings`
+`22:00`, `quiet_end` `07:00`) are NOT env vars — they live in the `settings`
 table, readable/writable via `GET`/`PATCH /api/settings`.
 
 ### Dry-run explained
@@ -123,7 +149,7 @@ table, readable/writable via `GET`/`PATCH /api/settings`.
 Every worker cycle runs HANDOFF (submit posts inside the handoff window) then
 VERIFY (poll submitted posts for publish status) then EXPORT (write + rsync
 `social-state.json`). With `BLOTATO_DRY_RUN=1` (the default, and what ships in
-`.env.example`), HANDOFF never calls `POST /v2/media` or `POST /v2/posts` - it
+`.env.example`), HANDOFF never calls `POST /v2/media` or `POST /v2/posts` — it
 logs the exact payload it would send and flips the post to `submitted_dry`.
 VERIFY is a no-op for `submitted_dry` posts (nothing to poll). This lets you
 run the whole app, including real scheduling UI flows, with zero risk of an
@@ -146,14 +172,15 @@ accidental real post until you deliberately flip the flag.
   `submitted`+ with `409 not_reschedulable` (`src/server.js`).
 - **Quiet hours**: `GET/PATCH /api/settings` exposes `quiet_start`/`quiet_end`
   (default `22:00`/`07:00`, wraps midnight). Approving a post scheduled inside
-  that window shows a `confirm()` dialog in the dashboard - a soft warning,
+  that window shows a `confirm()` dialog in the dashboard — a soft warning,
   never a hard block. `GET /api/settings/quiet-hours-check?publish_at=<iso>`
   backs it.
 - **launchd agent**: `scripts/install-launchd.sh` installs
   `~/Library/LaunchAgents/com.postdeck.plist` (`RunAtLoad` + `KeepAlive`,
   runs `node src/server.js` with `WorkingDirectory` set to the repo, logs to
   `logs/postdeck.{out,err}.log`). Run `--uninstall` to tear it down. This repo
-  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`) - installing it is a standing background process, so run it yourself when
+  only ships and syntax-checks the script (`bash -n scripts/install-launchd.sh`)
+  — installing it is a standing background process, so run it yourself when
   ready:
   ```bash
   chmod +x scripts/install-launchd.sh   # already executable in the repo
@@ -162,31 +189,7 @@ accidental real post until you deliberately flip the flag.
   ./scripts/install-launchd.sh --uninstall
   ```
 
-## Composer v3 + send controls (this pass)
-
-- **Composer v3**: a single-form compose experience with per-network tabs and a live
-  preview, replacing the old multi-card layout for the actual copy-writing surface.
-- **Image request placeholder + auto-fit pipeline**: images are auto-fit to each
-  platform's target dimensions and size caps before send, so one source image works
-  across networks without manual resizing.
-- **Send to Blotato now**: per-post and bulk "send now" controls for pushing approved
-  posts out immediately instead of waiting on the worker's schedule window.
-- **Sync status pill + sync-now**: a status indicator plus an on-demand sync trigger
-  in the dashboard.
-- **Startup catch-up sweep + missed-window protection**: on boot, PostDeck reconciles
-  any posts that should have gone out while it was down, and guards against a missed
-  scheduling window silently dropping a post.
-- **Manual-account badges**: accounts that require manual posting (no API path) are
-  flagged directly in the UI so they're not mistaken for worker-eligible.
-- **Link-in-first-comment**: for platforms that support it (X/Bluesky/Threads), links
-  are auto-threaded into the first comment instead of the main post; other platforms
-  get a reminder flow instead.
-- **Alt text with AI suggest**: alt text fields now have an AI-assisted suggestion
-  button alongside manual entry.
-- **Day popover on the calendar**: clicking a day on the calendar opens a popover with
-  that day's posts instead of navigating away.
-
-## Going live with real Blotato calls - checklist
+## Going live with real Blotato calls — checklist
 
 1. **Regenerate the Blotato API key.** The one on file currently 401s.
    Generate a fresh one in the Blotato dashboard and drop it into `.env` as
@@ -198,7 +201,7 @@ accidental real post until you deliberately flip the flag.
    your least-visible page), watch the worker log the HANDOFF, and confirm in
    Blotato's own dashboard that it actually went out before trusting anything
    else through the pipe.
-4. **Restart the server** after any `.env` change - dry-run/worker/sync flags
+4. **Restart the server** after any `.env` change — dry-run/worker/sync flags
    are read at process start (mostly; `isDryRun()`/`workerEnabled()` do
    re-read `process.env` per-call, but a full restart is the reliable way to
    pick up `.env` file edits since nothing auto-reloads the file itself).
@@ -206,7 +209,7 @@ accidental real post until you deliberately flip the flag.
 
 ## Idea capture from the road (usage)
 
-No new plumbing - CB texts the Agentic OS Telegram bot ("idea: ..."), AOS
+No new plumbing — CB texts the Agentic OS Telegram bot ("idea: ..."), AOS
 drops a `.md`/`.txt` file into `capture-inbox/` (path configurable via
 `POSTDECK_CAPTURE_DIR`), and the worker's `importCapturedIdeas` step
 (`src/capture.js`) picks it up on the next 5-minute cycle, creating an

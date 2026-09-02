@@ -10,7 +10,8 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { getDb, nowIso } from './db.js';
+import { getDb, nowIso, DB_PATH } from './db.js';
+import os from 'node:os';
 import * as blotato from './blotato.js';
 import { exportSocialState } from './export.js';
 import { syncSocialState } from './sync.js';
@@ -174,12 +175,43 @@ async function buildBlotatoPayload(post, account) {
  * @param {object} post - full posts row
  * @returns {Promise<{ok: boolean, status: string, error?: string}>}
  */
+// Audit S2: posts currently mid-handoff. submitNow() (a click), publish-now,
+// submit-batch and the 5-minute sweep can all reach handoffOne for the same
+// row; each read the status, then `await`ed image-fit + network work, then
+// wrote - so two of them could both see 'scheduled_local' and both call
+// Blotato. Single process, so an in-memory claim set is a complete fix.
+const inFlightPostIds = new Set();
+const SUBMITTABLE_STATUSES = ['scheduled_local', 'approved'];
+
 async function handoffOne(db, post) {
+  if (inFlightPostIds.has(post.id)) {
+    return { ok: false, status: post.status, error: 'in_flight: this post is already being submitted' };
+  }
+  inFlightPostIds.add(post.id);
+  try {
+    return await handoffOneLocked(db, post);
+  } finally {
+    inFlightPostIds.delete(post.id);
+  }
+}
+
+async function handoffOneLocked(db, post) {
   const account = post.account_id
     ? db.prepare('SELECT * FROM accounts WHERE id = ?').get(post.account_id)
     : null;
   const payload = await buildBlotatoPayload(post, account);
   const now = nowIso();
+
+  // Re-read right before any network call: the row the caller loaded may be
+  // stale (already submitted by a sibling path a moment ago, or canceled).
+  const fresh = db.prepare('SELECT status FROM posts WHERE id = ?').get(post.id);
+  if (!fresh || !SUBMITTABLE_STATUSES.includes(fresh.status)) {
+    return {
+      ok: false,
+      status: fresh ? fresh.status : 'missing',
+      error: `post is now '${fresh ? fresh.status : 'missing'}' - not submitted`,
+    };
+  }
 
   if (isDryRun()) {
     console.log(
@@ -198,9 +230,11 @@ async function handoffOne(db, post) {
     const media = parseJsonColumn(post.media, []);
     const uploadedUrls = [];
     for (const m of media) {
-      const filePath = m.path || m.url;
-      if (!filePath) continue;
-      const uploaded = await blotato.uploadMedia(filePath);
+      const mediaRef = m.path || m.url;
+      if (!mediaRef) continue;
+      const localPath = resolveMediaAbsPath(mediaRef);
+      const uploadSource = localPath && fs.existsSync(localPath) ? localPath : mediaRef;
+      const uploaded = await blotato.uploadMedia(uploadSource);
       uploadedUrls.push(uploaded.url || uploaded.id);
     }
     if (uploadedUrls.length) {
@@ -495,6 +529,7 @@ const status = {
   lastRunAt: null,
   nextRunAt: null,
   lastExportAt: null,
+  lastBackupAt: null,
   dryRun: isDryRun(),
   enabled: workerEnabled(),
 };
@@ -522,6 +557,49 @@ async function runExportPhase(db, { changed }) {
   } catch (err) {
     console.error('[worker] export/sync error', err);
   }
+}
+
+// ---------- daily SQLite backup (audit D1) ----------
+// postdeck.db is the system of record for what was published where. One
+// consistent snapshot a day via better-sqlite3's online backup API (safe
+// under WAL, no lock on the live DB), kept for POSTDECK_BACKUP_KEEP days.
+// Runs only for the real DB (no POSTDECK_DB_PATH override) unless a backup dir
+// is set explicitly - so the test suite's temp DBs never write to ~/Library.
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+function backupDir() {
+  return (
+    process.env.POSTDECK_BACKUP_DIR ||
+    path.join(os.homedir(), 'Library', 'Application Support', 'PostDeck', 'backups')
+  );
+}
+function backupEnabled() {
+  if (process.env.POSTDECK_BACKUP_DIR) return true;
+  if (process.env.POSTDECK_DB_PATH) return false; // tests / ad-hoc DBs
+  return DB_PATH === path.join(ROOT, 'postdeck.db');
+}
+async function runBackupPhase(db) {
+  if (!backupEnabled()) return { skipped: 'disabled' };
+  const last = Date.parse(getSetting(db, 'last_backup_at', '') || '') || 0;
+  if (Date.now() - last < ONE_DAY_MS) return { skipped: 'fresh' };
+  const dir = backupDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const dest = path.join(dir, `postdeck-${stamp}.db`);
+  await db.backup(dest);
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(
+    'last_backup_at',
+    JSON.stringify(nowIso())
+  );
+  const keep = Math.max(1, Number(process.env.POSTDECK_BACKUP_KEEP) || 14);
+  const old = fs
+    .readdirSync(dir)
+    .filter((f) => /^postdeck-.*\.db$/.test(f))
+    .sort()
+    .slice(0, -keep);
+  for (const f of old) fs.rmSync(path.join(dir, f), { force: true });
+  console.log(`[worker] db backup -> ${dest} (keeping ${keep})`);
+  status.lastBackupAt = nowIso();
+  return { dest, pruned: old.length };
 }
 
 async function runCycle() {
@@ -582,6 +660,12 @@ async function runCycle() {
     importResearchInbox(db);
   } catch (err) {
     console.error('[worker] research import error', err);
+  }
+
+  try {
+    await runBackupPhase(db);
+  } catch (err) {
+    console.error('[worker] backup error', err);
   }
 
   const changed = handoffCount > 0 || verifyCount > 0 || generatedImageIds.length > 0;
@@ -673,6 +757,8 @@ export {
   workerEnabled,
   getHandoffWindowHours,
   runExportPhase,
+  runBackupPhase,
+  backupDir,
   isAssistedManual,
   isMissedWindow,
   MISSED_WINDOW_MSG,

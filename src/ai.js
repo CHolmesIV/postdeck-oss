@@ -1,359 +1,117 @@
-// AI provider abstraction (B15 — SPEC.md "AI provider switcher"). A small
-// registry keyed by provider name so a new provider (future) is a config
-// entry, not a rewrite. Both current providers shell out to a subscription
-// CLI already logged in on this machine — NEVER an API key.
-//
-// runDraft(provider, {prompt, model?, budget?}) -> Promise<string> resolving
-// to the model's raw text response (unwrapped from whatever CLI-specific
-// envelope/event-stream the provider uses). Throws a 503-flagged Error when
-// the CLI binary is missing (ENOENT) or the CLI reports it isn't logged in.
-//
-// claude: `claude -p <prompt> --model <m> --max-budget-usd <b>
-//   --output-format json`; envelope is `{"result": "<raw text>"}`.
-//   Subscription login via `claude` / `/login`.
-// codex: `codex exec --json <prompt>` — headless, prints a JSONL event
-//   stream to stdout. We take the LAST `agent_message` event's `.text`
-//   (tolerant of both a bare `{"type":"agent_message","text":...}` shape and
-//   a `{"type":"item.completed","item":{"type":"agent_message","text":...}}`
-//   shape, and of non-JSON lines interleaved in the stream — skipped).
-//   VERIFIED against codex-cli 0.144.2 (logged in): `codex exec` is agentic
-//   by default, so buildArgs constrains it with `-s read-only`,
-//   `--skip-git-repo-check`, and `--ephemeral` for a single ~4s drafting
-//   turn. stdin MUST be closed (runCli does child.stdin.end()) or codex
-//   blocks on "Reading additional input from stdin...".
-//   Reuses the saved Codex CLI login (ChatGPT/subscription) — no API key.
+// AI provider facade. Every AI call in PostDeck goes through runDraft(); the
+// vendors live in src/providers/ (one file each) and are registered in
+// src/providers/index.js. Public API here is stable - draft.js,
+// copy_assist.js, agent.js, profiles.js, inspiration.js, extract.js and the
+// tests in test/ai*.test.js depend on these names.
 
-import fs from 'node:fs';
-import { execFile } from 'node:child_process';
+import { PROVIDERS, ALL, getProvider, configuredProviders, providerWithCapability } from './providers/index.js';
+import { resolveBin, make503 } from './providers/_cli.js';
+import { parseClaudeEnvelope } from './providers/claude.js';
+import { parseCodexStream } from './providers/codex.js';
 
-function make503(message) {
-  const err = new Error(message);
-  err.statusCode = 503;
-  return err;
-}
-
-/**
- * Unwrap a `claude -p ... --output-format json` envelope and return the raw
- * text the model produced (still just text — the caller decides whether/how
- * to JSON.parse it for its own purposes). Throws (non-503) if the envelope
- * itself isn't valid JSON, and a 503-flagged error if the CLI reports it
- * isn't logged in.
- */
-function parseClaudeEnvelope(stdout) {
-  let outer;
-  try {
-    outer = JSON.parse(stdout);
-  } catch (err) {
-    throw new Error(`claude CLI did not return valid JSON envelope: ${err.message}`);
-  }
-  const resultText = typeof outer.result === 'string' ? outer.result : stdout;
-  if (/not logged in/i.test(resultText) || /\/login/i.test(resultText)) {
-    throw make503('AI drafting unavailable: claude CLI is not logged in — use the "Log in to Claude" button, then Recheck.');
-  }
-  // The CLI signals failures via is_error + a subtype (e.g.
-  // error_max_budget_usd, error_during_execution). Surface these as a clean,
-  // actionable message instead of letting the metadata envelope get parsed
-  // downstream as if it were the drafts object.
-  if (outer.is_error === true) {
-    const subtype = outer.subtype || 'error';
-    if (subtype === 'error_max_budget_usd') {
-      throw make503('AI drafting unavailable: the request hit its cost cap. Try a shorter idea, or raise POSTDECK_DRAFT_BUDGET.');
-    }
-    throw make503(`AI drafting unavailable: claude CLI returned an error (${subtype}).`);
-  }
-  return resultText;
-}
-
-/**
- * Parse a `codex exec --json` JSONL event stream and return the text of the
- * LAST agent_message event (concatenated if the last message spans more
- * than one event of that type in a row — in practice codex emits one final
- * message, but we don't assume that). Non-JSON lines are skipped rather than
- * failing the whole parse (headless CLIs sometimes interleave banners/log
- * lines with the JSON events).
- */
-function parseCodexStream(stdout) {
-  const lines = String(stdout).split('\n');
-  let lastText = null;
-  let sawErrorEvent = false;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let evt;
-    try {
-      evt = JSON.parse(trimmed);
-    } catch {
-      continue; // tolerate non-JSON lines in the stream
-    }
-    if (!evt || typeof evt !== 'object') continue;
-
-    if (evt.type === 'error' || evt.type === 'item.error') sawErrorEvent = true;
-
-    // Two tolerated shapes: a bare agent_message event, or an
-    // item.completed wrapper around an agent_message item.
-    if (evt.type === 'agent_message' && typeof evt.text === 'string') {
-      lastText = evt.text;
-    } else if (
-      evt.type === 'item.completed' &&
-      evt.item &&
-      evt.item.type === 'agent_message' &&
-      typeof evt.item.text === 'string'
-    ) {
-      lastText = evt.item.text;
-    }
-  }
-
-  if (lastText == null) {
-    if (sawErrorEvent) {
-      throw make503('AI drafting unavailable: codex CLI reported an error — run `codex login` and retry.');
-    }
-    throw make503(
-      'AI drafting unavailable: codex CLI returned no agent message (not logged in? run `codex login`).'
-    );
-  }
-  if (/not logged in/i.test(lastText) || /codex login/i.test(lastText)) {
-    throw make503('AI drafting unavailable: codex CLI is not logged in — run `codex login`.');
-  }
-  return lastText;
-}
-
-const PROVIDERS = {
-  claude: {
-    binEnv: 'POSTDECK_CLAUDE_BIN',
-    defaultBin: 'claude',
-    buildArgs(prompt, { model, budget } = {}) {
-      return [
-        '-p',
-        prompt,
-        '--model',
-        model || 'claude-haiku-4-5-20251001',
-        // CRITICAL: `claude -p` is the full AGENTIC Claude Code by default -
-        // it will read files, web-search, and loop for several turns, which
-        // blows past --max-budget-usd (error_max_budget_usd) and is slow.
-        // Drafting is a single text completion, so disable all tools ("" =
-        // none). This makes it 1 turn, cheap, and reliably under budget.
-        '--tools',
-        '',
-        '--max-budget-usd',
-        String(budget ?? '0.10'),
-        '--output-format',
-        'json',
-      ];
-    },
-    parse: parseClaudeEnvelope,
-  },
-  codex: {
-    binEnv: 'POSTDECK_CODEX_BIN',
-    defaultBin: 'codex',
-    fallbackBins: [
-      '/Applications/ChatGPT.app/Contents/Resources/codex',
-      '/Applications/Codex.app/Contents/MacOS/codex',
-    ],
-    // Headless, JSON event stream, pure text response. `codex exec` is an
-    // agentic coding CLI by default, so constrain it for drafting (verified
-    // against codex-cli 0.144.2, logged in): `-s read-only` (never writes
-    // files), `--skip-git-repo-check` (PostDeck's cwd may not be a git repo),
-    // `--ephemeral` (don't persist session files). With these + stdin closed
-    // by runCli, drafting is a single ~4s turn instead of an agentic loop.
-    // NOTE: stdin MUST be closed (runCli does child.stdin.end()) - otherwise
-    // codex blocks on "Reading additional input from stdin...". model/budget
-    // are claude-specific and intentionally unused here.
-    buildArgs(prompt) {
-      return ['exec', '--json', '-s', 'read-only', '--skip-git-repo-check', '--ephemeral', prompt];
-    },
-    parse: parseCodexStream,
-  },
-};
-
+/** Binary a CLI provider will run (env override > bundled app > PATH). */
 function getBin(providerName) {
-  const provider = PROVIDERS[providerName];
-  if (!provider) return null;
-  if (process.env[provider.binEnv]) return process.env[provider.binEnv];
-  for (const candidate of provider.fallbackBins || []) {
-    if (typeof candidate === 'string' && candidate.startsWith('/') && fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-  return provider.defaultBin;
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function runCli(providerName, args) {
-  return new Promise((resolve, reject) => {
-    // NOTE: execFile has NO `stdio` option (unlike spawn) - the earlier
-    // attempt to pass one was silently ignored, which is why the 3s "no stdin
-    // data received" warning persisted. The real fix is to grab the child and
-    // end() its stdin so `claude -p` (prompt in argv) doesn't wait on input.
-    const child = execFile(
-      getBin(providerName),
-      args,
-      { timeout: 90_000, maxBuffer: 10 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        // `claude --output-format json` prints a JSON result envelope on
-        // stdout even on a non-zero exit (e.g. is_error with a message, or
-        // "Not logged in"). Prefer that envelope so the parser can surface a
-        // clean, actionable error instead of a raw "Command failed" dump.
-        if (stdout && stdout.trim().startsWith('{')) {
-          resolve(stdout);
-          return;
-        }
-        if (err) {
-          reject(Object.assign(new Error(stderr || err.message), { code: err.code }));
-          return;
-        }
-        resolve(stdout);
-      }
-    );
-    // Close stdin immediately: removes the ~3s per-call stdin-wait latency.
-    if (child.stdin) child.stdin.end();
-  });
-}
-
-// Transient CLI failures (API overload/529, brief network blips) show up as a
-// non-zero exit with no JSON envelope. Retry a couple of times with backoff so
-// a single hiccup doesn't surface as "AI unavailable". ENOENT (binary missing)
-// is not retryable.
-async function runCliWithRetry(providerName, args, attempts = 3) {
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await runCli(providerName, args);
-    } catch (err) {
-      lastErr = err;
-      if (err.code === 'ENOENT') throw err;
-      if (i < attempts - 1) await sleep(700 * (i + 1));
-    }
-  }
-  throw lastErr;
+  const p = getProvider(providerName);
+  if (!p || p.kind !== 'cli') return null;
+  return resolveBin(p);
 }
 
 /**
- * @param {'claude'|'codex'} providerName
- * @param {{prompt: string, model?: string, budget?: string|number}} params
+ * @param {string} providerName  'claude' | 'codex' | 'grok' | ...
+ * @param {{prompt: string, model?: string, budget?: string|number, timeoutMs?: number, fetchImpl?: typeof fetch}} params
  * @returns {Promise<string>} the model's raw text response
- * @throws {Error & {statusCode?: number}} 503-flagged when the CLI is
- *   missing or not logged in.
+ * @throws {Error & {statusCode?: number}} 503 when the provider is missing,
+ *   not configured, not logged in, or unknown.
  */
-async function runDraft(providerName, { prompt, model, budget } = {}) {
-  const provider = PROVIDERS[providerName];
-  if (!provider) {
-    throw make503(`AI drafting unavailable: unknown provider "${providerName}"`);
+async function runDraft(providerName, { prompt, model, budget, tools, timeoutMs, fetchImpl } = {}) {
+  const p = getProvider(providerName);
+  if (!p) throw make503(`AI drafting unavailable: unknown provider "${providerName}"`);
+  if (!p.isConfigured()) {
+    throw make503(`AI drafting unavailable: ${p.label} is not configured (${p.loginCommand ? p.loginCommand() : 'see .env.example'}).`);
   }
-
-  const args = provider.buildArgs(prompt, { model, budget });
-  let stdout;
   try {
-    stdout = await runCliWithRetry(providerName, args);
+    return await p.complete({ prompt, model, budget, tools, timeoutMs, fetchImpl });
   } catch (err) {
-    const fix = providerName === 'codex' ? 'run `codex login`' : 'sign in with the "Log in to Claude" button';
+    if (err && err.statusCode) throw err; // already a clean provider error
+    const fix = p.kind === 'cli'
+      ? providerName === 'codex' ? 'run `codex login`' : 'sign in with the "Log in to Claude" button'
+      : 'check the API key in config/.env';
     throw make503(
-      `AI drafting unavailable: could not run ${providerName} CLI (${
-        err.code === 'ENOENT' ? 'not found on PATH' : err.message
-      }) — ${fix}.`
+      `AI drafting unavailable: could not run ${providerName} (${err.code === 'ENOENT' ? 'not found on PATH' : err.message}) — ${fix}.`
     );
   }
-
-  return provider.parse(stdout);
 }
 
-/**
- * Report whether a provider's CLI is installed and logged in, without
- * spending any tokens. For claude we call `claude auth status` (fast,
- * non-interactive, prints JSON `{loggedIn:boolean,...}`). For codex we call
- * `codex login status`, which prints human-readable auth state. Never throws
- * — returns a plain status object so the UI can render a pill.
- *
- * @returns {Promise<{provider:string, installed:boolean, loggedIn:boolean, detail?:string}>}
- */
-function getAuthStatus(providerName) {
-  const provider = PROVIDERS[providerName];
-  if (!provider) return Promise.resolve({ provider: providerName, installed: false, loggedIn: false, detail: 'unknown provider' });
-  const bin = getBin(providerName);
-
-  if (providerName === 'claude') {
-    return new Promise((resolve) => {
-      execFile(bin, ['auth', 'status'], { timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] }, (err, stdout) => {
-        if (err && err.code === 'ENOENT') {
-          resolve({ provider: 'claude', installed: false, loggedIn: false, detail: 'claude CLI not found on PATH' });
-          return;
-        }
-        let loggedIn = false;
-        try {
-          const parsed = JSON.parse(String(stdout || '').trim());
-          loggedIn = parsed && parsed.loggedIn === true;
-        } catch {
-          // Older CLIs print human text; fall back to a loose check.
-          loggedIn = /logged in|authenticated/i.test(String(stdout || '')) && !/not logged in/i.test(String(stdout || ''));
-        }
-        resolve({ provider: 'claude', installed: true, loggedIn, detail: loggedIn ? 'logged in' : 'not logged in' });
-      });
-    });
+/** Never throws. */
+async function getAuthStatus(providerName) {
+  const p = getProvider(providerName);
+  if (!p) return { provider: providerName, installed: false, loggedIn: false, detail: 'unknown provider' };
+  try {
+    return { ...(await p.authStatus()), kind: p.kind };
+  } catch (err) {
+    return { provider: providerName, installed: false, loggedIn: false, detail: err.message, kind: p.kind };
   }
-
-  // codex: use the built-in non-interactive status command.
-  return new Promise((resolve) => {
-    execFile(bin, ['login', 'status'], { timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }, (err, stdout, stderr) => {
-      if (err && err.code === 'ENOENT') {
-        resolve({ provider: 'codex', installed: false, loggedIn: false, detail: 'codex CLI not installed' });
-        return;
-      }
-      const text = String(stdout || stderr || '').trim();
-      const loggedIn = /logged in/i.test(text) && !/not logged in/i.test(text);
-      resolve({
-        provider: 'codex',
-        installed: true,
-        loggedIn,
-        detail: text || (loggedIn ? 'logged in' : 'not logged in'),
-      });
-    });
-  });
 }
 
-/**
- * Launch the provider's interactive login in a NEW macOS Terminal window so
- * the operator can complete the browser OAuth without typing anything. The
- * subscription flow is `claude auth login --claudeai` (NO API key). Returns
- * once the window has been asked to open; the caller then polls
- * getAuthStatus() (a "Recheck" button in the UI).
- *
- * macOS only (uses `open -a Terminal`). Throws a plain Error elsewhere so the
- * route can 400 with a "run it yourself" hint.
- */
-async function startLogin(providerName, { platform = process.platform } = {}) {
-  const bin = getBin(providerName);
-  const loginCmd =
-    providerName === 'codex'
-      ? `${bin} login`
-      : `${bin} auth login --claudeai`;
+// /api/ai/providers hits this on every Composer render; auth probes spawn a
+// CLI each. Cache briefly; `fresh` bypasses (Recheck button).
+const STATUS_TTL_MS = 30_000;
+let statusCache = { at: 0, rows: null };
 
-  if (platform !== 'darwin') {
-    const err = new Error(`In-app login is macOS-only. Run \`${loginCmd}\` in a terminal.`);
-    err.statusCode = 400;
-    err.manualCommand = loginCmd;
+/**
+ * Full provider list for the UI: configured flag + auth status per provider.
+ * Unconfigured providers (no API key) are included with configured:false so
+ * Settings can explain how to enable them; the frontend hides them.
+ */
+async function listProviders({ fresh = false } = {}) {
+  if (!fresh && statusCache.rows && Date.now() - statusCache.at < STATUS_TTL_MS) return statusCache.rows;
+  const rows = await Promise.all(
+    ALL.map(async (p) => ({
+      name: p.name,
+      label: p.label,
+      kind: p.kind,
+      configured: p.isConfigured(),
+      capabilities: p.capabilities,
+      defaultModel: p.defaultModel,
+      status: p.isConfigured() ? await getAuthStatus(p.name) : { installed: false, loggedIn: false, detail: 'not configured', kind: p.kind },
+    }))
+  );
+  statusCache = { at: Date.now(), rows };
+  return rows;
+}
+
+function invalidateStatusCache() {
+  statusCache = { at: 0, rows: null };
+}
+
+async function startLogin(providerName, opts = {}) {
+  const p = getProvider(providerName);
+  if (!p) {
+    const err = new Error(`unknown provider "${providerName}"`);
+    err.statusCode = 404;
     throw err;
   }
-
-  return new Promise((resolve, reject) => {
-    // `open -a Terminal` with a command requires a script file or AppleScript.
-    // osascript keeps it dependency-free and pops a visible window running the
-    // login command, which opens the browser for OAuth.
-    const osa = `tell application "Terminal"
-  activate
-  do script "${loginCmd.replace(/"/g, '\\"')}"
-end tell`;
-    execFile('osascript', ['-e', osa], { timeout: 15_000 }, (err) => {
-      if (err) {
-        const e = new Error(`Could not open Terminal for login: ${err.message}`);
-        e.statusCode = 500;
-        e.manualCommand = loginCmd;
-        reject(e);
-        return;
-      }
-      resolve({ started: true, provider: providerName, command: loginCmd });
-    });
-  });
+  const r = await p.login(opts);
+  invalidateStatusCache();
+  return r;
 }
 
-export { runDraft, PROVIDERS, parseClaudeEnvelope, parseCodexStream, getAuthStatus, startLogin, getBin };
+/** Name of the first configured provider that can read images (vision). */
+function visionProviderName() {
+  const p = providerWithCapability('vision');
+  return p ? p.name : 'claude';
+}
+
+export {
+  runDraft,
+  PROVIDERS,
+  parseClaudeEnvelope,
+  parseCodexStream,
+  getAuthStatus,
+  startLogin,
+  getBin,
+  listProviders,
+  invalidateStatusCache,
+  configuredProviders,
+  visionProviderName,
+};

@@ -15,7 +15,7 @@ const POST_STATUSES = [
   'canceled',
 ];
 
-const USAGE_KINDS = ['ai_draft', 'copy_assist', 'blotato_submit', 'image_request', 'image_generated', 'agent', 'agent_publish'];
+const USAGE_KINDS = ['ai_draft', 'copy_assist', 'blotato_submit', 'image_request', 'image_generated', 'agent', 'agent_publish', 'manual_publish'];
 
 function isoDaysAgo(days) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();

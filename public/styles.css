@@ -190,9 +190,15 @@ main#view {
   animation: viewIn var(--t-med);
 }
 
+/* Reveal-only: content must be visible (opacity:1) at every point of this
+   animation, including before it starts or if a paint happens mid-run. A
+   0-opacity start left views rendered permanently dimmed whenever a
+   headless/automated paint landed before the animation completed (this is
+   why the composer view used to carry its own `animation: none` override -
+   that's now removed as redundant). Keep the subtle slide-in, never opacity. */
 @keyframes viewIn {
-  from { opacity: 0; transform: translateY(7px); }
-  to { opacity: 1; transform: none; }
+  from { transform: translateY(7px); }
+  to { transform: none; }
 }
 
 h1 {
@@ -298,44 +304,61 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
 .cal-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(120px, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 .cal-grid[hidden] { display: none; }
 .cal-day {
   background: var(--grad-surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  padding: 10px;
-  min-height: 114px;
+  padding: 7px 8px;
+  min-height: 84px;
   box-shadow: var(--sh-1), var(--inset-hi);
   transition: border-color var(--t-fast);
 }
 .cal-day:hover { border-color: var(--border-hi); }
-.cal-day .day-label { color: var(--muted); font-size: 11px; margin-bottom: 7px; font-weight: 600; }
+.cal-day .day-label { color: var(--muted); font-size: 10.5px; margin-bottom: 5px; font-weight: 600; opacity: 0.85; }
 .cal-day.drop-target { outline: 2px dashed var(--gold); background: #201a10; }
 .chip {
-  display: block;
-  margin-bottom: 5px;
-  padding: 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 4px 7px;
   border-radius: var(--r-sm);
-  font-size: 11px;
+  font-size: 10.5px;
   cursor: pointer;
-  border-left: 3px solid var(--gold);
+  border: 1px solid var(--border);
   background: var(--ink-3);
   color: var(--white);
   text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   box-shadow: var(--sh-1);
   transition: background var(--t-fast), transform var(--t-fast);
 }
 .chip:hover { background: var(--surface-hi); transform: translateY(-1px); }
 .chip[draggable="true"] { cursor: grab; }
 .chip[draggable="true"]:active { cursor: grabbing; }
-/* B17a: campaign-tagged chips get a thicker colored left border (color set
-   inline per-campaign via style=) so they read distinctly at a glance. */
-.chip.chip-campaign { border-left-width: 5px; }
+/* Chip text is the only part allowed to truncate - icon/disc/dot/warn glyph
+   stay full-size and vertically centered (side-stripe accent border removed
+   in favor of the leading .chip-dot below). */
+.chip-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip > .platform-icon,
+.chip > .brand-identity-disc,
+.chip > .manual-warn-glyph { flex-shrink: 0; margin: 0; }
+/* B17a: campaign-tagged chips get their dot colored per-campaign (falls back
+   to brand color) via inline style= on .chip-dot; a faint ring distinguishes
+   a campaign dot from a plain brand dot at a glance. */
+.chip-dot { flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; }
+.chip.chip-campaign .chip-dot { box-shadow: 0 0 0 2px rgba(200,144,42,0.35); }
+/* Status is no longer shown as an inline badge (it broke the single-line
+   row in a narrow month cell) - it's still in the hover title and the click
+   popover. These are the only calendar-visible traces left: a struck-through
+   canceled chip and a dashed border for the two "not really sent" statuses,
+   matching the dashed treatment their .status-* pill already uses. */
+.chip[data-status="canceled"] .chip-text { text-decoration: line-through; opacity: 0.7; }
+.chip[data-status="submitted_dry"],
+.chip[data-status="failed_verify"] { border-style: dashed; }
+.chip[data-status="failed"] { border-color: #e07c6d; }
 
 /* ---------- Kanban ---------- */
 .kanban {
@@ -622,27 +645,90 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
   margin-bottom: 24px;
 }
 
-.home-section { margin-bottom: 18px; }
+/* Dense-Home redesign: bento grid replacing the old flat vertical stack.
+   Needs Attention (when present) sits full-width above this; This Week,
+   Platform Status, Analytics and Setup are `.home-panel` tiles inside it.
+   auto-fit + minmax gives 2 columns on desktop, collapsing to 1 column
+   once panels can't fit at >=340px each - no explicit breakpoint needed
+   for the common case, plus an explicit one below for very narrow/mobile. */
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
 
-.attention-list { display: flex; flex-direction: column; gap: 7px; }
+/* Denser than the default `.card`: less padding, tighter internal rhythm.
+   Panels sit inside `.home-grid`'s own gap, so no extra bottom margin. */
+.home-panel {
+  padding: 16px;
+  margin-bottom: 0;
+}
+.home-panel-attention {
+  margin-bottom: 16px;
+}
+.home-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.home-panel-head h2 { margin: 0; }
+.home-panel-link {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.home-panel-link:hover { color: var(--gold-2); }
+
+.attention-list { display: flex; flex-direction: column; gap: 5px; }
 .attention-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 6px;
+  padding: 0 5px 0 0;
   border-radius: var(--r-sm);
   background: var(--surface-2);
   border: 1px solid var(--border);
-  text-decoration: none;
   color: var(--white);
-  font-size: 13px;
+  font-size: 12.5px;
   box-shadow: var(--sh-1);
   transition: transform var(--t-fast), border-color var(--t-fast), background var(--t-fast);
 }
 .attention-row:hover { border-color: var(--gold-dim); background: var(--surface-hi); transform: translateX(2px); }
+.attention-row-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 5px 7px 10px;
+  color: inherit;
+  text-decoration: none;
+}
+.attention-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attention-dismiss {
+  display: grid;
+  place-items: center;
+  flex: 0 0 26px;
+  width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+  box-shadow: none;
+}
+.attention-dismiss:hover { color: var(--white); border-color: var(--border-hi); box-shadow: none; transform: none; }
+.attention-dismiss-all { min-height: 26px; padding: 3px 8px; font-size: 10.5px; }
 .attention-row .attention-dot {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--muted);
@@ -679,14 +765,14 @@ textarea { width: 100%; resize: vertical; font-family: inherit; line-height: 1.5
 .week-chip-copy { font-size: 12px; }
 .week-chip-date { font-size: 11px; color: var(--gold-2); font-weight: 600; }
 
-.platform-chips { display: flex; gap: 10px; flex-wrap: wrap; }
+.platform-chips { display: flex; flex-direction: column; gap: 6px; }
 .platform-chips-empty { color: var(--muted); font-size: 12px; }
 .platform-chip {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 9px 14px;
-  border-radius: var(--r-pill);
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   border: 1px solid var(--border);
   font-size: 12px;
@@ -1265,6 +1351,69 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   cursor: pointer;
 }
 
+/* ---------- Analytics redesign (2026-07-20 feedback) ----------
+   Rollups lead the view; each brand's summary sits in an .analytics-brand-
+   stack of .home-panel cards (tighter than the default .card so more than
+   one brand's summary fits above the fold). The stat strip is intentionally
+   plain text, not the giant-number/gradient "hero metric" treatment used
+   on Home - small-to-medium numbers in a scannable row instead.
+   NOTE: placed before the responsive @media blocks below on purpose - same-
+   specificity rules cascade by source order, so the narrow-viewport column
+   overrides inside those @media blocks need to appear after this base rule
+   to win at small widths. */
+.analytics-brand-stack { display: flex; flex-direction: column; gap: 14px; }
+
+.analytics-stat-strip {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  text-align: center;
+}
+.analytics-stat-tile { padding: 2px 0; }
+.analytics-stat-value { font-size: 17px; font-weight: 700; color: var(--white); }
+.analytics-stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
+
+.analytics-top10-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+/* ---- Metrics-due panel: demoted to a collapsed-by-default .card.collapsible
+   (see makeCollapsible) with a dense data-entry table as its body. Column
+   labels live in <th>, not per-input placeholders, so the number inputs
+   stay narrow without truncating any label text. The wrap gives the table
+   its own horizontal scroll on narrow viewports instead of the page body. */
+.metrics-due-hint { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.metrics-due-table-wrap { overflow-x: auto; }
+.metrics-due-table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 560px; }
+.metrics-due-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.metrics-due-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.metrics-due-post-cell a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+  vertical-align: middle;
+}
+.metrics-due-date { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.metrics-due-table input[type="number"] { width: 84px; text-align: right; }
+.metrics-due-row-msg { font-size: 11px; margin-top: 2px; }
+
 @media (max-width: 900px) {
   #app-shell { display: block; }
   nav#sidebar {
@@ -1330,10 +1479,24 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   .mini-analytics-stats {
     grid-template-columns: repeat(2, 1fr);
   }
+  .analytics-stat-strip {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .analytics-top10-grid {
+    grid-template-columns: 1fr;
+  }
   .cal-grid {
     grid-template-columns: repeat(7, minmax(86px, 1fr));
     gap: 7px;
   }
+}
+
+/* Dense-Home: force a single column below ~720px regardless of exact
+   container width (sidebar width, scrollbar, etc. can otherwise push the
+   auto-fit breakpoint around) - avoids two panels ever squeezing narrower
+   than they can hold their content without wrapping oddly. */
+@media (max-width: 720px) {
+  .home-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {
@@ -1348,6 +1511,9 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   .mini-analytics-stats {
     grid-template-columns: 1fr;
   }
+  .analytics-stat-strip {
+    grid-template-columns: repeat(2, 1fr);
+  }
   .cal-grid {
     grid-template-columns: 1fr;
   }
@@ -1355,6 +1521,11 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   .fab { right: 18px; bottom: 18px; }
   .chat-toggle-btn { right: 20px; bottom: 86px; }
   .action-center-btn { right: 22px; bottom: 146px; }
+  .setup-matrix {
+    grid-template-columns: minmax(70px, 1fr) repeat(5, minmax(28px, 1fr));
+    column-gap: 2px;
+  }
+  .setup-dot { width: 20px; height: 20px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1377,18 +1548,34 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
 .cal-day.cal-today .day-label { color: var(--gold-2); font-weight: 700; }
 .cal-day.cal-muted { opacity: 0.45; }
 .cal-day.cal-unscheduled { grid-column: 1 / -1; min-height: auto; }
-.cal-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
+/* Header consolidation pass: view-mode + date-nav + refresh + Send-to-Blotato
+   now live in the page-header's action row (title left, controls right - see
+   `pageHeader('Calendar / Queue', ...)` in renderCalendarInto), replacing the
+   old dedicated `.cal-toolbar` row. `.cal-toolbar-group` is kept as the
+   shared "small label + control" grouping and reused below for the slim
+   filter line. */
 .cal-toolbar-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.cal-toolbar-filters { margin-left: auto; }
 .cal-nav-btn { padding: 6px 11px; font-size: 13px; line-height: 1; }
 .cal-period-label { font-weight: 700; margin-left: 4px; letter-spacing: 0.01em; }
+
+/* Slim filter line directly under the header toolbar: compact (not
+   full-width) selects, one row, minimal vertical footprint. */
+.cal-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+}
+.cal-filter-bar .cal-toolbar-group { gap: 6px; }
+.cal-filter-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.cal-filter-bar select { width: auto; min-width: 0; }
 
 /* Day cells are clickable to schedule a post on that date */
 .cal-day.cal-clickable { cursor: pointer; position: relative; }
@@ -1413,34 +1600,40 @@ a.chat-action-chip:hover { border-color: var(--gold); transform: translateY(-1px
   border-style: dashed;
   border-color: var(--border);
 }
+/* Month mode no longer renders this row (postChip covers every post for the
+   day, so a count-dot row above the chips was a redundant duplicate of the
+   chip's own platform icon - see dayCellFor). Left in place, slimmed to a
+   single consistent dot size, for week mode / a future overflow summary. */
 .cal-day-counts { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: -3px 0 7px; }
 .cal-count-dot {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 7px;
-  height: 7px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
   border-radius: var(--r-pill);
   font-size: 8.5px;
   font-weight: 700;
   color: var(--ink);
   line-height: 1;
 }
-.cal-count-dot:empty { padding: 0; }
-.cal-count-dot:not(:empty) { min-width: 13px; height: 13px; padding: 0 2px; }
 .cal-week-daycount { color: var(--muted); font-weight: 500; }
 
-.cal-coverage-strip { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 14px; }
+/* Per-brand "N this month/week" coverage strip: kept as a single slim row
+   (small pills, tight gap/margins) rather than a tall band above the grid -
+   header consolidation pass. */
+.cal-coverage-strip { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
 .cal-coverage-strip[hidden] { display: none; }
 .cal-coverage-pill {
   display: inline-flex;
   align-items: center;
-  padding: 5px 10px;
+  padding: 3px 9px;
   border-radius: var(--r-pill);
   border-left: 3px solid var(--gold);
   background: var(--ink-3);
   color: var(--white);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
   box-shadow: var(--sh-1);
 }
@@ -1935,6 +2128,63 @@ select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height:
   margin-bottom: 0;
   justify-content: flex-end;
 }
+.qc-action-bar > [hidden] { display: none !important; }
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.field-label-row > label { margin: 0; }
+.field-label-actions { display: flex; gap: 3px; }
+.field-label-actions .button { min-height: 24px; padding: 2px 7px; font-size: 10.5px; }
+.account-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 7px;
+}
+button.account-choice {
+  display: grid;
+  grid-template-columns: 24px 1fr 18px;
+  align-items: center;
+  gap: 8px;
+  min-height: 54px;
+  padding: 8px 10px;
+  text-align: left;
+  background: var(--surface);
+  box-shadow: none;
+}
+button.account-choice.active {
+  border-color: var(--steel);
+  background: rgba(110, 143, 168, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(110, 143, 168, 0.22);
+}
+.account-choice-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--surface-hi);
+}
+.account-choice-copy { display: flex; flex-direction: column; min-width: 0; }
+.account-choice-copy strong { color: var(--white); font-size: 12px; }
+.account-choice-copy span { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.account-choice-check { color: var(--steel); font-size: 15px; font-weight: 800; text-align: center; }
+.qc-delivery-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.qc-delivery-grid button.delivery-choice { min-height: 56px; padding: 8px 9px; }
+.qc-schedule-controls { margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: rgba(255,255,255,0.015); }
+.qc-schedule-controls[hidden] { display: none; }
+.qc-schedule-controls input { width: 100%; }
+@media (max-width: 720px) {
+  .qc-delivery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .account-choice-grid { grid-template-columns: 1fr; }
+}
 
 /* F2 - Review mode: one draft at a time, centered card. */
 .review-body { display: flex; justify-content: center; }
@@ -2023,6 +2273,137 @@ select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height:
 .chip-popover-reschedule[hidden] { display: none; }
 .chip-popover-reschedule input { flex: 1; min-width: 0; }
 
+/* ---------- B22: calm review-first publishing drawer ---------- */
+.review-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(2px);
+}
+.chip-popover.review-drawer {
+  inset: 0 0 0 auto;
+  width: min(620px, 94vw);
+  max-width: none;
+  max-height: none;
+  height: 100vh;
+  border-radius: 0;
+  border-width: 0 0 0 1px;
+  padding: 22px 24px 36px;
+  animation: reviewDrawerIn 180ms var(--ease);
+}
+@keyframes reviewDrawerIn {
+  from { transform: translateX(24px); opacity: 0.7; }
+  to { transform: none; opacity: 1; }
+}
+.review-drawer-header,
+.review-drawer-label-row,
+.review-drawer-meta {
+  display: flex;
+  align-items: center;
+}
+.review-drawer-header { justify-content: space-between; gap: 16px; }
+.review-drawer-eyebrow,
+.review-drawer-label {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.review-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 4px;
+  color: var(--white);
+  font-size: 19px;
+  font-weight: 750;
+}
+.review-drawer-meta { gap: 8px; margin: 14px 0 4px; flex-wrap: wrap; }
+.account-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--white);
+  background: var(--surface-2);
+  font-size: 11px;
+  font-weight: 650;
+}
+.review-drawer-date { color: var(--muted); font-size: 12px; margin-left: auto; }
+.review-drawer-section {
+  margin-top: 18px;
+  padding-top: 17px;
+  border-top: 1px solid var(--border);
+}
+.review-drawer-label-row { justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.review-drawer-label-row .review-drawer-label { margin: 0; }
+.review-drawer-label { margin-bottom: 8px; }
+.review-drawer-preview .feed-preview-card { margin: 0 auto; }
+.review-drawer-copy {
+  min-height: 150px;
+  max-height: 42vh;
+  padding: 13px 14px;
+  font-size: 14px;
+  line-height: 1.58;
+  background: #181713;
+}
+.link-placement-insight {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.link-position-good { color: #83c990; }
+.link-position-warn { color: var(--gold-2); }
+.delivery-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+button.delivery-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-height: 64px;
+  padding: 10px 12px;
+  text-align: left;
+  box-shadow: none;
+}
+button.delivery-choice strong { font-size: 12.5px; color: var(--white); }
+button.delivery-choice span { color: var(--muted); font-size: 10.5px; line-height: 1.35; }
+button.delivery-choice.active {
+  border-color: var(--gold);
+  background: rgba(200, 144, 42, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(200, 144, 42, 0.18);
+}
+.delivery-schedule-panel { margin-top: 10px; }
+.delivery-schedule-panel[hidden] { display: none; }
+.delivery-schedule-panel > input { width: 100%; }
+.schedule-preset-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.review-drawer-primary { width: 100%; margin-top: 12px; min-height: 42px; }
+.review-drawer-advanced {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.review-drawer-advanced summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+.review-drawer-advanced-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.manual-reconcile-row { display: flex; width: 100%; gap: 7px; }
+.manual-reconcile-row input { flex: 1; min-width: 0; }
+@media (max-width: 620px) {
+  .chip-popover.review-drawer { width: 100vw; padding: 18px 16px 30px; }
+  .delivery-choice-grid { grid-template-columns: 1fr; }
+  .review-drawer-date { width: 100%; margin-left: 0; }
+  .manual-reconcile-row { flex-direction: column; }
+}
+
 /* ---------- F8: Upcoming agenda view ---------- */
 .agenda-list { display: flex; flex-direction: column; gap: 18px; }
 .agenda-list[hidden] { display: none; }
@@ -2073,6 +2454,109 @@ select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height:
   font-size: 13px;
 }
 .agenda-empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+/* ---------------- B20: agenda multi-select + bulk bar ---------------- */
+.agenda-row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agenda-row-wrap > .agenda-row { flex: 1; min-width: 0; }
+.agenda-check {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--gold);
+  cursor: pointer;
+  margin: 0;
+}
+.agenda-check-spacer { flex: none; width: 15px; }
+.agenda-check-group { margin-right: 2px; }
+
+.agenda-bulk-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--gold-dim);
+  border-radius: var(--r-sm, 8px);
+  background: var(--surface-hi, var(--ink-2));
+  box-shadow: var(--shadow-2, 0 6px 20px rgba(0, 0, 0, 0.35));
+}
+.agenda-bulk-count {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--gold-2);
+  margin-right: 4px;
+}
+.agenda-bulk-reschedule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+}
+.agenda-bulk-reschedule[hidden] { display: none; }
+
+/* ---------------- B21: seed field, variant strip, per-platform counts ------ */
+.qc-seed {
+  width: 100%;
+  resize: vertical;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--ink-3, var(--surface));
+  border: 1px dashed var(--border);
+}
+.qc-seed:focus { color: inherit; border-style: solid; }
+
+.qc-variant-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.qc-variant-row:empty { display: none; }
+.qc-variant-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+/* One count chip per selected platform. A blended minimum used to report X's
+   280 as if it were LinkedIn's limit. */
+.char-count .qc-count-chip {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.char-count .qc-count-chip.over { color: var(--red, #d9534f); font-weight: 700; }
+
+/* B20: partial-success toast (approved 5, skipped 1) is neither ok nor error */
+.toast.toast-warn { border-color: var(--gold-dim); color: var(--gold-2); }
+
+/* B20/P3: collapsed status history on a post that has never published */
+.history-details > summary {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px 0;
+}
+.history-details > summary:hover { color: var(--gold-2); }
 
 /* ---------------- B19 F5: nav-rail shortcuts hint ---------------- */
 .nav-shortcuts-hint {
@@ -2170,38 +2654,107 @@ select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height:
 .palette-empty { color: var(--muted); font-size: 13px; padding: 10px; }
 .palette-hint { margin-top: 8px; color: var(--muted); font-size: 11px; text-align: center; }
 
-/* ---------------- B19 F6: brand setup completeness card ---------------- */
-.setup-card-body { display: flex; flex-direction: column; gap: 10px; }
-.setup-brand-card { padding: 12px 16px; }
-.setup-check-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
-.setup-check-item {
+/* ---------------- B19 F6 / Dense-Home: brand setup readiness matrix ----------------
+   Was one collapsible `.card` per brand (~5 rows each). Now a single compact
+   grid: a header row of abbreviated check labels, then one row per brand
+   with a small dot/mark per check - ~6 rows total for a 5-brand roster
+   instead of ~25. Each dot is still a real button that jumps to the
+   relevant view (see buildSetupCard's c.jump). */
+.setup-matrix-wrap { font-size: 12px; }
+.setup-matrix {
+  display: grid;
+  grid-template-columns: minmax(88px, 1.3fr) repeat(5, minmax(40px, 1fr));
+  align-items: center;
+  row-gap: 4px;
+  column-gap: 4px;
+}
+.setup-matrix-head {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: center;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.setup-matrix-head:first-child { text-align: left; }
+.setup-brand-name {
+  text-align: left;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 4px 6px 4px 0;
+}
+.setup-complete-check { color: var(--gold-2); margin-left: 4px; font-weight: 700; }
+.setup-dot-cell { display: flex; justify-content: center; }
+.setup-dot {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 6px 4px;
-  background: transparent;
-  border: none;
+  justify-content: center;
   box-shadow: none;
-  color: var(--fg, #ece9e2);
-  font-size: 13px;
-  text-align: left;
   cursor: pointer;
-  border-radius: 6px;
+  transition: border-color var(--t-fast), color var(--t-fast), background var(--t-fast);
 }
-.setup-check-item:hover { background: var(--surface-hi); }
-.setup-check-mark {
-  flex-shrink: 0;
-  width: 18px;
-  text-align: center;
-  color: var(--muted);
-  font-weight: 700;
-}
-.setup-check-item:not(.setup-check-incomplete) .setup-check-mark { color: var(--gold-2); }
-.setup-check-incomplete .setup-check-label { color: var(--muted); }
+.setup-dot:hover { border-color: var(--gold); color: var(--gold-2); }
+.setup-dot.done { background: rgba(228,180,78,0.14); border-color: var(--gold-dim); color: var(--gold-2); }
+.setup-dot.open { color: var(--muted); }
+.setup-dot.neutral-on { background: rgba(110,143,168,0.14); border-color: var(--steel); color: var(--steel); }
+.setup-dot.neutral-off { color: var(--muted); }
 
-/* ---------------- Composer v3 (single dense form, replaces card-stack) ---------------- */
-.composer-v3 { max-width: 980px; }
+/* ---------------- Composer v3 (2-column working layout) ---------------- */
+.composer-v3 { max-width: 1400px; }
+
+/* 2-column working layout: LEFT is the editor (accounts, AI/copy tools,
+   textarea, media strip); RIGHT is the live Preview + compact metadata/
+   scheduling group + Save actions, kept sticky so it stays visible while
+   typing on the left. Collapses to 1 column below ~900px. */
+.cv3-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+.cv3-col-left { min-width: 0; }
+.cv3-col-right {
+  min-width: 0;
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.cv3-preview-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px;
+  background: var(--surface);
+}
+.cv3-preview-card .cv3-preview-toggle { margin-top: 0; margin-bottom: 8px; }
+
+@media (max-width: 900px) {
+  .cv3-grid { grid-template-columns: 1fr; }
+  .cv3-col-right {
+    position: static;
+    top: auto;
+    max-height: none;
+    overflow: visible;
+  }
+}
+
 .cv3-accounts-row {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
   margin-bottom: 14px;
@@ -2230,7 +2783,7 @@ select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height:
 .cv3-copy-toolbar select { width: auto; }
 .cv3-copy-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
 .cv3-copy-counts { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
-.cv3-copy-textarea { width: 100%; min-height: 168px; font-size: 14px; line-height: 1.5; resize: vertical; }
+.cv3-copy-textarea { width: 100%; min-height: 120px; font-size: 14px; line-height: 1.5; resize: vertical; }
 .cv3-preview-toggle { margin-top: 8px; }
 
 .cv3-media-strip { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -2251,23 +2804,36 @@ select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height:
 .cv3-media-library-pop button { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--fg); padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; }
 .cv3-media-library-pop button:hover { background: var(--surface); }
 
-.cv3-details-line, .cv3-schedule-line { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
-.cv3-detail-field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
-.cv3-detail-field label { font-size: 11px; color: var(--muted); font-weight: 500; }
-.cv3-detail-field select, .cv3-detail-field input { width: auto; }
+/* Compact stacked group (right column): small labels over full-width
+   controls, tight vertical rhythm - not a wide wrapping row anymore. */
+.cv3-details-line, .cv3-schedule-line {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-bottom: 0;
+}
+.cv3-detail-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; width: 100%; }
+.cv3-detail-field label { font-size: 10px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.02em; }
+.cv3-detail-field select, .cv3-detail-field input { width: 100%; }
 .cv3-tag-chip-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .cv3-tag-chip-add input { max-width: 110px; }
 
-.cv3-actionbar {
-  position: sticky; bottom: 0; z-index: 20;
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 12px 4px; margin-top: 10px;
-  background: var(--bg, #171512); border-top: 1px solid var(--border);
+/* Section spacing between the compact groups stacked in the right column -
+   subtle rule, not nested cards. */
+.cv3-col-right > .cv3-details-line,
+.cv3-col-right > .cv3-schedule-line {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
-.cv3-actionbar .cv3-summary { font-size: 12px; color: var(--muted); margin-left: auto; }
+
+.cv3-actionbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 2px 2px; margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+.cv3-actionbar .cv3-summary { font-size: 11px; color: var(--muted); margin-left: auto; }
 .cv3-advanced-toggle { margin-left: 4px; }
 
-.cv3-advanced { border-top: 1px dashed var(--border); margin-top: 16px; padding-top: 12px; }
+/* Advanced spans the full width below both columns. */
+.cv3-advanced { grid-column: 1 / -1; border-top: 1px dashed var(--border); margin-top: 16px; padding-top: 12px; }
 .cv3-advanced-body { display: flex; flex-direction: column; gap: 14px; }
 .cv3-advanced-body .card { margin-bottom: 0; }
 
@@ -2293,8 +2859,10 @@ select, input:not([type="checkbox"]):not([type="color"]), textarea { min-height:
 .send-now-wrap { display: flex; flex-direction: column; gap: 2px; margin: 4px 0; }
 .send-now-sub { font-size: 11px; color: var(--muted); }
 
-/* item 2: bulk send / calendar toolbar */
-.cal-toolbar-group .button.sm { white-space: nowrap; }
+/* item 2: bulk send / calendar toolbar - Send to Blotato now lives in the
+   page-header's action row (header consolidation pass) rather than its own
+   `.cal-toolbar-group`; keep its label from wrapping there. */
+.page-header-actions .button.sm { white-space: nowrap; }
 
 /* item 3: sync/live status pill (nav rail footer) */
 .sync-status-pill {

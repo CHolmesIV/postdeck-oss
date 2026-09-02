@@ -1,13 +1,17 @@
 # PostDeck - Build Status
 
-_Last updated: 2026-07-19. One-page state of the build. Full design: `SPEC.md`. History:
+_Last updated: 2026-09-02. One-page state of the build. Full design: `SPEC.md`. History:
 `CHANGELOG.md`._
 
 ## Where it stands
 
 Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:4520`
-(`npm start`). **300/300 tests passing.** Dry-run is the hard default unless deliberately
-flipped.
+(`npm start`). **328 passing.**
+
+> ⚠️ **`BLOTATO_DRY_RUN=0` in `../config/.env` - posting is LIVE.** Dry-run is the *code*
+> default but the running instance is deliberately flipped to live. Approving a post whose
+> `publish_at` is inside 48h hands it to Blotato on the next worker cycle (~5 min), and
+> **Blotato cannot delete.** Check the DRY RUN / live pill in the nav rail before approving.
 
 ## Built (done)
 
@@ -39,22 +43,49 @@ flipped.
 | - | Composer UX wave (CB feedback): Quick Compose modal on +, collapsible/drag-reorder sections, Edit-prompts button, Waiting-on-Codex status, metrics quick-entry + CSV analytics import | ✅ |
 | B19 | Flow wave: network post preview w/ fold line, Review mode (#/review), calendar popover + Upcoming agenda view, platform icon set, idea-drag to calendar, duplicate/copy-to-brand w/ re-voice, shortcuts + Cmd+K palette, brand setup card | ✅ |
 | - | Composer v3 (single dense form, image placeholder tile, day popover) + send controls (per-post/bulk send-now, sync-now, status pill), startup catch-up + missed-window flagging, manual-account badges, All-Brands identity, image auto-fit pipeline, first-comment (auto on X/threads, reminder on LinkedIn/FB), alt text | ✅ |
+| B20 | Bulk approve (`approve-batch` + agenda multi-select + sticky bulk bar), Approve in the calendar popover, draft-first detail page (Edit above Metrics; Metrics hidden until published) | ✅ |
+| B21 | Draft-with-AI seed field + variant strip (v1/v2/v3), per-platform char counts (no more blended minimum), `publish-now` endpoint + confirmed `Post now` button | ✅ |
+| B22 | Publishing workflow redesign: review drawer, one delivery choice, quick scheduling, account cards, link-high guidance, manual-post reconciliation | ✅ |
+| B22.1 | Home `Needs attention` per-item dismiss, Dismiss all, persistent exact-state re-arm | ✅ |
+| B23 | Audit wave: Fastify 5 / dep upgrade (0 vulns), Origin/Host request guard, in-process submit claim, migration v11 (`metrics.post_id` index), daily SQLite backups, provider-layer AI registry (Claude/Codex/Grok) | ✅ |
 
-## Security posture (reviewed 2026-07-15)
+## Security posture (reviewed 2026-09-02)
 
-- Localhost-only (`127.0.0.1`), single operator, **no auth/CSRF by design**. Repo private.
+- Localhost-only (`127.0.0.1`), single operator. Repo is private on GitHub - not published for
+  broader visibility.
 - Secrets (`.env`, `config/accounts.seed.json`) gitignored + untracked; no hardcoded keys.
 - Fixed: path-traversal on `/api/media/resize` + `/api/examples/extract-image` (now confined to
   `media/`). `execFile` (no shell injection), parameterized SQL, no `innerHTML`-with-data XSS.
-- Watch: keep `agent_can_publish` OFF unless supervising (localhost CSRF + prompt-injection from
-  ingested content could otherwise reach the publish path; DRY-RUN is the backstop). If the app
-  is ever exposed beyond localhost, add auth + CSRF/Origin checks first.
+- **New (B23): Origin/Host guard** on state-changing routes closes the CSRF / DNS-rebinding gap
+  the audit flagged - a stray web page open in the browser can no longer `fetch()` the local API.
+- **New (B23): in-process submit claim** stops "Submit now" from racing the 5-minute handoff
+  sweep into a double-post against Blotato.
+- **Fastify 5**, `@fastify/static` 10, `@fastify/multipart` 10 - `npm audit` reports 0
+  vulnerabilities.
+- Watch: keep `agent_can_publish` OFF unless supervising (prompt-injection from ingested content
+  could otherwise reach the publish path; DRY-RUN is the backstop). If the app is ever exposed
+  beyond localhost, add auth first.
 
 ## Pending / open loops
 
+- **Blotato analytics API seam:** Blotato now shows analytics in its own web app, but its public API
+  documentation did not expose engagement metrics when checked 2026-08-12. PostDeck keeps its
+  LinkedIn/Meta CSV import as the supported bridge. Revisit when Blotato documents an analytics
+  endpoint or stable export contract.
+
+- **⚠️ PARTIALLY BUILT — Fix wave: notification dismiss + image review**
+  (`docs/FIX_WAVE_NOTIF_IMAGES_SPEC.md`, captured 2026-07-22). P1 shipped 2026-08-12:
+  `Needs attention` rows now have persistent per-item dismiss and Dismiss all controls, with
+  exact-state keys that re-arm when a condition changes. P2 remains unbuilt: Codex-generated
+  images are unreviewable — the handoff requires a
+  `manifest.json` in `image-requests/generated/req-<id>/`, the worker's `importGeneratedImages`
+  only imports via that manifest, and the ONLY review surface is the "Waiting on Codex" tile
+  inside a specific post's composer. Fix = global Image Requests review view (P2a),
+  loose-file/auto-manifest rescue (P2b), optional direct upload (P2c). Build order + acceptance
+  in the spec. P2 awaits CB go.
 - **B16–B18 ALL SHIPPED 2026-07-18** (suite 247). Parking lot from the competitive spec
   (list view, streams-lite, queue re-flow, ICS export) remains in
-  `docs/B16_B18_COMPETITIVE_WAVE_SPEC.md`. Queues + UTM start OFF/empty - CB defines slots
+  `docs/archive/B16_B18_COMPETITIVE_WAVE_SPEC.md`. Queues + UTM start OFF/empty — CB defines slots
   in Settings → Queues and flips Link tracking per brand when ready.
 - **D2 SHIPPED 2026-07-18** (rules R1–R8 + layout moves; see CHANGELOG). Leftover polish
   candidates: fold remaining `.msg-banner` divs onto `inlineBanner`, custom confirm dialog
@@ -91,7 +122,14 @@ flipped.
   UI/UX direction for PrimeWright website/app passes.
 - **launchd**: installer ships but is not auto-run - start it when ready
   (`scripts/install-launchd.sh`).
-- **Repo公开**: private until a git-history squash before going public at MVP polish.
+- **Repo: GitHub main fast-forwarded to working 2026-09-02.** Repo is private; no squash needed
+  for that reason alone.
+- **Fold remaining native `confirm()`/`alert()` into toast/banner** (see audit U3).
+- **Popover focus trap / aria** - custom popovers have no focus trap or return-focus (audit U4).
+- **Per-brand timezone** - queue slots and best-times are machine-local; the Tampa move will
+  shift the Mac's TZ and shift them with it (audit D3).
+- **`sync.js` host/key defaults should move to `.env`** - hostname and key path are currently
+  hardcoded in source (audit S5).
 
 ## Handy env flags (see `.env.example`)
 

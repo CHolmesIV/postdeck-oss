@@ -6,6 +6,7 @@
 // a suggestion via createInspiration({ source: 'ai_suggested' }).
 
 import { execFile } from 'node:child_process';
+import { runDraft } from './ai.js';
 import { nowIso } from './db.js';
 
 // ---------- row helpers ----------
@@ -173,6 +174,26 @@ function parseClaudeCliOutput(stdout) {
   return inner;
 }
 
+function parseModelJson(resultText) {
+  let s = String(resultText).trim().replace(/```(?:json)?/gi, '').trim();
+  try {
+    return JSON.parse(s);
+  } catch {
+    // fall through
+  }
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try {
+      return JSON.parse(s.slice(start, end + 1));
+    } catch {
+      // fall through
+    }
+  }
+  throw new Error(`AI result was not strict JSON: ${s.slice(0, 100)}`);
+}
+
+// Legacy single-provider shell, no longer on the runtime path.
 function runClaudeCli(prompt) {
   return new Promise((resolve, reject) => {
     execFile(
@@ -197,23 +218,26 @@ function runClaudeCli(prompt) {
  * @returns {Promise<{suggestions: object[]}>}
  * @throws {Error & {statusCode?: number}} 503-flagged error if the CLI is unavailable/errors.
  */
-async function suggestProfiles({ brand, niche, platforms = [] } = {}) {
+async function suggestProfiles({ brand, niche, platforms = [], provider } = {}) {
   const prompt = buildSuggestPrompt({ brand, niche, platforms });
+  const providerName = provider || 'claude';
 
-  let stdout;
+  let resultText;
   try {
-    stdout = await runClaudeCli(prompt);
+    resultText = await runDraft(providerName, {
+      prompt,
+      model: providerName === 'claude' ? getModel() : undefined,
+      budget: providerName === 'claude' ? getMaxBudgetUsd() : undefined,
+    });
   } catch (err) {
-    const wrapped = new Error(
-      `Profile suggestions unavailable: could not run claude CLI (${err.code === 'ENOENT' ? 'not found on PATH' : err.message})`
-    );
-    wrapped.statusCode = 503;
+    const wrapped = new Error(err.statusCode ? err.message.replace(/^AI drafting unavailable/, 'Profile suggestions unavailable') : `Profile suggestions unavailable: ${err.message}`);
+    wrapped.statusCode = err.statusCode || 503;
     throw wrapped;
   }
 
   let parsed;
   try {
-    parsed = parseClaudeCliOutput(stdout);
+    parsed = parseModelJson(resultText);
   } catch (err) {
     const wrapped = new Error(`Profile suggestions unavailable: ${err.message}`);
     wrapped.statusCode = 503;

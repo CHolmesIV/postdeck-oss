@@ -11,6 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { runDraft } from './ai.js';
+import { getRawSetting } from './voice.js';
 import { fileURLToPath } from 'node:url';
 import { getDb, nowIso } from './db.js';
 import { scrubText } from './scrub.js';
@@ -145,7 +147,27 @@ function runClaudeCli(prompt) {
   });
 }
 
-/** Same envelope shape as draft.js/copy_assist.js's parseClaudeCliOutput. */
+/** Parse the model's raw text (any provider) into the fields object. */
+function parseModelJson(resultText) {
+  let s = String(resultText).trim().replace(/```(?:json)?/gi, '').trim();
+  try {
+    return JSON.parse(s);
+  } catch {
+    // fall through
+  }
+  const start = s.indexOf('{');
+  const end = s.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try {
+      return JSON.parse(s.slice(start, end + 1));
+    } catch {
+      // fall through
+    }
+  }
+  throw new Error(`AI result was not strict JSON: ${s.slice(0, 100)}`);
+}
+
+/** Same envelope shape as draft.js/copy_assist.js's parseClaudeCliOutput. Legacy, not on the runtime path. */
 function parseClaudeCliOutput(stdout) {
   let outer;
   try {
@@ -237,20 +259,23 @@ async function generateProfile(db = getDb(), { brand_id, platform } = {}) {
   const { voice, hardRules } = resolveVoice(db, { brand_id, tone: 'business' });
   const prompt = buildGeneratePrompt({ brand, spec, voice, hardRules });
 
-  let stdout;
+  const providerName = getRawSetting(db, 'draft_provider') || 'claude';
+  let resultText;
   try {
-    stdout = await runClaudeCli(prompt);
+    resultText = await runDraft(providerName, {
+      prompt,
+      model: providerName === 'claude' ? draftModel() : undefined,
+      budget: providerName === 'claude' ? maxBudgetUsd() : undefined,
+    });
   } catch (err) {
-    const wrapped = new Error(
-      `Profile generation unavailable: could not run claude CLI (${err.code === 'ENOENT' ? 'not found on PATH' : err.message})`
-    );
-    wrapped.statusCode = 503;
+    const wrapped = new Error(err.statusCode ? err.message.replace(/^AI drafting unavailable/, 'Profile generation unavailable') : `Profile generation unavailable: ${err.message}`);
+    wrapped.statusCode = err.statusCode || 503;
     throw wrapped;
   }
 
   let raw;
   try {
-    raw = parseClaudeCliOutput(stdout);
+    raw = parseModelJson(resultText);
   } catch (err) {
     const wrapped = new Error(`Profile generation unavailable: ${err.message}`);
     wrapped.statusCode = 503;
