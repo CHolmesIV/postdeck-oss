@@ -19,6 +19,7 @@ const {
   resolveVoice,
   withGlobalVoice,
   seedGlobalVoiceIfMissing,
+  markGlobalVoiceUserSet,
   GLOBAL_HARD_RULES_DEFAULT,
 } = await import('../src/voice.js');
 
@@ -224,10 +225,49 @@ test('seedGlobalVoiceIfMissing: leaves global_voice empty when the reference fil
   assert.deepEqual(getGlobalHardRules(db), { no_em_dash: true });
 });
 
+test('seedGlobalVoiceIfMissing: re-seeds an empty global_voice the operator never saved', () => {
+  const db = getDb();
+  db.prepare("DELETE FROM settings WHERE key IN ('global_voice', 'global_voice_user_set')").run();
+  // The pre-fix seeder wrote '' when it looked in the wrong docs/ dir.
+  setGlobalVoice(db, '');
+
+  const refPath = writeTempVoiceRef('CB voice: short sentences, operator first.');
+  seedGlobalVoiceIfMissing(db, { voiceRefPath: refPath });
+  assert.equal(getGlobalVoice(db), 'CB voice: short sentences, operator first.');
+
+  setGlobalVoice(db, '');
+});
+
+test('seedGlobalVoiceIfMissing: never re-seeds a voice the operator cleared on purpose', () => {
+  const db = getDb();
+  db.prepare("DELETE FROM settings WHERE key IN ('global_voice', 'global_voice_user_set')").run();
+  setGlobalVoice(db, '');
+  markGlobalVoiceUserSet(db);
+
+  const refPath = writeTempVoiceRef('Should not be applied.');
+  seedGlobalVoiceIfMissing(db, { voiceRefPath: refPath });
+  assert.equal(getGlobalVoice(db), '');
+
+  db.prepare("DELETE FROM settings WHERE key = 'global_voice_user_set'").run();
+});
+
+test('seedGlobalVoiceIfMissing: default lookup finds the project-level voice doc', () => {
+  const db = getDb();
+  db.prepare("DELETE FROM settings WHERE key IN ('global_voice', 'global_voice_user_set')").run();
+  const projectDoc = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'charles-voice-reference.md'
+  );
+  if (!fs.existsSync(projectDoc)) return; // CI checkout has no parent project
+  seedGlobalVoiceIfMissing(db);
+  assert.ok(getGlobalVoice(db).length > 100);
+  setGlobalVoice(db, '');
+});
+
 // ---- helpers ----
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function writeTempVoiceRef(contents) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'postdeck-voice-ref-'));

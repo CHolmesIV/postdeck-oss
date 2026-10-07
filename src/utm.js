@@ -1,7 +1,7 @@
 // UTM auto-append (B18c — docs/B16_B18_COMPETITIVE_WAVE_SPEC.md). On approve
 // (never on draft — keep drafts clean), rewrites bare http(s) links in a
 // post's copy, appending
-//   utm_source={platform}&utm_medium=social&utm_campaign={campaign|brand-slug}
+//   utm_source={platform}&utm_medium=social&utm_campaign={campaign|brand-slug}&utm_content=pd-{post_id}
 // Skips links that already carry a utm_ param. Idempotent — safe to run
 // against copy that's already been through this once.
 //
@@ -14,7 +14,8 @@
 
 import { getRawSetting, setRawSetting } from './voice.js';
 
-const DEFAULT_TEMPLATE = 'utm_source={platform}&utm_medium=social&utm_campaign={campaign}';
+const DEFAULT_TEMPLATE =
+  'utm_source={platform}&utm_medium=social&utm_campaign={campaign}&utm_content=pd-{post_id}';
 
 function utmSettingKey(brandId) {
   return `utm:${brandId}`;
@@ -62,10 +63,15 @@ function splitTrailingPunctuation(url) {
   return { url: url.slice(0, url.length - match[0].length), trailing: match[0] };
 }
 
-function renderTemplate(template, { platform, campaign, brand }) {
+function renderTemplate(template, { platform, campaign, brand, postId }) {
   const campaignValue = campaign || brand || 'general';
-  return template
-    .replace(/\{platform\}/g, encodeURIComponent(platform || ''))
+  // Without a post id, drop any param that needs one (keeps bare appendUtm calls clean).
+  let tmpl = template;
+  if (postId === undefined || postId === null || postId === '') {
+    tmpl = tmpl.split('&').filter((part) => !part.includes('{post_id}')).join('&');
+  }
+  return tmpl
+    .replace(/\{post_id\}/g, encodeURIComponent(String(postId ?? '')))    .replace(/\{platform\}/g, encodeURIComponent(platform || ''))
     .replace(/\{campaign\|brand-slug\}/g, encodeURIComponent(campaignValue))
     .replace(/\{campaign\|brand\}/g, encodeURIComponent(campaignValue))
     .replace(/\{campaign\}/g, encodeURIComponent(campaignValue))
@@ -93,10 +99,10 @@ function appendParamsToUrl(url, paramString) {
  * URL, not swallowed into it).
  *
  * @param {string} text
- * @param {{platform?: string, campaign?: string, brand?: string, template?: string}} opts
+ * @param {{platform?: string, campaign?: string, brand?: string, template?: string, postId?: number|string}} opts
  * @returns {string}
  */
-function appendUtm(text, { platform, campaign, brand, template } = {}) {
+function appendUtm(text, { platform, campaign, brand, template, postId } = {}) {
   if (!text) return text;
   const tmpl = template || DEFAULT_TEMPLATE;
   return text.replace(URL_RE, (match) => {
@@ -104,7 +110,7 @@ function appendUtm(text, { platform, campaign, brand, template } = {}) {
     if (/[?&]utm_/i.test(url)) {
       return match; // already tagged — leave untouched
     }
-    const paramString = renderTemplate(tmpl, { platform, campaign, brand });
+    const paramString = renderTemplate(tmpl, { platform, campaign, brand, postId });
     return appendParamsToUrl(url, paramString) + trailing;
   });
 }
@@ -137,6 +143,7 @@ function applyApproveUtm(db, post, { copy, first_comment: firstComment } = {}) {
     campaign: campaignRow?.name,
     brand: brandRow?.slug,
     template: template || undefined,
+    postId: post.id,
   };
   return {
     copy: appendUtm(copy, opts),

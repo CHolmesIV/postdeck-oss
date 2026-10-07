@@ -227,3 +227,28 @@ test('PATCH approve is idempotent: re-approving via scheduled_local (publish_at 
 
   await app.close();
 });
+
+// ---------- {post_id} (website analytics attribution) ----------
+
+test('DEFAULT_TEMPLATE carries utm_content=pd-{post_id}', () => {
+  assert.match(DEFAULT_TEMPLATE, /utm_content=pd-\{post_id\}/);
+});
+
+test('appendUtm() fills {post_id} when postId is given and drops it when not', () => {
+  const withId = appendUtm('See https://example.com/x', { platform: 'linkedin', campaign: 'c1', postId: 42 });
+  assert.equal(withId, 'See https://example.com/x?utm_source=linkedin&utm_medium=social&utm_campaign=c1&utm_content=pd-42');
+  const without = appendUtm('See https://example.com/x', { platform: 'linkedin', campaign: 'c1' });
+  assert.ok(!without.includes('utm_content'));
+});
+
+test('PATCH approve tags links with utm_content=pd-<post id>', async () => {
+  const app = buildServer();
+  const db = getDb();
+  const brandId = seedBrand(db, { slug: 'acme-postid' });
+  setBrandUtmSettings(db, brandId, { enabled: true });
+  const postId = seedPost(db, { brand_id: brandId, platform: 'linkedin', status: 'draft', copy: 'https://example.com/z' });
+  const approved = await app.inject({ method: 'PATCH', url: `/api/posts/${postId}`, payload: { status: 'approved' } });
+  assert.equal(approved.statusCode, 200);
+  assert.ok(approved.json().copy.includes(`utm_content=pd-${postId}`), approved.json().copy);
+  await app.close();
+});

@@ -57,7 +57,7 @@ function startMockServer() {
         } else {
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(
-            JSON.stringify({ status: 'published', public_url: 'https://twitter.com/x/status/999' })
+            JSON.stringify({ status: 'published', publicUrl: 'https://twitter.com/x/status/999' })
           );
         }
         return;

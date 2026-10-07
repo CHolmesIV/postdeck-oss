@@ -43,8 +43,21 @@ function getGlobalVoice(db = getDb()) {
   }
 }
 
+/**
+ * CB's rule: no em or en dashes anywhere near generated copy. Models imitate
+ * the voice text they're given, so every voice source is normalized before
+ * it is stored or put in a prompt. A rule that names the character, like
+ * "No em dashes (—)", keeps its meaning as "(the long dash)".
+ */
+function normalizeDashes(text) {
+  return String(text ?? '')
+    .replace(/\(\s*[\u2014\u2013]\s*\)/g, '(the long dash)')
+    .replace(/(\d)\s*\u2013\s*(\d)/g, '$1-$2')
+    .replace(/[ \t]*[\u2014\u2013][ \t]*/g, ' - ');
+}
+
 function setGlobalVoice(db = getDb(), voice = '') {
-  setRawSetting(db, 'global_voice', JSON.stringify(voice || ''));
+  setRawSetting(db, 'global_voice', JSON.stringify(normalizeDashes(voice || '')));
 }
 
 /** Parsed global_hard_rules JSON. Default { no_em_dash: true } if unset. */
@@ -75,6 +88,124 @@ function setGlobalHardRules(db = getDb(), rules = {}) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) obj = {};
   const merged = { ...GLOBAL_HARD_RULES_DEFAULT, ...obj };
   setRawSetting(db, 'global_hard_rules', JSON.stringify(merged));
+}
+
+const BRAND_DOC_CAP = 4000;
+const brandDocCache = new Map(); // abs path -> { mtimeMs, size, text }
+
+// The folder holding every business project (Social Media, Website Projects,
+// PrimeWright...). POSTDECK_PROJECTS_ROOT overrides (tests).
+function projectsRoot() {
+  if (process.env.POSTDECK_PROJECTS_ROOT) return path.resolve(process.env.POSTDECK_PROJECTS_ROOT);
+  return path.resolve(socialRoot(), '..');
+}
+
+function socialRoot() {
+  if (process.env.POSTDECK_SOCIAL_ROOT) return process.env.POSTDECK_SOCIAL_ROOT;
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+}
+
+/** Seed placeholders ("Voice reference for X ... Placeholder ...") are not real rules. */
+function isPlaceholderVoiceRules(text) {
+  const t = String(text || '').trim();
+  return t.startsWith('Voice reference for') && /placeholder/i.test(t);
+}
+
+function cleanToneVoice(text) {
+  return isPlaceholderVoiceRules(text) ? '' : String(text || '').trim();
+}
+
+/**
+ * Read a brand's voice doc (brands.voice_doc_path; absolute, or relative to the
+ * Social Media project root). Capped at ~4000 chars, mtime-cached. Missing or
+ * unreadable file = '' (silent). Skips the doc when it is the same file that
+ * seeds the global voice, so CB's card is not injected twice.
+ */
+function readBrandVoiceDoc(db, brand_id) {
+  if (brand_id == null) return '';
+  try {
+    const row = db.prepare('SELECT voice_doc_path FROM brands WHERE id = ?').get(brand_id);
+    const p = String(row?.voice_doc_path || '').trim();
+    if (!p) return '';
+    const abs = path.isAbsolute(p) ? p : path.resolve(socialRoot(), p);
+    const globalRefs = voiceRefCandidates().map((c) => path.resolve(c));
+    if (globalRefs.includes(path.resolve(abs))) return '';
+    const st = fs.statSync(abs);
+    if (!st.isFile()) return '';
+    const hit = brandDocCache.get(abs);
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.text;
+    const text = fs.readFileSync(abs, 'utf8').trim().slice(0, BRAND_DOC_CAP);
+    brandDocCache.set(abs, { mtimeMs: st.mtimeMs, size: st.size, text });
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The brand voice doc as the Settings editor sees it: full text (not the
+ * prompt cap), where it lives, and whether it is the global voice card (that
+ * one is edited as the global voice, in Settings > AI).
+ */
+function brandVoiceDocInfo(db, brand_id) {
+  const row = db.prepare('SELECT id, slug, voice_doc_path FROM brands WHERE id = ?').get(brand_id);
+  if (!row) return null;
+  const rel = String(row.voice_doc_path || '').trim();
+  const abs = rel ? (path.isAbsolute(rel) ? rel : path.resolve(socialRoot(), rel)) : '';
+  const isGlobal = !!abs && voiceRefCandidates().map((c) => path.resolve(c)).includes(path.resolve(abs));
+  let text = '';
+  let exists = false;
+  try {
+    if (abs && fs.statSync(abs).isFile()) {
+      exists = true;
+      text = fs.readFileSync(abs, 'utf8');
+    }
+  } catch {
+    exists = false;
+  }
+  return { brand_id: row.id, path: rel, exists, is_global_voice: isGlobal, text, prompt_cap: BRAND_DOC_CAP };
+}
+
+/**
+ * Save pasted brand voice text to the brand's voice doc. A brand with no doc
+ * gets `brands/<slug>/voice.md` under the Social Media folder. Writes are
+ * confined to .md files inside that folder. Dashes are normalized.
+ * @throws {Error} with .code 'not_found' | 'global_voice' | 'bad_path'
+ */
+function writeBrandVoiceDoc(db, brand_id, text) {
+  const row = db.prepare('SELECT id, slug, voice_doc_path FROM brands WHERE id = ?').get(brand_id);
+  const fail = (code, message) => Object.assign(new Error(message), { code });
+  if (!row) throw fail('not_found', 'Brand not found.');
+  let rel = String(row.voice_doc_path || '').trim();
+  if (!rel) rel = path.join('brands', row.slug || `brand-${row.id}`, 'voice.md');
+  const root = path.resolve(socialRoot());
+  const abs = path.resolve(path.isAbsolute(rel) ? rel : path.join(root, rel));
+  if (voiceRefCandidates().map((c) => path.resolve(c)).includes(abs)) {
+    throw fail('global_voice', 'This brand uses your global voice. Edit it in Settings > AI.');
+  }
+  // Brand voices live with each brand's website branding docs
+  // (Website Projects/<Site>/..., PrimeWright/brand-package/...), so writes
+  // are allowed anywhere under the Projects folder, .md files only.
+  const projects = projectsRoot();
+  const inside = (dir) => abs.startsWith(dir + path.sep);
+  if (!(inside(root) || inside(projects)) || path.extname(abs).toLowerCase() !== '.md') {
+    throw fail('bad_path', 'Brand voice docs must be .md files inside your Projects folder.');
+  }
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, normalizeDashes(text).replace(/\s+$/, '') + '\n', 'utf8');
+  if (!row.voice_doc_path) {
+    db.prepare('UPDATE brands SET voice_doc_path = ?, updated_at = ? WHERE id = ?').run(path.relative(root, abs), new Date().toISOString(), row.id);
+  }
+  brandDocCache.delete(abs);
+  return brandVoiceDocInfo(db, brand_id);
+}
+
+function composeVoice(db, brand_id, toneVoiceRules) {
+  const doc = readBrandVoiceDoc(db, brand_id);
+  const voice = [getGlobalVoice(db), doc ? `Brand voice guide:\n${doc}` : '', cleanToneVoice(toneVoiceRules)]
+    .filter(Boolean)
+    .join('\n\n');
+  return normalizeDashes(voice);
 }
 
 function dedupeArray(arr) {
@@ -111,7 +242,6 @@ function mergeHardRules(globalRules = {}, toneRules = {}) {
  * @returns {{voice: string, hardRules: object}}
  */
 function resolveVoice(db = getDb(), { brand_id = null, tone = null } = {}) {
-  const globalVoice = getGlobalVoice(db);
   const globalHardRules = getGlobalHardRules(db);
 
   let toneProfile = null;
@@ -119,8 +249,7 @@ function resolveVoice(db = getDb(), { brand_id = null, tone = null } = {}) {
     toneProfile = db.prepare('SELECT * FROM tone_profiles WHERE brand_id = ? AND name = ?').get(brand_id, tone) || null;
   }
 
-  const toneVoice = toneProfile?.voice_rules || '';
-  const voice = [globalVoice, toneVoice].filter(Boolean).join('\n\n');
+  const voice = composeVoice(db, brand_id, toneProfile?.voice_rules);
 
   let toneHardRules = {};
   if (toneProfile?.hard_rules) {
@@ -148,7 +277,6 @@ function resolveVoice(db = getDb(), { brand_id = null, tone = null } = {}) {
  * @returns {object} a toneProfile-shaped object safe to pass to draftWithAi/copyAssist
  */
 function withGlobalVoice(db, { brand_id = null, toneProfile = null } = {}) {
-  const globalVoice = getGlobalVoice(db);
   const globalHardRules = getGlobalHardRules(db);
 
   let toneHardRules = {};
@@ -160,7 +288,7 @@ function withGlobalVoice(db, { brand_id = null, toneProfile = null } = {}) {
     }
   }
   const hardRules = mergeHardRules(globalHardRules, toneHardRules);
-  const voice = [globalVoice, toneProfile?.voice_rules || ''].filter(Boolean).join('\n\n');
+  const voice = composeVoice(db, brand_id ?? toneProfile?.brand_id ?? null, toneProfile?.voice_rules);
 
   return {
     ...(toneProfile || { id: null, brand_id, name: toneProfile?.name || null }),
@@ -170,9 +298,33 @@ function withGlobalVoice(db, { brand_id = null, toneProfile = null } = {}) {
 }
 
 /**
- * Idempotent first-run seed: if global_voice is unset, seed it from
- * docs/charles-voice-reference.md (capped ~4000 chars) if that file exists,
- * else leave it empty. NEVER overwrites an existing global_voice. Also
+ * Marks global_voice as deliberately set by the operator (Settings > Save
+ * voice), so an intentionally cleared voice is never re-seeded.
+ */
+function markGlobalVoiceUserSet(db = getDb()) {
+  setRawSetting(db, 'global_voice_user_set', 'true');
+}
+
+/**
+ * Candidate locations for the voice reference doc. It lives in the Social
+ * Media project's docs/ (one level above the repo); repo-local docs/ is kept
+ * as a fallback. POSTDECK_VOICE_REF overrides both.
+ */
+function voiceRefCandidates() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return [
+    process.env.POSTDECK_VOICE_REF,
+    path.resolve(here, '..', '..', 'docs', 'charles-voice-reference.md'),
+    path.resolve(here, '..', 'docs', 'charles-voice-reference.md'),
+  ].filter(Boolean);
+}
+
+/**
+ * Idempotent seed: if global_voice is unset, or empty and never saved by the
+ * operator, seed it from charles-voice-reference.md (capped ~4000 chars).
+ * NEVER overwrites a non-empty or operator-saved global_voice. When no
+ * reference file is found, global_voice is left untouched so a later boot
+ * can still seed it (writing '' here used to block seeding forever). Also
  * defaults global_hard_rules to { no_em_dash: true } if unset. Guarded
  * against missing fs access / missing file so it never breaks tests/boot.
  *
@@ -181,21 +333,21 @@ function withGlobalVoice(db, { brand_id = null, toneProfile = null } = {}) {
  */
 function seedGlobalVoiceIfMissing(db = getDb(), opts = {}) {
   const existingVoice = getRawSetting(db, 'global_voice');
-  if (existingVoice === undefined || existingVoice === null) {
+  const unset = existingVoice === undefined || existingVoice === null;
+  const emptyAndUnsaved =
+    !unset && !getGlobalVoice(db).trim() && getRawSetting(db, 'global_voice_user_set') !== 'true';
+  if (unset || emptyAndUnsaved) {
     let seeded = '';
     try {
       // Guarded: a missing file (or any fs error) never throws — seeding is
       // best-effort and must never break server boot or tests.
-      const here = path.dirname(fileURLToPath(import.meta.url));
-      const refPath = opts.voiceRefPath || path.resolve(here, '..', 'docs', 'charles-voice-reference.md');
-      if (fs.existsSync(refPath)) {
-        const contents = fs.readFileSync(refPath, 'utf8');
-        seeded = contents.slice(0, 4000);
-      }
+      const candidates = opts.voiceRefPath ? [opts.voiceRefPath] : voiceRefCandidates();
+      const refPath = candidates.find((p) => fs.existsSync(p));
+      if (refPath) seeded = normalizeDashes(fs.readFileSync(refPath, 'utf8')).slice(0, 4000);
     } catch {
       seeded = '';
     }
-    setGlobalVoice(db, seeded);
+    if (seeded.trim()) setGlobalVoice(db, seeded);
   }
 
   const existingRules = getRawSetting(db, 'global_hard_rules');
@@ -215,5 +367,11 @@ export {
   resolveVoice,
   withGlobalVoice,
   seedGlobalVoiceIfMissing,
+  readBrandVoiceDoc,
+  brandVoiceDocInfo,
+  writeBrandVoiceDoc,
+  normalizeDashes,
+  isPlaceholderVoiceRules,
+  markGlobalVoiceUserSet,
   GLOBAL_HARD_RULES_DEFAULT,
 };

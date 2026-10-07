@@ -35,12 +35,17 @@ function apiKey() {
 }
 
 class BlotatoError extends Error {
-  constructor(message, { status, body, retryable } = {}) {
+  constructor(message, { status, body, retryable, ambiguous } = {}) {
     super(message);
     this.name = 'BlotatoError';
     this.status = status;
     this.body = body;
     this.retryable = retryable !== false; // default true unless explicitly false
+    // ambiguous: a non-idempotent request (post creation) failed in a way that
+    // doesn't tell us whether Blotato acted on it (timeout, dropped connection,
+    // 5xx). The post may be live. Never resend automatically - Blotato can't
+    // delete, so a resend is a duplicate public post.
+    this.ambiguous = ambiguous === true;
   }
 }
 
@@ -72,7 +77,11 @@ function parseRetryAfterMs(res, bodyText) {
   return null;
 }
 
-async function request(pathName, { method = 'GET', body, headers = {} } = {}) {
+// `idempotent` (default: GET only) decides whether a failure we can't
+// interpret may be retried. Non-idempotent calls (POST /v2/posts) get exactly
+// one network attempt; a timeout/5xx comes back as an ambiguous error instead.
+// 429 is always safe to retry: the request was rejected before it ran.
+async function request(pathName, { method = 'GET', body, headers = {}, idempotent = method === 'GET' } = {}) {
   const url = `${apiBase()}${pathName}`;
   let attempt = 0;
   let lastErr;
@@ -95,6 +104,12 @@ async function request(pathName, { method = 'GET', body, headers = {} } = {}) {
       });
     } catch (err) {
       clearTimeout(timer);
+      if (!idempotent) {
+        throw new BlotatoError(
+          `network error calling ${pathName}: ${err.message} - Blotato may have received it`,
+          { retryable: false, ambiguous: true }
+        );
+      }
       lastErr = new BlotatoError(`network error calling ${pathName}: ${err.message}`, {
         retryable: true,
       });
@@ -130,10 +145,12 @@ async function request(pathName, { method = 'GET', body, headers = {} } = {}) {
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
+      const serverError = res.status >= 500;
       throw new BlotatoError(`Blotato API error ${res.status} for ${pathName}: ${text}`, {
         status: res.status,
         body: text,
-        retryable: res.status >= 500,
+        retryable: serverError && idempotent,
+        ambiguous: serverError && !idempotent,
       });
     }
 
@@ -190,9 +207,11 @@ async function uploadMedia(filePathOrUrl) {
     url = `data:${mime};base64,${fs.readFileSync(filePathOrUrl).toString('base64')}`;
   }
 
+  // Retry-safe: a duplicate media upload is invisible (nothing is published).
   return request('/v2/media', {
     method: 'POST',
     body: { url },
+    idempotent: true,
   });
 }
 
@@ -205,8 +224,10 @@ async function uploadMedia(filePathOrUrl) {
  * @returns {Promise<{postSubmissionId?: string, id?: string, [key: string]: any}>}
  */
 async function createPost({ accountId, content, target }, scheduledTime) {
+  // NOT idempotent: a retried create is a second public post. One attempt only.
   return request('/v2/posts', {
     method: 'POST',
+    idempotent: false,
     body: {
       post: { accountId, content, target },
       scheduledTime, // root-level, NOT nested in `post` — see comment above.

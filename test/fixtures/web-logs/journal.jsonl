@@ -1,0 +1,7 @@
+{"evt":"form","ts":"2026-10-06T15:00:00Z","site":"di-hy.com","ip":"abc","ua":"desktop","outcome":"delivered"}
+{"evt":"form","ts":"2026-10-06T16:00:00Z","site":"www.di-hy.com","ip":"abd","ua":"mobile","outcome":"delivered"}
+{"evt":"form","ts":"2026-10-06T17:00:00Z","site":"di-hy.com","ip":"abe","ua":"script","outcome":"blocked"}
+{"evt":"form","ts":"2026-10-07T03:30:00Z","site":"di-hy.com","ip":"abf","ua":"script","outcome":"honeypot"}
+{"evt":"form","ts":"2026-10-07T05:00:00Z","site":"di-hy.com","ip":"abg","ua":"desktop","outcome":"delivered"}
+{"evt":"other","ts":"2026-10-06T17:00:00Z","site":"di-hy.com"}
+{"evt":"form","ts":"2026-10-06T17:00:00Z","site":"unlisted.com","outcome":"delivered"}

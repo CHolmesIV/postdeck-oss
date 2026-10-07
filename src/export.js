@@ -92,7 +92,7 @@ function buildSocialState(db = getDb()) {
       .get(brand.id, last7Days).c;
     const failed = db
       .prepare(
-        `SELECT COUNT(*) c FROM posts WHERE brand_id = ? AND status IN ('failed', 'failed_verify')`
+        `SELECT COUNT(*) c FROM posts WHERE brand_id = ? AND status IN ('failed', 'failed_verify', 'needs_check')`
       )
       .get(brand.id).c;
 
@@ -113,7 +113,7 @@ function buildSocialState(db = getDb()) {
 
   const failureRows = db
     .prepare(
-      `SELECT id AS post_id, platform, error_message FROM posts WHERE status IN ('failed', 'failed_verify') ORDER BY updated_at DESC`
+      `SELECT id AS post_id, platform, error_message FROM posts WHERE status IN ('failed', 'failed_verify', 'needs_check') ORDER BY updated_at DESC`
     )
     .all();
   const failures = failureRows.map((r) => ({

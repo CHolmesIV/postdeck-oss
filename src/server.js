@@ -14,10 +14,13 @@ import { getDb, nowIso } from './db.js';
 import { draftWithAi, PLATFORM_LIMITS } from './draft.js';
 import { getAuthStatus, startLogin, listProviders, configuredProviders } from './ai.js';
 import { markdownToHtml, escapeHtml } from './md.js';
-import { startWorker, submitNow, getWorkerStatus, resolveBatch, runSubmitBatch, runCycleNow, isDryRun, isAssistedManual } from './worker.js';
+import { startWorker, submitNow, getWorkerStatus, resolveBatch, runSubmitBatch, runCycleNow, isDryRun, isAssistedManual, isMissedWindow, recheckOne, kickHandoffIfDue } from './worker.js';
 import { buildSocialState } from './export.js';
-import { validateTiktokFields } from './validate.js';
+import { runApproveGate } from './approve.js';
+import { normalizeIso } from './time.js';
 import { getAllSettings, updateSettings, isWithinQuietHours } from './settings.js';
+import { registerBlogRoutes, getBlogSettings, updateBlogSettings } from './blog.js';
+import { registerWebRoutes } from './web.js';
 import { loadPlatformSpecs } from './platforms.js';
 import { buildAnalytics } from './analytics.js';
 import { recordUsage, buildUsageStats } from './usage.js';
@@ -47,7 +50,7 @@ import {
   getTagsForPosts,
 } from './tags.js';
 import { bestTimes, daysSinceLastPost } from './besttime.js';
-import { appendUtm, applyApproveUtm, getBrandUtmSettings, setBrandUtmSettings } from './utm.js';
+import { appendUtm, getBrandUtmSettings, setBrandUtmSettings } from './utm.js';
 import { parseMetricsFile, normalizeRows, matchRows, applyImport } from './metrics-import.js';
 import {
   resolveVoice,
@@ -57,6 +60,10 @@ import {
   getGlobalHardRules,
   setGlobalHardRules,
   seedGlobalVoiceIfMissing,
+  markGlobalVoiceUserSet,
+  brandVoiceDocInfo,
+  writeBrandVoiceDoc,
+  normalizeDashes,
   getRawSetting,
   setRawSetting,
 } from './voice.js';
@@ -120,9 +127,18 @@ const ALLOWED_POST_TRANSITIONS = {
   // full cancel - alongside the existing Cancel path.
   approved: ['canceled', 'draft'],
   // scheduled_local is 'approved' + a publish_at (see merge logic below) — the
-  // dashboard already offers Cancel for it (public/app.js renderPostDetail),
+  // dashboard already offers Cancel for it (public/js/09-post-detail.js renderPostDetail),
   // so it needs the same escape hatch, plus F7a's Move-to-drafts.
   scheduled_local: ['canceled', 'draft'],
+  // needs_check: Blotato may have published it (timeout/5xx on create, or no
+  // submission id). The operator either marks it posted (mark-posted route,
+  // any status) or, having checked the account, walks it back to draft.
+  needs_check: ['draft', 'canceled'],
+  // failed / failed_verify were dead ends (audit T2). After the operator has
+  // looked at the account, walk back to draft to re-plan, or cancel. Exits to
+  // published go through mark-posted / recheck, not PATCH.
+  failed: ['draft', 'canceled'],
+  failed_verify: ['draft', 'canceled'],
 };
 
 // B6: publish_at (drag-to-reschedule, or any manual date edit) may only
@@ -145,6 +161,10 @@ function buildServer() {
   //   2. Non-GET/HEAD/OPTIONS requests that carry an Origin header must carry
   //      OUR origin (browsers always send Origin on cross-site POST/PATCH/...;
   //      curl/tests send none, and same-origin fetches send the app's own).
+  //      `Origin: null` (sandboxed iframe, file://, no-referrer form posts) is
+  //      refused too, and so is Sec-Fetch-Site cross-site / same-site (T9; a
+  //      page on another localhost port is same-site, not same-origin).
+  //      Absent headers (curl, tests) and 'same-origin'/'none' still pass.
   // No auth is added - single operator, localhost, by design (SPEC.md).
   const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
   app.addHook('onRequest', async (req, reply) => {
@@ -155,8 +175,17 @@ function buildServer() {
       return reply.send({ error: 'forbidden_host', message: 'PostDeck only answers to 127.0.0.1 / localhost.' });
     }
     if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return;
+    const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (fetchSite === 'cross-site' || fetchSite === 'same-site') {
+      reply.code(403);
+      return reply.send({ error: 'forbidden_origin', message: 'Cross-origin writes to PostDeck are refused.' });
+    }
     const origin = req.headers.origin;
-    if (!origin || origin === 'null') return; // same-origin fetch, curl, tests
+    if (origin === 'null') {
+      reply.code(403);
+      return reply.send({ error: 'forbidden_origin', message: 'Cross-origin writes to PostDeck are refused.' });
+    }
+    if (!origin) return; // same-origin fetch, curl, tests
     let originHost = null;
     try {
       originHost = new URL(origin).hostname;
@@ -440,8 +469,35 @@ function buildServer() {
   });
 
   // ---------- posts ----------
-  app.get('/api/posts', async (req) => {
-    const { brand, status, from, to } = req.query;
+  // Response shape of a post row: JSON columns parsed, plus the derived
+  // missed_window flag (scheduled_local and 15+ min past publish_at).
+  // last_remote_state is a real column (Blotato's last reported status).
+  function shapePost(row) {
+    const post = parseJsonColumns(row, ['media', 'platform_fields']);
+    post.missed_window = isMissedWindow(row);
+    return post;
+  }
+
+  // publish_at from a request body: undefined stays undefined (field absent),
+  // '' / null -> null, anything else -> UTC ISO or a 400 (T6).
+  function readPublishAt(value) {
+    return value === undefined ? undefined : normalizeIso(value);
+  }
+  function publishAtError(reply, err) {
+    reply.code(400);
+    return { error: err.code || 'invalid_publish_at', message: err.message };
+  }
+
+  app.get('/api/posts', async (req, reply) => {
+    let { brand, status, from, to } = req.query;
+    // Stored publish_at is always normalized UTC ISO, so a normalized bound
+    // compares correctly in SQL (T6).
+    try {
+      from = from ? normalizeIso(from) : from;
+      to = to ? normalizeIso(to) : to;
+    } catch (err) {
+      return publishAtError(reply, err);
+    }
     const clauses = [];
     const params = [];
     let sql = `
@@ -468,7 +524,7 @@ function buildServer() {
     if (clauses.length) sql += ' AND ' + clauses.join(' AND ');
     sql += ' ORDER BY p.publish_at IS NULL, p.publish_at';
     const rows = db.prepare(sql).all(...params);
-    const posts = rows.map((r) => parseJsonColumns(r, ['media', 'platform_fields']));
+    const posts = rows.map((r) => shapePost(r));
     // Batch-fetch tags for the whole page in one query (avoid N+1).
     const tagsByPost = getTagsForPosts(db, posts.map((p) => p.id));
     for (const p of posts) p.tags = tagsByPost.get(p.id) || [];
@@ -481,7 +537,7 @@ function buildServer() {
       reply.code(404);
       return { error: 'not_found' };
     }
-    const post = parseJsonColumns(row, ['media', 'platform_fields']);
+    const post = shapePost(row);
     post.metrics = db
       .prepare('SELECT * FROM metrics WHERE post_id = ? ORDER BY captured_at DESC')
       .all(req.params.id);
@@ -495,6 +551,12 @@ function buildServer() {
     if (!b.platform) {
       reply.code(400);
       return { error: 'platform is required' };
+    }
+    let publishAtNorm;
+    try {
+      publishAtNorm = readPublishAt(b.publish_at);
+    } catch (err) {
+      return publishAtError(reply, err);
     }
     const now = nowIso();
     const info = db
@@ -520,7 +582,7 @@ function buildServer() {
         media: JSON.stringify(b.media || []),
         platform_fields: JSON.stringify(b.platform_fields || {}),
         content_type: b.content_type || null,
-        publish_at: b.publish_at || null,
+        publish_at: publishAtNorm ?? null,
         first_comment: b.first_comment !== undefined ? b.first_comment : null,
         now,
       });
@@ -539,7 +601,13 @@ function buildServer() {
     const now = nowIso();
 
     let nextStatus = existing.status;
-    if (b.status && b.status !== existing.status) {
+    // scheduled_local is just 'approved' + a publish_at, so re-saving a
+    // scheduled post as 'approved' (the drawer's Schedule button after a time
+    // edit) is the same state, not a transition. It re-derives below.
+    const sameApprovedState = b.status === 'approved' && existing.status === 'scheduled_local';
+    if (sameApprovedState) {
+      nextStatus = 'approved';
+    } else if (b.status && b.status !== existing.status) {
       const allowed = ALLOWED_POST_TRANSITIONS[existing.status] || [];
       if (!allowed.includes(b.status)) {
         reply.code(409);
@@ -553,7 +621,13 @@ function buildServer() {
 
     // scheduled_local supersedes a plain 'approved' status when a publish_at
     // is already set at approve time (see SPEC.md worker/handoff section).
-    const publishAt = b.publish_at !== undefined ? b.publish_at : existing.publish_at;
+    let bodyPublishAt;
+    try {
+      bodyPublishAt = readPublishAt(b.publish_at);
+    } catch (err) {
+      return publishAtError(reply, err);
+    }
+    const publishAt = bodyPublishAt !== undefined ? bodyPublishAt : existing.publish_at;
     if (nextStatus === 'approved' && publishAt) {
       nextStatus = 'scheduled_local';
     }
@@ -561,7 +635,9 @@ function buildServer() {
     // ---- B6: drag-to-reschedule guard ----
     // Any change to publish_at (calendar drag included) is only allowed while
     // the post is still local — draft/approved/scheduled_local.
-    if (b.publish_at !== undefined && b.publish_at !== existing.publish_at) {
+    // Walking a post back to draft may clear its time; the transition table
+    // already decides which statuses can do that.
+    if (bodyPublishAt !== undefined && bodyPublishAt !== existing.publish_at && nextStatus !== 'draft') {
       if (!RESCHEDULABLE_STATUSES.includes(existing.status)) {
         reply.code(409);
         return {
@@ -571,33 +647,12 @@ function buildServer() {
       }
     }
 
-    // ---- B6: TikTok cosmetic-field validation on the Approve gate ----
     // Fires when a post is crossing INTO approved/scheduled_local from a
-    // status that wasn't already there (i.e. the human Approve action).
+    // status that wasn't already there (i.e. the human Approve action). The
+    // TikTok field check and UTM pass run together in runApproveGate below.
     const enteringApprovedGate =
       ['approved', 'scheduled_local'].includes(nextStatus) &&
       !['approved', 'scheduled_local'].includes(existing.status);
-    if (enteringApprovedGate && existing.platform === 'tiktok') {
-      let pf = existing.platform_fields;
-      if (b.platform_fields !== undefined) {
-        pf = b.platform_fields;
-      } else {
-        try {
-          pf = JSON.parse(pf || '{}');
-        } catch {
-          pf = {};
-        }
-      }
-      const { ok, missing } = validateTiktokFields(pf || {});
-      if (!ok) {
-        reply.code(422);
-        return {
-          error: 'tiktok_fields_missing',
-          message: `TikTok post is missing required fields: ${missing.join(', ')}`,
-          missing,
-        };
-      }
-    }
 
     const merged = {
       copy: b.copy !== undefined ? b.copy : existing.copy,
@@ -617,15 +672,22 @@ function buildServer() {
     // ---- B18c: UTM auto-append on the Approve gate (never on draft) ----
     // Rewrites bare links in the copy field once, when the post first crosses
     // into approved/scheduled_local, if the post's brand has utm_enabled.
-    // B20: the body of this pass now lives in applyApproveUtm() so the bulk
+    // B20: the body of this pass now lives in runApproveGate() so the bulk
     // approve-batch route runs the identical logic.
+    // T10: B6 TikTok cosmetic-field validation + the UTM pass above are one
+    // shared gate (runApproveGate), also used by queue / approve-batch / the agent.
     if (enteringApprovedGate) {
-      const tagged = applyApproveUtm(db, existing, {
+      const gate = runApproveGate(db, existing, {
         copy: merged.copy,
         first_comment: merged.first_comment,
+        platform_fields: b.platform_fields,
       });
-      merged.copy = tagged.copy;
-      merged.first_comment = tagged.first_comment;
+      if (!gate.ok) {
+        reply.code(422);
+        return { error: gate.error, message: gate.message, missing: gate.missing };
+      }
+      merged.copy = gate.copy;
+      merged.first_comment = gate.first_comment;
     }
 
     db.prepare(
@@ -638,8 +700,13 @@ function buildServer() {
     `
     ).run(merged);
 
+    // T7: due within 10 minutes -> hand off now rather than waiting on the sweep.
+    if (nextStatus === 'scheduled_local' && (existing.status !== 'scheduled_local' || publishAt !== existing.publish_at)) {
+      kickHandoffIfDue(db, existing.id);
+    }
+
     const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
-    return parseJsonColumns(row, ['media', 'platform_fields']);
+    return shapePost(row);
   });
 
   // ---------- posts: hard delete (F2 review mode "Trash") ----------
@@ -884,6 +951,35 @@ function buildServer() {
       meta: { post_id: Number(req.params.id), platform: post.platform, public_url: b.public_url },
     });
     return db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+  });
+
+  // ---------- posts: recheck with Blotato (T2) ----------
+  // One status poll for a failed_verify (or still-submitted) post. See
+  // worker.recheckOne for the state mapping. Never creates or resends a post.
+  app.post('/api/posts/:id/recheck', async (req, reply) => {
+    const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(req.params.id);
+    if (!post) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    if (!['failed_verify', 'submitted'].includes(post.status)) {
+      reply.code(409);
+      return { error: 'wrong_status', message: `Cannot recheck a post in status '${post.status}'.` };
+    }
+    if (!post.blotato_submission_id) {
+      reply.code(409);
+      return {
+        error: 'no_submission_id',
+        message: 'This post has no Blotato submission id, so there is nothing to poll. Check the account and use Mark as posted.',
+      };
+    }
+    try {
+      const result = await recheckOne(db, post);
+      return { post: shapePost(result.post), blotato_state: result.blotato_state };
+    } catch (err) {
+      reply.code(502);
+      return { error: 'blotato_unreachable', message: err.message };
+    }
   });
 
   // ---------- posts: blog long-form render preview ----------
@@ -1675,31 +1771,14 @@ ${bodyHtml}
         message: `${existing.platform} is assisted-manual (manual account or non-Blotato platform) - copy the text, post it by hand, then use "Mark posted".`,
       };
     }
-    if (existing.platform === 'tiktok') {
-      let pf = {};
-      try {
-        pf = JSON.parse(existing.platform_fields || '{}');
-      } catch {
-        pf = {};
-      }
-      const { ok, missing } = validateTiktokFields(pf);
-      if (!ok) {
-        reply.code(422);
-        return {
-          error: 'tiktok_fields_missing',
-          message: `TikTok post is missing required fields: ${missing.join(', ')}`,
-          missing,
-        };
-      }
+    // Shared approve gate (TikTok fields + UTM). Only a post crossing IN from
+    // draft gets the UTM pass - one that was already approved has been tagged
+    // once and must not be tagged twice.
+    const tagged = runApproveGate(db, existing, { utm: existing.status === 'draft' });
+    if (!tagged.ok) {
+      reply.code(422);
+      return { error: tagged.error, message: tagged.message, missing: tagged.missing };
     }
-
-    // Only a post crossing IN from draft gets the approve-gate UTM pass - a
-    // post that was already approved has been tagged once and must not be
-    // tagged twice.
-    const enteringApprovedGate = existing.status === 'draft';
-    const tagged = enteringApprovedGate
-      ? applyApproveUtm(db, existing, { copy: existing.copy, first_comment: existing.first_comment })
-      : { copy: existing.copy, first_comment: existing.first_comment };
 
     const now = nowIso();
     db.prepare(
@@ -1732,7 +1811,7 @@ ${bodyHtml}
   // (see docs/B20_BULK_APPROVE_SPEC.md). This is N single approves, not a
   // shortcut around the gate: each post independently runs the same
   // scheduled_local promotion, TikTok field validation, and approve-gate UTM
-  // pass (applyApproveUtm, shared with the PATCH handler) that a one-off
+  // pass (runApproveGate, shared with the PATCH handler) that a one-off
   // approve does. One bad post never blocks its siblings - it comes back in
   // `skipped` with a reason.
   //
@@ -1765,31 +1844,19 @@ ${bodyHtml}
         continue;
       }
 
-      // Same gate as PATCH: TikTok cosmetic fields must be complete.
-      if (existing.platform === 'tiktok') {
-        let pf = {};
-        try {
-          pf = JSON.parse(existing.platform_fields || '{}');
-        } catch {
-          pf = {};
-        }
-        const { ok, missing } = validateTiktokFields(pf);
-        if (!ok) {
-          skipped.push({
-            id: existing.id,
-            reason: 'tiktok_fields_missing',
-            message: `Missing required fields: ${missing.join(', ')}`,
-          });
-          continue;
-        }
+      // Same gate as PATCH (runApproveGate): TikTok fields + UTM pass.
+      const tagged = runApproveGate(db, existing);
+      if (!tagged.ok) {
+        skipped.push({
+          id: existing.id,
+          reason: tagged.error,
+          message: `Missing required fields: ${tagged.missing.join(', ')}`,
+        });
+        continue;
       }
 
       // scheduled_local supersedes plain 'approved' when a publish_at is set.
       const nextStatus = existing.publish_at ? 'scheduled_local' : 'approved';
-      const tagged = applyApproveUtm(db, existing, {
-        copy: existing.copy,
-        first_comment: existing.first_comment,
-      });
 
       db.prepare(
         `UPDATE posts SET copy = @copy, first_comment = @first_comment,
@@ -1802,6 +1869,7 @@ ${bodyHtml}
         id: existing.id,
       });
       approved.push({ id: existing.id, status: nextStatus });
+      if (nextStatus === 'scheduled_local') kickHandoffIfDue(db, existing.id); // T7
     }
 
     return { approved, skipped, dry_run: isDryRun() };
@@ -1885,6 +1953,8 @@ ${bodyHtml}
     draft_provider: getRawSetting(db, 'draft_provider') ?? 'claude',
     // Chat agent provider; empty/unset means "follow draft_provider".
     agent_provider: getRawSetting(db, 'agent_provider') ?? getRawSetting(db, 'draft_provider') ?? 'claude',
+    // Blog add-on: blog_paused, blog_default_time, blog_site_brand:<siteId>.
+    ...getBlogSettings(db),
   }));
 
   app.patch('/api/settings', async (req) => {
@@ -1902,7 +1972,11 @@ ${bodyHtml}
       ...rest
     } = b;
     const updated = updateSettings(db, rest);
-    if (global_voice !== undefined) setGlobalVoice(db, global_voice);
+    updateBlogSettings(db, rest);
+    if (global_voice !== undefined) {
+      setGlobalVoice(db, global_voice);
+      markGlobalVoiceUserSet(db);
+    }
     if (global_hard_rules !== undefined) setGlobalHardRules(db, global_hard_rules);
     if (image_prompt_system !== undefined) setRawSetting(db, 'image_prompt_system', String(image_prompt_system));
     if (image_prompt_negative !== undefined) setRawSetting(db, 'image_prompt_negative', String(image_prompt_negative));
@@ -1922,10 +1996,36 @@ ${bodyHtml}
       agent_can_publish: getRawSetting(db, 'agent_can_publish') ?? '0',
       draft_provider: getRawSetting(db, 'draft_provider') ?? 'claude',
       agent_provider: getRawSetting(db, 'agent_provider') ?? getRawSetting(db, 'draft_provider') ?? 'claude',
+      ...getBlogSettings(db),
     };
   });
 
   // ---------- B12: tone-profile edit/reset + voice resolver preview ----------
+  // Brand voice editor (Settings > Brands > Voice): paste a voice, it is
+  // saved to the brand's voice doc, which drafting reads.
+  app.get('/api/brands/:id/voice', async (req, reply) => {
+    const info = brandVoiceDocInfo(db, req.params.id);
+    if (!info) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    return info;
+  });
+
+  app.put('/api/brands/:id/voice', async (req, reply) => {
+    const text = (req.body || {}).text;
+    if (typeof text !== 'string') {
+      reply.code(400);
+      return { error: 'text_required', message: 'Send the voice as { text }.' };
+    }
+    try {
+      return writeBrandVoiceDoc(db, req.params.id, text);
+    } catch (err) {
+      reply.code(err.code === 'not_found' ? 404 : err.code === 'global_voice' ? 409 : 400);
+      return { error: err.code || 'write_failed', message: err.message };
+    }
+  });
+
   app.patch('/api/tone-profiles/:id', async (req, reply) => {
     const existing = db.prepare('SELECT * FROM tone_profiles WHERE id = ?').get(req.params.id);
     if (!existing) {
@@ -1935,7 +2035,7 @@ ${bodyHtml}
     const b = req.body || {};
     const now = nowIso();
     const merged = {
-      voice_rules: b.voice_rules !== undefined ? b.voice_rules : existing.voice_rules,
+      voice_rules: b.voice_rules !== undefined ? normalizeDashes(b.voice_rules) : existing.voice_rules,
       hard_rules:
         b.hard_rules !== undefined
           ? typeof b.hard_rules === 'string'
@@ -2134,9 +2234,26 @@ ${bodyHtml}
     let nextStatus = post.status;
     if (['draft', 'approved'].includes(nextStatus)) nextStatus = 'scheduled_local';
 
+    // T10: a draft going straight to scheduled_local crosses the approve gate
+    // (TikTok fields + UTM), same as PATCH. 'approved'/'scheduled_local' posts
+    // already passed it.
+    let copy = post.copy;
+    let firstComment = post.first_comment;
+    if (post.status === 'draft') {
+      const gate = runApproveGate(db, post);
+      if (!gate.ok) {
+        reply.code(422);
+        return { error: gate.error, message: gate.message, missing: gate.missing };
+      }
+      copy = gate.copy;
+      firstComment = gate.first_comment;
+    }
+
     db.prepare(
-      `UPDATE posts SET publish_at = @publish_at, status = @status, updated_at = @now WHERE id = @id`
-    ).run({ publish_at, status: nextStatus, now, id: post.id });
+      `UPDATE posts SET copy = @copy, first_comment = @first_comment, publish_at = @publish_at,
+         status = @status, updated_at = @now WHERE id = @id`
+    ).run({ copy, first_comment: firstComment, publish_at, status: nextStatus, now, id: post.id });
+    kickHandoffIfDue(db, post.id); // T7
 
     return { publish_at };
   });
@@ -2197,6 +2314,10 @@ ${bodyHtml}
     }
     return { tags: row };
   });
+
+  // ---------- Blog add-on (src/blog.js, docs/BLOG_ADDON_SPEC.md) ----------
+  registerBlogRoutes(app, db);
+  registerWebRoutes(app, db);
 
   return app;
 }

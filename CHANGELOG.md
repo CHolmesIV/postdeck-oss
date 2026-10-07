@@ -3,6 +3,237 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-10-07 - Website analytics: traffic, leads and search next to the work
+
+Spec: `docs/WEB_ANALYTICS_SPEC.md` (build contract at the end). Suite **479 passing** (was 419).
+Migration **v14** (`web_*` tables, daily aggregates only).
+
+- **Analytics is now two tabs: Websites (new, default) and Social (unchanged).** Websites shows a
+  plain-language read, one row per site (visitors, leads, lead rate, search clicks, change vs
+  the previous period, 28-day sparkline, visitors right now), a day-by-day chart with PostDeck's
+  own blog releases and social posts marked on it, where visitors came from (search, social by
+  platform, AI assistants, referral, direct, email), pages (rising, falling, refresh candidate,
+  no leads), Google searches with a striking-distance list and a **Write a post** button that
+  opens the Blog editor with the query as the keyword, visits from your posts, and site health
+  (404s with ready redirect lines, crawler hits, form outcomes, GA4 vs relay lead check).
+- **Works today from server logs** (`src/web-logs.js` + `scripts/web/vps_log_summary.py`, piped
+  over read-only SSH to the VPS; nothing is written there). Humans only: bots, scanners, assets
+  and link-building referral spam are dropped. Leads = form relay deliveries.
+- **Google Analytics 4 + Search Console when connected** (`src/google.js`, `src/web-google.js`):
+  read-only service account, JWT signed with node:crypto, no new dependencies. The key is pasted
+  or chosen in Settings > Websites, stored 0600 in `~/Library/Application Support/PostDeck/`,
+  never returned by the API, never in the repo. Properties are found automatically.
+- **CB's own visits are filtered out** (his call): server logs skip the Mac's own IP and any
+  address that opened a `?pd_internal=on` link; Settings lists a "Mark this browser as you" link
+  per site. Stopping GA4/Clarity counting in that browser needs a small script on the sites
+  (spec "Own traffic", not yet on the sites).
+- **Honest comparisons:** a "before" number, change arrow or rising/falling tag appears only when
+  PostDeck has stored the whole previous period. Charts start where history starts.
+- **Elsewhere:** Home gets a weekly line and alerts (tracking looks broken, traffic down 40%+, a
+  sync failing for a day, new leads, form submissions the relay could not email). Blog view shows
+  28-day views, search clicks and position per published post with a sort. The post drawer says
+  "Sent N visits and M leads" for tagged posts. Planner has a Traffic toggle.
+- **UTM tagging** now adds `utm_content=pd-<post id>` so each visit maps to the post that sent it.
+- **Sync** runs inside the worker while PostDeck is open: logs hourly, GA4 every 6 h, Search
+  Console every 12 h; Refresh forces it. `POSTDECK_WEB_SYNC=0` turns it off (tests, sandboxes).
+- Security: every SSH argument is checked against strict patterns before it reaches the remote
+  shell (test added); the key file pattern is in `.gitignore`.
+
+## 2026-10-07 - Brand voices live with each website; CB's voice rebuilt
+
+Suite **419 passing** (was 418).
+
+- **Brand voice docs moved to each business's website branding folder** (CB's call), and every
+  brand now points at them: `Website Projects/CHolmesIV/brand/brand-voice.md`,
+  `Website Projects/Di-Hy/brand-voice.md`, `Website Projects/Lunula Supply/brand-voice.md`,
+  `Website Projects/IVision Build Co/brand/brand-voice.md`,
+  `PrimeWright/brand-package/primewright-2026/brand-voice.md` (stored relative to the Social Media
+  folder). `scripts/apply-brand-voices.js` carries the new map and was applied to the live DB
+  after a backup (`postdeck-pre-voices-2026-10-07.db`).
+- **Settings > Brands > Voice can save to those files**: `writeBrandVoiceDoc` now accepts `.md`
+  files anywhere under the Projects folder (the parent of the Social Media folder;
+  `POSTDECK_PROJECTS_ROOT` overrides), not just inside Social Media. Test added.
+- **CB's voice card rebuilt** (`Social Media/docs/charles-voice-reference.md`, 3.4k chars so the
+  whole card fits the 4,000-character prompt cap): influences Hormozi, Gary Vee, Robbins, Cardone,
+  grounded in his own writing and profile. The global voice seeds from it on next launch (the live
+  global voice is still empty and unsaved). Verified on a DB copy: every brand's composed voice
+  has the card plus its brand doc, no placeholder text, no long dashes.
+
+## 2026-10-07 - Blog add-on: PostDeck runs the HTML blog programs
+
+Spec: `docs/BLOG_ADDON_SPEC.md`. Suite **418 passing** (was 388). Migration **v13**
+(`blog_releases`).
+
+- **New Blog view** (`#/blog`, nav item after Planner). PostDeck finds every site under
+  `Website Projects/` that has `blog/tools/release.py` (today CHolmesIV, Di-Hy, Lunula Supply) and
+  drives each site's own scripts. It never edits those scripts and never passes
+  `--allow-unreviewed`.
+- **Write, paste or draft with AI.** New blog post opens an editor whose fields come from that
+  site's own format (Lunula's `dek`, Di-Hy's `seo_title`, CHolmesIV's `headline`, the allowed
+  clusters). Body is a big markdown box. Draft with AI uses the site's brand voice plus two of its
+  recent posts as style examples. Edits autosave; a file changed on disk by another session is
+  detected (no silent overwrite). Long dashes are normalized on save.
+- **Preview in the real site design** with the site's QA checks, built from a temporary copy so
+  the real `dist/` and content are untouched. Preview needs `build_blog.py` (CHolmesIV today; Di-Hy
+  and Lunula use other builder names, so their preview shows a build note instead).
+- **Approve, schedule a date and time, or Release now.** Approved posts release at their time
+  while PostDeck is open (checked every worker cycle); Release now runs it immediately. Release is
+  by day (the sites' scripts publish everything due by today). If any due post still needs review,
+  the site's script would refuse the whole run, so PostDeck shows "Release blocked" with Approve /
+  Move date instead of running. One release per site at a time; every run logged with its output.
+- **Dry run is honored:** in dry-run mode the release runs the build and QA and uploads nothing.
+  Deploy flags are read from what each script declares (`--deploy` for CHolmesIV and Di-Hy,
+  `--go` for Lunula; `--date` vs `--today`), and a script with no deploy option is never guessed.
+- **Planner and Home:** blog posts on their dates with a Blog filter chip; Home shows posts needing
+  review, blocked or failed releases, and upcoming releases. **Settings > Blogs:** brand voice per
+  site, default release time, Pause blog releases, recent release logs.
+- Tested on copies of the real sites in dry-run mode: CHolmesIV's "How to Buy a Small Business"
+  previewed in the real template (0 problems), approved, and released as a dry run (build + QA
+  passed, nothing uploaded). Real site files untouched.
+- **Known gaps:** Planner List view doesn't show blog posts (Week and Month do); Lunula's live
+  links point at `/blog/` but its posts live under `/insights/`; preview only for sites with
+  `build_blog.py`; release is per day, not per post time.
+
+## 2026-10-07 - Paste your own brand voice; no long dashes anywhere in voice text
+
+Suite **388 passing** (was 382).
+
+- **Settings > Brands > Voice is now a paste box.** Paste or write a brand's voice and Save: it is
+  written to that brand's voice doc (`Social Media/brands/<slug>/voice.md`, created if the brand
+  had none) and the next draft uses it. Shows the character count and warns past the 4,000
+  characters drafting reads. CHolmesIV's voice is your personal card, so that brand links to
+  Settings > AI instead (one source, every brand stays in sync). New routes:
+  `GET/PUT /api/brands/:id/voice`; writes are confined to `.md` files inside the Social Media
+  folder. The old free-text "voice doc path" field is gone from the UI (the path shows as a note).
+- **Long dashes are stripped from every voice source.** `normalizeDashes()` (`src/voice.js`)
+  runs when the global voice, a brand voice or a tone tweak is saved, when the global voice is
+  seeded, and on the assembled draft prompt, so pasted text can't teach the model to use them. A
+  rule that names the character ("No em dashes (—)") reads as "(the long dash)". The output scrub
+  already converted em and en dashes in AI drafts. Global voice shows the cleaned text after Save.
+- **Voice card cleaned.** `Social Media/docs/charles-voice-reference.md`: title, a heading and the
+  sample line "doesn't build trust — it just pushes the sale" (now two sentences). The models
+  imitate samples, so that one mattered. Only the line stating the rule still shows the character.
+- Tone previews moved behind "See the full voice the AI gets" (they printed the whole composed
+  voice under each tone). The Analytics campaign banner lost its em dash.
+- `test/brand-voice-editor.test.js` (6 tests): create/overwrite/read, global-voice refusal, path
+  confinement, dash normalization on every path into a prompt.
+
+## 2026-10-07 - D3 redesign: Planner, post drawer, New post sheet, Home, Settings
+
+Spec: `docs/DESIGN_WAVE_SPEC.md`. Frontend 9.2k -> 7.6k lines. Suite **382 passing**.
+
+- **Navigation** is Home, Planner, Analytics, Settings, plus a collapsed Labs group. One corner
+  button (New post). Shortcuts: `C` new post, `D` drafts, `1-4` the four views, `Cmd+K` palette.
+  Old routes redirect (`#/calendar`, `#/review` -> Planner; `#/composer` -> New post; `#/ops`,
+  `#/profiles` -> Settings).
+- **Planner** (`#/planner`): week (default) / month / list, filter chips with counts (All,
+  Drafts, Scheduled, Posted, Needs attention), brand filter, drafts tray, "+ New post" on an empty
+  day (prefills brand and date), drag to reschedule with Undo, a needs-attention strip.
+- **Post drawer**: the one editor for existing posts. Copy autosaves; one delivery choice drives
+  one button; recovery panels for failed, not confirmed, check-before-resending and missed-time
+  posts. `#/post/:id` opens it over the Planner.
+- **New post sheet**: brand first, its accounts preselected, idea box + Draft with AI, one post
+  box with optional per-network versions (AI fills each network), live preview, Draft / Schedule
+  (best-time chips) / Next open slot / Post now. Saves are idempotent (one post id per account
+  for the life of the sheet), buttons lock while saving, unsaved work is kept on close or
+  navigation and offered back ("Start over" to drop it). Idea to scheduled on two networks: three
+  clicks after typing.
+- **Home**: Needs you (plain reasons, Review button), drafts waiting, Coming up (7 days),
+  Recently posted. Down to three requests from ~35.
+- **Settings**: Brands (completeness checklist, voice, accounts, queue slots, profiles, branding,
+  link tracking), AI (global voice and rules, providers, assistant authority, image prompts),
+  System (live/dry-run, worker, account health, backups, usage). Fixes the section links that
+  sent you to Home.
+- **Live feel**: saves refresh in place (no "Loading..." swap, scroll kept); live views refresh
+  on focus and every minute unless you're typing; a route change closes drawers and modals;
+  Undo toasts for reversible actions; in-app dialogs replace every browser confirm/alert/prompt;
+  unhandled API failures show a toast.
+- **Look**: flat dark + gold tokens (`public/css/foundation.css`), no gradients, glows,
+  side-stripes or tracked uppercase headings; one system font; plain-language statuses; Blotato
+  errors translated into what happened and what to do.
+- **Fixes found in QA**: the New post sheet now saves unsaved work when you navigate away
+  (snapshot ran after the sheet was already marked closed); "Images null" / "Advanced null"
+  labels; Recently posted text clipped at the start; seed placeholder tone text shown as real
+  rules in Settings.
+- **Known gaps**: no bulk "Schedule selected" in List view; metrics entry moved off the post page
+  (use Analytics > Metrics due); Cancel post confirms (no Undo, canceled is final).
+
+## 2026-10-07 - Trust fixes T2/T6/T7/T9/T10 + per-brand voices
+
+Suite **382 passing**. Migration **v12** (runs on next launch).
+
+- **Failed posts are no longer dead ends (T2).** `failed` and `failed_verify` can move to draft or
+  canceled. New `POST /api/posts/:id/recheck` polls Blotato once and resolves the post (published
+  with URL, failed with message, or back into verification). Verification reads Blotato's
+  `publicUrl` (every Blotato-published post had a null URL before), keeps polling for 24h from the
+  first poll instead of quitting after ~25 minutes, records `last_remote_state`, and gives up with
+  a message that says the post may be live. Posts 19, 21 and 42 were abandoned by the old rule
+  while Blotato still said "in-progress".
+- **One time format (T6).** `publish_at` is normalized to UTC ISO on every write (`src/time.js`);
+  v12 rewrites existing rows; the worker and queue compare epoch milliseconds instead of strings,
+  which also fixes queue slots double-booking across formats.
+- **Short-notice posts go out (T7).** The missed-window flag waits 15 minutes past the time and
+  never overwrites a real error. Approving a post due within 10 minutes hands it to Blotato right
+  away instead of waiting for the 5-minute sweep.
+- **Tighter request guard (T9).** Writes with `Origin: null` or `Sec-Fetch-Site: cross-site /
+  same-site` are refused.
+- **One approve gate (T10).** Queue, approve-batch, publish-now and the chat agent's approve run the
+  same TikTok-field and UTM checks as a normal approve (`src/approve.js`).
+- **Launcher log** appends instead of being wiped each start.
+- **Brand voices.** Drafting now combines CB's global voice, the brand's voice doc
+  (`brands.voice_doc_path`, absolute or relative to the Social Media folder) and the tone's rules.
+  Seed placeholder tone rules are ignored. New voice docs: `Social Media/brands/{dihy,primewright,
+  lunula,ivision}/voice.md` (CHolmesIV uses `docs/charles-voice-reference.md`).
+  `scripts/apply-brand-voices.js` points each brand at its doc (refuses without an explicit
+  `POSTDECK_DB_PATH`; `--apply` to write). Open questions for CB are listed at the top of the
+  ivision doc and in the audit doc.
+
+## 2026-10-07 - Double-post guard + needs_check recovery (audit T1)
+
+Suite **341 passing** (was 333).
+
+- **A network blip could publish the same post up to 5 times.** `request()` retried timeouts,
+  dropped connections and 5xx on every method, including `POST /v2/posts`. If Blotato had already
+  accepted the first one, every retry was another live post (Blotato can't delete). Post creation
+  is now `idempotent: false`: one attempt, and an uninterpretable failure (timeout, dropped
+  connection, 5xx) throws an `ambiguous` error instead of retrying. 429 still retries (rejected
+  before it ran); media upload and GETs keep their retries (a duplicate upload is invisible).
+- **New status `needs_check`.** The worker parks an ambiguous create there, and also any 2xx that
+  returns no submission id (previously marked `submitted` with a null id, so verify polled
+  `/v2/posts/null`). The sweep only picks up `scheduled_local`, so `needs_check` is never resent.
+  Allowed exits: `draft` (time cleared) or `canceled`, or `mark-posted` with the live URL. A
+  straight approve is refused, so there's no one-click resend.
+- **UI:** `Check before resending` rows lead Home's Needs attention; the post page and calendar
+  drawer show a panel explaining the post may be live, with `Mark as posted` (inline URL field)
+  and `It didn't post - move to draft`. Home's "This week - N scheduled" now counts only posts
+  actually going out (it was counting drafts, failures and cancellations). State export counts
+  `needs_check` with failures.
+- `test/no-double-post.test.js` (8 tests) against a local mock Blotato: dropped connection, 502,
+  no-id, 429-then-ok, flaky media, and the recovery routes. Four of them fail on the previous
+  code (the dropped-connection case sent the post 5 times).
+
+## 2026-10-07 - Audit + voice fix + scheduling time bugs
+
+New audit and plan: `docs/AUDIT_2026-10-07.md`. Suite **333 passing** (was 328).
+
+- **AI drafts had no voice.** `seedGlobalVoiceIfMissing` looked for
+  `charles-voice-reference.md` in `postdeck/docs/`; it lives in `Social Media/docs/`. It wrote
+  `''` and never retried, so every draft ran with an empty global voice. Now reads the project
+  doc (`POSTDECK_VOICE_REF` overrides), never stores `''` on a missing file, and re-seeds an empty
+  voice unless the operator saved it in Settings (`global_voice_user_set`). The live DB heals on
+  next launch.
+- **Saving a scheduled post moved it 4-5 hours later.** The detail page (and the Composer queue
+  result) put the UTC string into a local `datetime-local` input, then saved it back as local.
+  Now uses `isoToLocalInput()`.
+- **Calendar filed evening posts under the next day.** Month/week/agenda grouping, dot counts and
+  brand coverage keyed days by the UTC date string. New `postDayKey()` keys by local day.
+- **Rescheduling from the calendar drawer always failed (409).** The drawer's Schedule sends
+  `status: 'approved'`; scheduled posts are stored as `scheduled_local`, and that "transition"
+  was refused. `PATCH /api/posts/:id` now treats it as the same state (re-derived from
+  `publish_at`, approve gate not re-run). Also fixes Review "Add to queue" then "Approve & next".
+- Browser QA on a sandbox copy (port 4599, dry-run, worker/sync off): evening post lands on the
+  right day, drawer reschedule saves, detail-page save leaves the time unchanged.
+
 ## 2026-09-02 - Full audit: `docs/AUDIT_2026-09-02.md`
 
 Ran a full strong-model audit (security, agent orchestrator, speed, UI/UX, data/ops, docs/repo)

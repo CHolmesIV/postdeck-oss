@@ -235,8 +235,44 @@ Write/lifecycle (B3+):
 - `POST /api/media` (multipart upload), `POST /api/draft` (AI drafting)
 - `PATCH /api/settings` (quiet hours, handoff window)
 
+Recovery (2026-10-07):
+- `POST /api/posts/:id/recheck` (one Blotato status poll for `failed_verify` / `submitted`)
+- `POST /api/posts/:id/mark-posted` (record a live URL; resolves `needs_check` too)
+- `PATCH /api/posts/:id` accepts `failed` / `failed_verify` / `needs_check` -> `draft` | `canceled`
+
+Blog add-on (`docs/BLOG_ADDON_SPEC.md`):
+- `GET /api/blog/sites`, `GET /api/blog/sites/:site/schema`, `GET|POST /api/blog/sites/:site/posts`,
+  `GET|PATCH /api/blog/sites/:site/posts/:slug` (PATCH needs `mtime`; 409 `changed_on_disk`)
+- `POST /api/blog/sites/:site/posts/:slug/{approve,schedule,unschedule,release-now,preview}`
+- `POST /api/blog/sites/:site/release`, `GET /api/blog/sites/:site/releases`, `GET /api/blog/preview/:token/*`
+- `POST /api/blog/draft` (AI). Env: `POSTDECK_WEBSITES_ROOT`, `POSTDECK_PYTHON`.
+
+Voice:
+- `GET /api/brands/:id/voice`, `PUT /api/brands/:id/voice` `{ text }` (brand voice doc; `.md` files under the
+  Projects folder, e.g. each site's `brand-voice.md`; 409 for the brand whose doc is the global voice card)
+- `GET /api/voice/resolve?brand_id=&tone=` (the exact voice text a draft gets)
+
+Website analytics (`docs/WEB_ANALYTICS_SPEC.md`):
+- `GET /api/web/{status,sites,overview,channels,pages,search,social,health,realtime,home,blog-stats,daily}`,
+  `GET /api/web/post/:id` (query: `brand_id`, `site_id`, `range` = 7|28|90|365)
+- `PATCH /api/web/sites/:id`, `POST /api/web/sync` `{ site_id?, source? }`, `POST /api/web/digest` (AI summary)
+- `POST|DELETE /api/web/google-key` (service account key; stored 0600 outside the repo, never echoed)
+- Env: `POSTDECK_WEB_SYNC=0` (no background sync), `POSTDECK_GOOGLE_SA` (key path),
+  `POSTDECK_VPS_HOST` (ssh host alias for the read-only server-log pull)
+
 ## Architecture
 
-See [`SPEC.md`](./SPEC.md) for the full picture: Blotato handoff model, worker,
-dashboard, and build plan (B1-B6). This repo implements the full plan through
-B6 polish; see "B6 polish (this pass)" above for what's new.
+See [`SPEC.md`](./SPEC.md) for the full picture (Blotato handoff model, worker, every build
+wave). Current state: [`BUILD_STATUS.md`](./BUILD_STATUS.md). Latest audit and plan:
+[`docs/AUDIT_2026-10-07.md`](./docs/AUDIT_2026-10-07.md); UI contract:
+[`docs/DESIGN_WAVE_SPEC.md`](./docs/DESIGN_WAVE_SPEC.md).
+
+**Frontend** (`public/`, no build step): `index.html` loads classic scripts from `public/js/`
+in a fixed order; they share one global scope (a later file's same-named function overrides
+an earlier one; a duplicate top-level `const`/`let` breaks the whole file). `00-core.js` holds
+the shared primitives (`el`, `api`, `toast` with Undo, `confirmDialog`/`promptDialog`,
+`humanStatus`/`statusPill`, overlay + view-cleanup registries), `01-router.js` the router
+(same-hash calls refresh in place), `99-main.js` the route table and boot. Views: `30-planner.js`
+(Planner), `31-post-drawer.js` (the one editor for existing posts), `40-create.js` (New post
+sheet), `50-home.js`, `60-settings.js`, plus Analytics and the Labs tools. CSS: `styles.css`
+(legacy base), `css/foundation.css` (tokens + shared components), one file per view.

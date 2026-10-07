@@ -1,12 +1,13 @@
 # PostDeck - Build Status
 
-_Last updated: 2026-09-02. One-page state of the build. Full design: `SPEC.md`. History:
+_Last updated: 2026-10-07. One-page state of the build. Full design: `SPEC.md`. History:
 `CHANGELOG.md`._
 
 ## Where it stands
 
 Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:4520`
-(`npm start`). **328 passing.**
+(`npm start`). **479 passing.** Current audit + plan: `docs/AUDIT_2026-10-07.md`; UI contract:
+`docs/DESIGN_WAVE_SPEC.md`.
 
 > ⚠️ **`BLOTATO_DRY_RUN=0` in `../config/.env` - posting is LIVE.** Dry-run is the *code*
 > default but the running instance is deliberately flipped to live. Approving a post whose
@@ -48,8 +49,13 @@ Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:45
 | B22 | Publishing workflow redesign: review drawer, one delivery choice, quick scheduling, account cards, link-high guidance, manual-post reconciliation | ✅ |
 | B22.1 | Home `Needs attention` per-item dismiss, Dismiss all, persistent exact-state re-arm | ✅ |
 | B23 | Audit wave: Fastify 5 / dep upgrade (0 vulns), Origin/Host request guard, in-process submit claim, migration v11 (`metrics.post_id` index), daily SQLite backups, provider-layer AI registry (Claude/Codex/Grok) | ✅ |
+| B24 | Oct audit fixes: voice seeding path, scheduling time bugs, double-post guard + `needs_check`, failed/failed_verify recovery + `/recheck`, 24h verify + `publicUrl`, UTC `publish_at` (migration v12), short-notice handoff, tighter origin guard, one approve gate, per-brand voice docs | ✅ |
+| D4 | Blog add-on: Blog view over the Website Projects HTML blog programs (write/paste/AI draft, real-template preview + QA, approve, schedule with time, Release now, scheduled release while open, release log), Planner/Home/Settings integration, migration v13 | ✅ |
+| W1 | Website analytics: Analytics > Websites (server logs now, GA4 + Search Console when the key is added), own-traffic filter, Home/Blog/drawer/Planner hooks, Settings > Websites, UTM `pd-<id>`, migration v14. Spec `docs/WEB_ANALYTICS_SPEC.md` | ✅ |
+| D3.1 | Paste-your-own brand voice in Settings (writes the brand voice doc), long-dash normalization on every voice source | ✅ |
+| D3 | Redesign: 4-item nav + Labs, Planner (week/month/list, filters, drafts tray, drag), one post drawer with recovery panels, New post sheet (idempotent, autosaved), Home, Settings tabs, in-place refresh, in-app dialogs, flat dark+gold tokens, `public/js/` split | ✅ |
 
-## Security posture (reviewed 2026-09-02)
+## Security posture (reviewed 2026-09-02, updated 2026-10-07)
 
 - Localhost-only (`127.0.0.1`), single operator. Repo is private on GitHub - not published for
   broader visibility.
@@ -60,6 +66,9 @@ Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:45
   the audit flagged - a stray web page open in the browser can no longer `fetch()` the local API.
 - **New (B23): in-process submit claim** stops "Submit now" from racing the 5-minute handoff
   sweep into a double-post against Blotato.
+- **New (B24): post creation is never auto-retried.** An ambiguous failure parks the post in
+  `needs_check` instead of resending (Blotato can't delete). Writes with `Origin: null` or
+  `Sec-Fetch-Site: cross-site|same-site` are refused.
 - **Fastify 5**, `@fastify/static` 10, `@fastify/multipart` 10 - `npm audit` reports 0
   vulnerabilities.
 - Watch: keep `agent_can_publish` OFF unless supervising (prompt-injection from ingested content
@@ -67,6 +76,32 @@ Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:45
   beyond localhost, add auth first.
 
 ## Pending / open loops
+
+- **Website analytics: built 2026-10-07, two steps left for CB.** (1) Google: create the read-only
+  service account and paste the key in Settings > Websites (steps are on that page). Until then
+  the dashboard runs on server logs only. (2) The sites still need the own-traffic script and the
+  missing lead events (cholmesiv.com contact page; Lunula unconfirmed). That edit was not made
+  from this session because those website folders hold other sessions' unsaved work; do it from
+  each site's own session (spec "Own traffic" and "Measurement fixes"). Also: mark
+  `generate_lead` as a Key event in each GA4 property, create a GA4 property for IVision.
+- **Brand voices: settled 2026-10-07.** CB asked for them to be written for him, built on his
+  voice (influences Hormozi, Gary Vee, Robbins, Cardone), and kept with each website's branding
+  docs. Files: `Website Projects/<Site>/.../brand-voice.md` and
+  `PrimeWright/brand-package/primewright-2026/brand-voice.md` (untracked in the PrimeWright repo,
+  which another agent shares; commit it from there). Edit any of them in Settings > Brands > Voice.
+- **Labs review 2026-11-07:** delete whatever under Labs is still unused (Research, Inspiration,
+  Ideas, Library, Images, Redistribute, chat agent). Check `usage_events` + table row counts.
+- **Facebook pages:** Di-Hy Facebook 422s "Page / subaccount not found" and the CHolmesIV
+  Facebook account has no pageId. Connect the pages in Blotato, then set the page target per
+  account (`listSubaccounts` in `src/blotato.js` exists for this).
+- **Old "Not confirmed" posts 19, 21, 42 (and Di-Hy 1):** open each in the Planner and use
+  "Check again" or "Mark as posted". They are probably live.
+- **Blog add-on follow-ups:** Planner List view should show blog posts; Lunula live links should
+  use `/insights/` (its posts don't live under `/blog/`); preview for Di-Hy and Lunula (their
+  builders aren't named `build_blog.py`); optional auto-release setting (CB, later). CHolmesIV's
+  35 posts are drafts awaiting review: approve and schedule them in the Blog view.
+- **Small UI follow-ups:** bulk "Schedule selected" in Planner List view; metrics entry from the
+  post drawer (today: Analytics > Metrics due).
 
 - **Blotato analytics API seam:** Blotato now shows analytics in its own web app, but its public API
   documentation did not expose engagement metrics when checked 2026-08-12. PostDeck keeps its
@@ -89,7 +124,7 @@ Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:45
   in Settings → Queues and flips Link tracking per brand when ready.
 - **D2 SHIPPED 2026-07-18** (rules R1–R8 + layout moves; see CHANGELOG). Leftover polish
   candidates: fold remaining `.msg-banner` divs onto `inlineBanner`, custom confirm dialog
-  to replace native confirm() on destructive actions, L1 icon-rail hover-expand polish.
+  to replace native confirm() on destructive actions (done in D3), L1 icon-rail hover-expand polish.
 
 - **Run PostDeck in your logged-in session, not as a background service** (resolved 2026-07-15).
   Root cause of the AI-features 503: Claude Code stores its subscription login in the macOS
@@ -122,12 +157,11 @@ Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:45
   UI/UX direction for PrimeWright website/app passes.
 - **launchd**: installer ships but is not auto-run - start it when ready
   (`scripts/install-launchd.sh`).
-- **Repo: GitHub main fast-forwarded to working 2026-09-02.** Repo is private; no squash needed
+- **Repo: GitHub main fast-forwarded to working 2026-09-02.** Repo is private; no squash needed Public snapshot `CHolmesIV/postdeck-oss` refreshed to `2a3e756` (scrubbed: no VPS host/key, no SOCIAL_STATUS, no Codex task brief).
   for that reason alone.
-- **Fold remaining native `confirm()`/`alert()` into toast/banner** (see audit U3).
-- **Popover focus trap / aria** - custom popovers have no focus trap or return-focus (audit U4).
-- **Per-brand timezone** - queue slots and best-times are machine-local; the Tampa move will
-  shift the Mac's TZ and shift them with it (audit D3).
+- **Per-brand timezone** - queue slots and best-times are machine-local. The Mac reported
+  America/Chicago on 2026-10-07; Tampa is Eastern, so after the move every local slot shifts one
+  hour (audit D3). Stored `publish_at` is UTC and is not affected.
 - **`sync.js` host/key defaults should move to `.env`** - hostname and key path are currently
   hardcoded in source (audit S5).
 

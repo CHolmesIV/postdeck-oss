@@ -1,5 +1,10 @@
 # Fix Wave — Notification Dismiss + Image Review
 
+> **2026-10-07 note:** `public/app.js` was split into `public/js/*.js` and the UI rebuilt (D3,
+> `docs/DESIGN_WAVE_SPEC.md`). Line refs below are historical. Home attention now lives in
+> `public/js/50-home.js`; the Codex image request flow lives in the New post sheet
+> (`public/js/40-create.js`). P2 (global image review) is still unbuilt.
+
 _Captured 2026-07-22 from CB's airport punch-list. P1 shipped 2026-08-12. P2 remains a spec and
 must not be built until approved._
 

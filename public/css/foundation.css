@@ -1,0 +1,379 @@
+/* =====================================================================
+   D3 foundation layer (docs/DESIGN_WAVE_SPEC.md).
+   Loaded after styles.css: redefines tokens and the shared components so
+   every view inherits the calmer system. View-specific CSS lives in
+   css/<view>.css and loads after this file.
+   ===================================================================== */
+
+:root {
+  /* Neutrals: one dark ramp, faintly warm toward the gold. Flat, no gradients. */
+  --ink: #0f0f0d;
+  --bg: #121210;
+  --surface: #181816;
+  --surface-2: #1f1e1b;
+  --surface-hi: #282723;
+  --border: #2e2d28;
+  --border-hi: #44423a;
+  --white: #f2f0ea;
+  --text: #e9e7e0;
+  --muted: #a6a39a;      /* 7.4:1 on --surface */
+  --faint: #8a877e;      /* 5.0:1 on --surface: hints, timestamps */
+
+  /* The one accent. Primary action, selection, focus. Nothing decorative. */
+  --gold: #c8902a;
+  --gold-2: #e2b24e;
+  --gold-hover: #d59c34;
+  --gold-ink: #1a1200;
+  --gold-tint: rgba(200, 144, 42, 0.14);
+
+  /* Semantic status colors (fixed vocabulary, see humanStatus()). */
+  --ok: #6fbf7e;     --ok-tint: rgba(111, 191, 126, 0.13);
+  --info: #79aee0;   --info-tint: rgba(121, 174, 224, 0.13);
+  --warn: #e2b24e;   --warn-tint: rgba(226, 178, 78, 0.13);
+  --bad: #e5806f;    --bad-tint: rgba(229, 128, 111, 0.13);
+  --red: #c0392b;
+  --green: #4c9a5b;
+
+  /* Gradients retired: keep the names valid so old rules render flat. */
+  --grad-gold: var(--gold);
+  --grad-surface: var(--surface);
+  --grad-tile: var(--surface);
+  --grad-page: none;
+  --glow-gold: none;
+  --inset-hi: none;
+
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --sh-2: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --sh-3: 0 18px 48px rgba(0, 0, 0, 0.5);
+
+  /* Type: one system family, fixed product scale. */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-copy: 15px;
+  --text-lg: 17px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+
+  /* Space: 4px grid. */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-7: 28px; --s-8: 32px;
+
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+
+  /* Layers. Never use raw numbers in view CSS. */
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-drawer: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+  --z-tooltip: 60;
+
+  --ease: cubic-bezier(0.25, 1, 0.5, 1); /* ease-out-quart */
+  --t-fast: 0.15s var(--ease);
+  --t-med: 0.2s var(--ease);
+}
+
+body {
+  background: var(--bg);
+  background-image: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+h1, h2, h3 { text-wrap: balance; }
+
+h1 {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--white);
+}
+
+/* Panel/section headings: sentence case, no tracked caps. */
+h2 {
+  font-size: var(--text-copy);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--white);
+  margin: 0 0 var(--s-3);
+}
+
+.form-section-label,
+.settings-zone-nav a,
+.kanban-col h3,
+.review-drawer-label,
+.cal-filter-label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.tabular, time, .num { font-variant-numeric: tabular-nums; }
+
+/* ---------- Shell ---------- */
+nav#sidebar {
+  width: 216px;
+  background: var(--ink);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: var(--s-5) 0 var(--s-4);
+}
+
+nav#sidebar .brand {
+  background: none;
+  -webkit-background-clip: initial;
+  background-clip: initial;
+  color: var(--gold-2);
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0 var(--s-5) var(--s-4);
+  margin-bottom: var(--s-3);
+}
+
+nav#sidebar a {
+  border-left: none;
+  margin: 1px var(--s-2);
+  padding: 8px var(--s-3);
+  font-size: var(--text-md);
+  color: var(--muted);
+}
+nav#sidebar a:hover { background: var(--surface-2); color: var(--white); transform: none; }
+nav#sidebar a.active {
+  background: var(--surface-hi);
+  color: var(--white);
+  box-shadow: none;
+}
+nav#sidebar a.active .nav-icon { color: var(--gold-2); }
+
+.nav-primary { display: flex; flex-direction: column; }
+
+.nav-group { margin-top: var(--s-4); }
+/* `hidden` must win over the display:flex these containers get elsewhere. */
+[hidden] { display: none !important; }
+.nav-group-header {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--faint);
+}
+.nav-group-note {
+  margin: 2px var(--s-5) var(--s-2);
+  font-size: var(--text-xs);
+  color: var(--faint);
+}
+
+.nav-footer {
+  margin-top: auto;
+  padding-top: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+main#view {
+  padding: var(--s-7) var(--s-8) 96px;
+  animation: none;
+}
+/* Only a real navigation gets the entrance; refreshes render in place. */
+main#view.view-enter { animation: viewIn var(--t-med); }
+
+@keyframes viewIn {
+  from { opacity: 0.6; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Surfaces ---------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: none;
+  padding: var(--s-5);
+}
+.card::before { display: none; }
+
+/* ---------- Buttons ---------- */
+button {
+  background: var(--surface-2);
+  box-shadow: none;
+  font-size: var(--text-sm);
+}
+button:hover { transform: none; box-shadow: none; border-color: var(--border-hi); }
+
+button.primary, .button.primary {
+  background: var(--gold);
+  color: var(--gold-ink);
+  border: 1px solid var(--gold);
+  font-weight: 650;
+  box-shadow: none;
+}
+button.primary:hover, .button.primary:hover {
+  background: var(--gold-hover);
+  border-color: var(--gold-hover);
+  filter: none;
+  box-shadow: none;
+}
+
+.button.destructive, button.destructive, button.danger {
+  background: transparent;
+  border-color: rgba(229, 128, 111, 0.5);
+  color: var(--bad);
+}
+.button.destructive:hover, button.destructive:hover, button.danger:hover {
+  background: var(--bad-tint);
+  border-color: var(--bad);
+}
+
+button.is-pending, .button.is-pending { pointer-events: none; }
+
+/* ---------- Status pills (humanStatus vocabulary) ---------- */
+.pill {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  padding: 2px 9px;
+  box-shadow: none;
+}
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px 2px 8px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.status-pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-pill--neutral { background: var(--surface-hi); color: var(--muted); }
+.status-pill--gold { background: var(--gold-tint); color: var(--gold-2); }
+.status-pill--info { background: var(--info-tint); color: var(--info); }
+.status-pill--ok { background: var(--ok-tint); color: var(--ok); }
+.status-pill--bad { background: var(--bad-tint); color: var(--bad); }
+.status-pill--muted { background: transparent; color: var(--faint); border: 1px solid var(--border); }
+.status-pill--muted::before { display: none; }
+
+/* ---------- Floating new-post button ---------- */
+.fab {
+  background: var(--gold);
+  color: var(--gold-ink);
+  box-shadow: var(--sh-2);
+  z-index: var(--z-sticky);
+}
+.fab:hover { background: var(--gold-hover); transform: none; filter: none; box-shadow: var(--sh-2); }
+
+/* ---------- Toast (with optional action, e.g. Undo) ---------- */
+.toast-host {
+  z-index: var(--z-toast);
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  background: var(--surface-hi);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-2);
+  color: var(--text);
+  font-size: var(--text-sm);
+  animation: toastIn var(--t-med);
+}
+.toast-action {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  color: var(--gold-2);
+  font-weight: 650;
+}
+.toast-action:hover { text-decoration: underline; background: transparent; }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Confirm / prompt dialog (native <dialog>) ---------- */
+dialog.pd-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--sh-3);
+}
+dialog.pd-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+dialog.pd-dialog[open] { animation: dialogIn var(--t-med); }
+.pd-dialog-body { padding: var(--s-5) var(--s-5) var(--s-4); }
+.pd-dialog-body h2 { font-size: var(--text-lg); margin: 0 0 var(--s-2); }
+.pd-dialog-body p { margin: 0 0 var(--s-2); color: var(--muted); line-height: 1.5; }
+.pd-dialog-body input { width: 100%; margin-top: var(--s-2); }
+.pd-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-5) var(--s-4);
+}
+@keyframes dialogIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Skeleton (first paint of a slow view only) ---------- */
+.skeleton-view { display: grid; gap: var(--s-3); max-width: 920px; }
+.skeleton-bar {
+  height: 14px;
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--surface) 0%, var(--surface-2) 50%, var(--surface) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+.skeleton-bar.lg { height: 28px; width: 40%; margin-bottom: var(--s-3); }
+.skeleton-bar.block { height: 72px; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+/* ---------- Labs index ---------- */
+.labs-list { display: grid; gap: var(--s-2); max-width: 720px; }
+.labs-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  color: var(--text);
+  text-decoration: none;
+}
+.labs-item:hover { border-color: var(--border-hi); background: var(--surface-2); }
+.labs-item-title { font-weight: 600; }
+.labs-item-desc { color: var(--muted); font-size: var(--text-sm); margin-top: 2px; }
+.labs-note { color: var(--muted); margin: 0 0 var(--s-5); max-width: 640px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

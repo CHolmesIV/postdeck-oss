@@ -39,8 +39,9 @@ import { redistributeFromUrl } from './redistribute.js';
 import { createExample } from './examples.js';
 import { withGlobalVoice, getGlobalHardRules, mergeHardRules, getRawSetting } from './voice.js';
 import { generateProfile } from './profiles.js';
-import { validateTiktokFields } from './validate.js';
-import { submitNow, isDryRun } from './worker.js';
+import { runApproveGate } from './approve.js';
+import { normalizeIso } from './time.js';
+import { submitNow, isDryRun, kickHandoffIfDue } from './worker.js';
 
 const MAX_ROUNDS = 3;
 
@@ -347,6 +348,14 @@ function scrubCopyForBrand(db, brand_id, copy) {
 
 // ---------- tool implementations ----------
 
+function safeNormalizeIso(value) {
+  try {
+    return normalizeIso(value);
+  } catch {
+    return null;
+  }
+}
+
 function toolQueryPosts(db, { brand_id, status, from, to } = {}) {
   const clauses = [];
   const params = [];
@@ -359,13 +368,17 @@ function toolQueryPosts(db, { brand_id, status, from, to } = {}) {
     clauses.push('p.status = ?');
     params.push(status);
   }
-  if (from) {
+  // Bounds normalized to UTC ISO so the string compare against the (always
+  // normalized) publish_at column is a real date compare (T6).
+  const fromIso = safeNormalizeIso(from);
+  const toIso = safeNormalizeIso(to);
+  if (fromIso) {
     clauses.push('p.publish_at >= ?');
-    params.push(from);
+    params.push(fromIso);
   }
-  if (to) {
+  if (toIso) {
     clauses.push('p.publish_at <= ?');
-    params.push(to);
+    params.push(toIso);
   }
   if (clauses.length) sql += ' AND ' + clauses.join(' AND ');
   sql += ' ORDER BY p.publish_at IS NULL, p.publish_at';
@@ -417,6 +430,12 @@ function toolCreateDraftPost(db, { brand_id, platform, account_id = null, copy =
   if (!platform) {
     return { post: null, summary: 'Cannot create post: platform is required.' };
   }
+  let publishAtIso;
+  try {
+    publishAtIso = normalizeIso(publish_at);
+  } catch (err) {
+    return { post: null, summary: `Cannot create post: ${err.message}` };
+  }
   const now = nowIso();
   const scrubbedCopy = scrubCopyForBrand(db, brand_id, copy || '');
   const info = db
@@ -437,7 +456,7 @@ function toolCreateDraftPost(db, { brand_id, platform, account_id = null, copy =
       platform,
       copy: scrubbedCopy || '',
       content_type: content_type ?? null,
-      publish_at: publish_at ?? null,
+      publish_at: publishAtIso,
       now,
     });
   const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(info.lastInsertRowid);
@@ -461,10 +480,16 @@ function toolUpdateDraftPost(db, { id, copy, publish_at, content_type } = {}) {
       link: `#/post/${id}`,
     };
   }
+  let publishAtIso;
+  try {
+    publishAtIso = publish_at !== undefined ? normalizeIso(publish_at) : existing.publish_at;
+  } catch (err) {
+    return { post: parseJsonColumns(existing, ['media', 'platform_fields']), summary: `Cannot update draft #${id}: ${err.message}`, link: `#/post/${id}` };
+  }
   const now = nowIso();
   const merged = {
     copy: copy !== undefined ? scrubCopyForBrand(db, existing.brand_id, copy) : existing.copy,
-    publish_at: publish_at !== undefined ? publish_at : existing.publish_at,
+    publish_at: publishAtIso,
     content_type: content_type !== undefined ? content_type : existing.content_type,
     now,
     id,
@@ -644,25 +669,28 @@ function toolApprovePost(db, { id } = {}) {
       link: `#/post/${id}`,
     };
   }
-  let platformFields = {};
-  try {
-    platformFields = JSON.parse(existing.platform_fields || '{}');
-  } catch {
-    platformFields = {};
-  }
-  if (existing.platform === 'tiktok') {
-    const { ok, missing } = validateTiktokFields(platformFields);
-    if (!ok) {
+  // T10: same approve gate as the human PATCH path (TikTok fields + UTM). Only
+  // a draft is crossing the gate; scheduled_local was already tagged once.
+  let copy = existing.copy;
+  let firstComment = existing.first_comment;
+  if (existing.status === 'draft') {
+    const gate = runApproveGate(db, existing);
+    if (!gate.ok) {
       return {
         post: null,
-        summary: `Cannot approve post #${id}: TikTok post is missing required fields: ${missing.join(', ')}.`,
+        summary: `Cannot approve post #${id}: ${gate.message}.`,
         link: `#/post/${id}`,
       };
     }
+    copy = gate.copy;
+    firstComment = gate.first_comment;
   }
   const nextStatus = existing.publish_at ? 'scheduled_local' : 'approved';
   const now = nowIso();
-  db.prepare('UPDATE posts SET status = @status, updated_at = @now WHERE id = @id').run({ status: nextStatus, now, id });
+  db.prepare(
+    'UPDATE posts SET status = @status, copy = @copy, first_comment = @first_comment, updated_at = @now WHERE id = @id'
+  ).run({ status: nextStatus, copy, first_comment: firstComment, now, id });
+  if (nextStatus === 'scheduled_local') kickHandoffIfDue(db, id); // T7
   const row = db.prepare('SELECT * FROM posts WHERE id = ?').get(id);
   const post = parseJsonColumns(row, ['media', 'platform_fields']);
   recordUsage(db, { kind: 'agent_publish', brand_id: post.brand_id, meta: { action: 'approve_post', post_id: id, status: nextStatus } });

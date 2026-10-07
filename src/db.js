@@ -293,6 +293,141 @@ const MIGRATIONS = [
   `
   CREATE INDEX IF NOT EXISTS idx_metrics_post_id ON metrics(post_id);
   `,
+  // v12 - audit T2 + T6. verify_started_at is when the first Blotato status
+  // poll ran (the 24h verify window counts from it); last_remote_state is the
+  // state Blotato last reported. publish_at is rewritten to UTC ISO with
+  // milliseconds and Z: strftime reads 'Z'/offset/space-separated forms (zone-
+  // less ones as UTC) and returns NULL for garbage, which is left untouched.
+  `
+  ALTER TABLE posts ADD COLUMN verify_started_at TEXT;
+  ALTER TABLE posts ADD COLUMN last_remote_state TEXT;
+  UPDATE posts SET publish_at = strftime('%Y-%m-%dT%H:%M:%fZ', publish_at)
+    WHERE publish_at IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ', publish_at) IS NOT NULL;
+  `,
+  // v13 - Blog add-on (docs/BLOG_ADDON_SPEC.md): one row per release run
+  // (dry or live, manual or scheduled) of a site's blog/tools/release.py.
+  // released = JSON list of slugs; output = last 20 KB of the run's output.
+  `
+  CREATE TABLE IF NOT EXISTS blog_releases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    "trigger" TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    exit_code INTEGER,
+    released TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL DEFAULT '',
+    output TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_blog_releases_site ON blog_releases(site_id, id);
+  `,
+  // v14 - Website analytics (docs/WEB_ANALYTICS_SPEC.md). Daily aggregates
+  // only, never visitor-level rows. source = 'ga4' | 'logs' (server logs on
+  // the VPS) so both can sit side by side; the UI prefers ga4 when present.
+  // date = YYYY-MM-DD in the Mac's local time zone (logs) or the GA4
+  // property's zone (ga4). Search Console has its own table.
+  `
+  CREATE TABLE IF NOT EXISTS web_sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT NOT NULL UNIQUE,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    ga4_measurement_id TEXT,
+    ga4_property_id TEXT,
+    gsc_property TEXT,
+    blog_site_id TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_sync_at TEXT,
+    last_sync_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS web_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    users INTEGER NOT NULL DEFAULT 0,
+    new_users INTEGER NOT NULL DEFAULT 0,
+    sessions INTEGER NOT NULL DEFAULT 0,
+    engaged_sessions INTEGER NOT NULL DEFAULT 0,
+    pageviews INTEGER NOT NULL DEFAULT 0,
+    avg_engagement_s REAL NOT NULL DEFAULT 0,
+    leads INTEGER NOT NULL DEFAULT 0,
+    search_bot_hits INTEGER NOT NULL DEFAULT 0,
+    ai_bot_hits INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, source)
+  );
+  CREATE TABLE IF NOT EXISTS web_channels_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    src TEXT NOT NULL DEFAULT '',
+    medium TEXT NOT NULL DEFAULT '',
+    campaign TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    sessions INTEGER NOT NULL DEFAULT 0,
+    engaged_sessions INTEGER NOT NULL DEFAULT 0,
+    leads INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, source, channel, src, medium, campaign, content)
+  );
+  CREATE TABLE IF NOT EXISTS web_pages_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    path TEXT NOT NULL,
+    views INTEGER NOT NULL DEFAULT 0,
+    users INTEGER NOT NULL DEFAULT 0,
+    entrances INTEGER NOT NULL DEFAULT 0,
+    leads INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, source, path)
+  );
+  CREATE TABLE IF NOT EXISTS web_search_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    path TEXT NOT NULL,
+    query TEXT NOT NULL,
+    clicks INTEGER NOT NULL DEFAULT 0,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    position REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, path, query)
+  );
+  CREATE TABLE IF NOT EXISTS web_notfound_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    path TEXT NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, path)
+  );
+  CREATE TABLE IF NOT EXISTS web_forms_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, outcome)
+  );
+  CREATE TABLE IF NOT EXISTS web_sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER,
+    source TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    ok INTEGER,
+    rows INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+  );
+  CREATE TABLE IF NOT EXISTS web_self_ips (
+    ip TEXT PRIMARY KEY,
+    how TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_web_daily_date ON web_daily(date);
+  CREATE INDEX IF NOT EXISTS idx_web_channels_date ON web_channels_daily(site_id, date);
+  CREATE INDEX IF NOT EXISTS idx_web_pages_date ON web_pages_daily(site_id, date);
+  CREATE INDEX IF NOT EXISTS idx_web_search_date ON web_search_daily(site_id, date);
+  CREATE INDEX IF NOT EXISTS idx_web_sync_runs ON web_sync_runs(site_id, source, id);
+  `,
 ];
 
 function applyMigrations(db) {
@@ -322,4 +457,4 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
-export { DB_PATH };
+export { DB_PATH, MIGRATIONS, applyMigrations };

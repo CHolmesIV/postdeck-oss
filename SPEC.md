@@ -1,6 +1,6 @@
 # PostDeck — CB's personal multi-brand social scheduler
 
-*Spec v1.3 — 2026-07-14 (B8 Content Studio added; see the B8 section at the end). Planned by Claude (strong model); built by Codex/cheap models against this doc. Working name "PostDeck" — rename at will, nothing depends on it.*
+*Spec v1.4 - 2026-09-02 (B20-B23 sections added at the end: bulk approve, composer fixes, publishing redesign, audit wave with the provider layer). Planned by Claude (strong model); built by Codex/cheap models against this doc. Working name "PostDeck" — rename at will, nothing depends on it.*
 
 Implementation rule: meaningful work follows **spec -> plan -> build -> document -> commit -> deploy -> confirm**.
 See `docs/ENGINEERING_WORKFLOW.md` for the standing workflow and shared-tree hygiene.
@@ -153,6 +153,10 @@ if volume ever justifies it; the worker's adapter interface should keep Blotato 
 adapter among possible others, not the hardcoded only path.
 
 ## Analytics portal
+
+> **Website analytics (built 2026-10-07):** traffic, leads and search for CB's sites live in
+> Analytics > Websites. Full design and build contract: `docs/WEB_ANALYTICS_SPEC.md`. This section
+> covers the social side, which is now the Social tab.
 
 Blotato returns no analytics, so PostDeck owns its own lightweight portal fed by the
 `metrics` table (manual entry per post in v1, CSV import for bulk):
@@ -876,3 +880,115 @@ CB live-testing round 2 + the silent-skip incident. Details: CHANGELOG same date
 - First comment (mig v10): auto additionalPosts on twitter/bluesky/threads (flat
   {text,mediaUrls}); linkedin/facebook = stored + paste reminder w/ copy button; UTM
   applies at approve. Alt-text input + AI suggest on media tiles.
+
+## B20-B22 - Bulk approve, composer fixes, publishing redesign (BUILT 2026-08-02 to 2026-08-12)
+
+Specs for these waves live in `docs/archive/` (`B20_BULK_APPROVE_SPEC.md`, `B21_COMPOSER_FIXES_SPEC.md`,
+`B22_PUBLISHING_FLOW_REDESIGN_SPEC.md`). Architecture-level changes they introduced:
+
+- `POST /api/posts/approve-batch` - N independent approves sharing the single-post gate (TikTok
+  fields, approve-time UTM via `applyApproveUtm`). One bad post never blocks its siblings.
+- `POST /api/posts/:id/publish-now` - one server-side action (approve + submit) so the client never
+  leaves a post half-approved. Honors dry-run and assisted-manual.
+- `POST /api/posts/:id/mark-posted` - reconcile a post published by hand on any platform. Never
+  calls Blotato.
+- Draft variations (v1/v2/v3), honest per-platform character counts, review drawer, one delivery
+  choice per post, Home "Needs attention" with persistent per-item dismiss.
+
+## B23 - Audit wave: security, dependencies, provider layer (BUILT 2026-09-02)
+
+Source: `docs/AUDIT_2026-09-02.md` (findings) and `docs/PROVIDER_LAYER_SPEC.md` (design).
+
+**Security model additions.** The API still binds 127.0.0.1 with no auth (single operator, by
+design), but two request-level guards now sit in an `onRequest` hook in `src/server.js`:
+1. `Host` must be a loopback name (`127.0.0.1`, `localhost`, `::1`) - defeats DNS rebinding.
+2. Non-GET requests carrying an `Origin` header must carry a loopback origin - defeats
+   localhost CSRF from any page open in the same browser. curl/tests (no Origin) pass.
+
+**Submit integrity.** `handoffOne` in `src/worker.js` takes an in-process claim per post id and
+re-reads status immediately before the network call, so "Submit now", publish-now, submit-batch
+and the 5-minute sweep can never double-post one row to Blotato.
+
+**Stack.** Fastify 5, `@fastify/static` 10, `@fastify/multipart` 10 (npm audit clean). Migration
+v11 indexes `metrics(post_id)`. `seed.js` refuses to run on a populated DB without `--force`.
+
+**Backups.** The worker writes one online snapshot of `postdeck.db` per day to
+`~/Library/Application Support/PostDeck/backups/` (`POSTDECK_BACKUP_DIR` override,
+`POSTDECK_BACKUP_KEEP` default 14). Skipped for any `POSTDECK_DB_PATH` override so tests never
+write there.
+
+**AI provider layer (supersedes the B15 "AI provider switcher" section).** `src/ai.js` is a thin
+facade over `src/providers/`, one module per vendor with a common contract (`complete`,
+`authStatus`, `login`, `isConfigured`, `capabilities`). Registered: `claude` (CLI, subscription),
+`codex` (CLI, subscription), `grok` (xAI, OpenAI-compatible HTTP, enabled only when `XAI_API_KEY`
+is set - the one sanctioned API-key provider because xAI has no CLI). Every AI call site (draft,
+copy-assist, chat agent, profiles, inspiration, screenshot extraction) routes through
+`runDraft(provider, ...)`; the vision path picks the first provider with `capabilities.vision`.
+Settings: `draft_provider` (existing) and `agent_provider` (new, defaults to `draft_provider`).
+API: `GET /api/ai/providers` (30 s cache, `?fresh=1`), `GET /api/ai/status` (back-compat shape),
+`POST /api/draft/compare` accepts `providers[]` and defaults to every configured provider. The
+frontend renders every provider control from `/api/ai/providers`. Adding vendor N = one file in
+`src/providers/`, one line in `src/providers/index.js`, one env var in `.env.example`.
+
+**Repo.** GitHub `CHolmesIV/postdeck` (private) `main` tracks `working`. Public snapshot
+`CHolmesIV/postdeck-oss` is refreshed by hand from a scrubbed copy (no VPS host/key names, no
+`SOCIAL_STATUS.md`, no `docs/CODEX_PROVIDER_TASK.md`). CI runs `npm test` on push.
+
+**Known gaps carried forward.** Machine-local timezone (queue slots and best-times shift with the
+Mac's clock), native `confirm()` dialogs, popover focus management, `public/app.js` monolith,
+`sync.js` host/key defaults still in source, Codex image-review view (P2) unbuilt.
+
+## B24 + D3 - October audit fixes and redesign (BUILT 2026-10-07)
+
+Sources: `docs/AUDIT_2026-10-07.md` (findings, competitor research, plan) and
+`docs/DESIGN_WAVE_SPEC.md` (UI contract).
+
+**Post states.** New `needs_check`: Blotato may have published the post (timeout, dropped
+connection or 5xx on create, or a 2xx with no submission id). The worker never resends it; the
+operator records the live URL (`mark-posted`) or walks it back to draft. Post creation
+(`POST /v2/posts`) is never retried automatically; media upload and GETs keep their retries.
+`failed` and `failed_verify` now exit to draft or canceled. `POST /api/posts/:id/recheck` polls
+Blotato once. Verification polls for 24h from the first poll (migration v12:
+`verify_started_at`, `last_remote_state`) and reads Blotato's `publicUrl`.
+
+**Time.** `publish_at` is always UTC ISO with milliseconds (`src/time.js`, v12 migrates old
+rows); comparisons use epoch ms. The UI groups and edits in local time (`postDayKey`,
+`isoToLocalInput`). Missed window = scheduled and 15+ minutes past; approving a post due within
+10 minutes hands it off immediately.
+
+**Approve gate.** One function (`src/approve.js`) for PATCH, approve-batch, publish-now, queue and
+the chat agent: TikTok required fields + UTM.
+
+**Request guard.** Adds: refuse `Origin: null` and `Sec-Fetch-Site: cross-site | same-site` on
+writes.
+
+**Voice.** Draft prompts get CB's global voice (seeded from `Social Media/docs/
+charles-voice-reference.md`), the brand's voice doc (`brands.voice_doc_path`, relative to the
+Social Media folder), then the tone's tweaks. Seed placeholder tone text is ignored. CB edits a
+brand voice by pasting it in Settings > Brands > Voice (`PUT /api/brands/:id/voice` writes the
+doc). Every voice source passes through `normalizeDashes()` so no em or en dash reaches a prompt.
+
+**UI (D3).** Nav: Home, Planner, Analytics, Settings, Labs (collapsed). One editor for existing
+posts (the post drawer, with recovery panels per status); one place to write new posts (the New
+post sheet, idempotent saves, autosaved snapshot); Planner week/month/list with status filter,
+drafts tray, click-to-create and drag-to-reschedule; Settings tabs Brands / AI / System (Profiles
+and Ops folded in). Same-route renders refresh in place; route changes close overlays. Native
+browser dialogs are gone. Statuses render through `humanStatus()` only. Frontend is split into
+ordered classic scripts in `public/js/` (see README "Architecture").
+
+**Labs policy.** Research, Inspiration, Ideas, Library, Images, blog redistribution and the chat
+agent live under Labs. Anything unused on 2026-11-07 gets deleted.
+
+## D4 - Blog add-on (BUILT 2026-10-07)
+
+Spec: `docs/BLOG_ADDON_SPEC.md`. PostDeck is the control panel for the static HTML blog programs in
+`Desktop/AI/Projects/Website Projects/<Site>/blog/` (markdown posts with front matter, plus each
+site's `build_blog.py`, `qa.py` and `release.py`). `src/blog.js` discovers sites, reads and writes
+front matter (untouched lines byte-identical, atomic writes, mtime conflict check, writes confined
+to `blog/content/*.md`), derives each site's field schema, builds previews from a temp copy, drafts
+with AI in the site's brand voice, and runs `release.py` (never `--allow-unreviewed`; deploy flag
+only outside dry-run and only if the script declares one). The worker's blog phase releases
+approved posts whose date and time have passed while the app is open; a due post still awaiting
+review blocks the run (the scripts refuse) and is surfaced instead. Runs are logged in
+`blog_releases` (migration v13). Social posting is unaffected: the blog phase runs last in the
+worker cycle inside its own try/catch.

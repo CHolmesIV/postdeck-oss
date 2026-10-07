@@ -26,3 +26,7 @@ research-inbox/processed/*
 
 # runtime logs
 logs/
+
+# Website analytics: the Google key lives in ~/Library/Application Support/PostDeck, never here
+google-service-account*.json
+*service-account*.json

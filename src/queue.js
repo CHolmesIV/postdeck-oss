@@ -6,6 +6,7 @@
 // keep it dumb (see spec note).
 
 import { nowIso } from './db.js';
+import { toMs } from './time.js';
 import { isWithinQuietHours, getAllSettings } from './settings.js';
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -149,16 +150,20 @@ function nextOpenSlot(db, brand_id, platform, from) {
     .all(brand_id, platform);
   if (!slots.length) return null;
 
+  // Slot-taken check compares epoch ms, not strings (T6): a post stored as
+  // '...:00Z' or '... 22:17:34' still occupies the same instant as '...:00.000Z'.
   const takenPlaceholders = TAKEN_STATUSES.map(() => '?').join(', ');
-  const isTaken = (iso) => {
-    const row = db
+  const takenMs = new Set(
+    db
       .prepare(
-        `SELECT 1 FROM posts WHERE brand_id = ? AND platform = ? AND publish_at = ?
-         AND status IN (${takenPlaceholders}) LIMIT 1`
+        `SELECT publish_at FROM posts WHERE brand_id = ? AND platform = ? AND publish_at IS NOT NULL
+         AND status IN (${takenPlaceholders})`
       )
-      .get(brand_id, platform, iso, ...TAKEN_STATUSES);
-    return !!row;
-  };
+      .all(brand_id, platform, ...TAKEN_STATUSES)
+      .map((r) => toMs(r.publish_at))
+      .filter(Number.isFinite)
+  );
+  const isTaken = (iso) => takenMs.has(Date.parse(iso));
 
   const settings = getAllSettings(db);
 

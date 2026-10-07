@@ -158,7 +158,11 @@ test('bulk approve runs the approve-gate UTM pass, matching a single PATCH appro
   const b = db.prepare('SELECT copy, first_comment FROM posts WHERE id = ?').get(viaPatch);
   assert.match(a.copy, /utm_source=linkedin/);
   assert.match(a.first_comment, /utm_source=linkedin/);
-  assert.equal(a.copy, b.copy);
-  assert.equal(a.first_comment, b.first_comment);
+  // utm_content carries each post's own id (pd-<id>); everything else must match.
+  assert.ok(a.copy.includes(`utm_content=pd-${viaBulk}`));
+  assert.ok(b.copy.includes(`utm_content=pd-${viaPatch}`));
+  const norm = (t) => t.replace(/utm_content=pd-\d+/g, 'utm_content=pd-N');
+  assert.equal(norm(a.copy), norm(b.copy));
+  assert.equal(norm(a.first_comment), norm(b.first_comment));
   await app.close();
 });

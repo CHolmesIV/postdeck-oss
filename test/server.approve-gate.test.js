@@ -114,6 +114,41 @@ test('PATCH publish_at (drag-to-reschedule) succeeds while a post is still sched
   await app.close();
 });
 
+test('PATCH status approved + new time on a scheduled_local post reschedules it (drawer Schedule)', async () => {
+  const app = buildServer();
+  const db = getDb();
+  const postId = seedPost(db, { platform: 'linkedin', status: 'scheduled_local', publish_at: nowIso() });
+
+  const newDate = new Date(Date.now() + 2 * 86400000).toISOString();
+  const res = await app.inject({
+    method: 'PATCH',
+    url: `/api/posts/${postId}`,
+    payload: { copy: 'edited', publish_at: newDate, status: 'approved' },
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().status, 'scheduled_local');
+  assert.equal(res.json().publish_at, newDate);
+  assert.equal(res.json().copy, 'edited');
+  await app.close();
+});
+
+test('PATCH status approved on a scheduled_local tiktok post does not re-run the approve gate', async () => {
+  const app = buildServer();
+  const db = getDb();
+  const postId = seedPost(db, { platform: 'tiktok', status: 'scheduled_local', publish_at: nowIso() });
+
+  const res = await app.inject({
+    method: 'PATCH',
+    url: `/api/posts/${postId}`,
+    payload: { status: 'approved', publish_at: new Date(Date.now() + 86400000).toISOString() },
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().status, 'scheduled_local');
+  await app.close();
+});
+
 test('GET /api/settings returns quiet-hours defaults and PATCH updates them', async () => {
   const app = buildServer();
 

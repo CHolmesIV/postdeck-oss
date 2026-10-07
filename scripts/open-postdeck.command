@@ -16,7 +16,7 @@ mkdir -p "$LOG_DIR"
 is_running() { curl --silent --fail --max-time 2 "$HEALTH_URL" >/dev/null 2>&1; }
 start_server() {
   echo "Starting PostDeck..."
-  nohup npm start >"$LOG_DIR/postdeck-launcher.out.log" 2>"$LOG_DIR/postdeck-launcher.err.log" &
+  nohup npm start >>"$LOG_DIR/postdeck-launcher.out.log" 2>>"$LOG_DIR/postdeck-launcher.err.log" &
 }
 cd "$REPO_ROOT"
 if ! is_running; then
