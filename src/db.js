@@ -428,6 +428,11 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_web_search_date ON web_search_daily(site_id, date);
   CREATE INDEX IF NOT EXISTS idx_web_sync_runs ON web_sync_runs(site_id, source, id);
   `,
+  // v15 - analytics for client sites: a display name and a kind ('own' | 'client').
+  `
+  ALTER TABLE web_sites ADD COLUMN name TEXT;
+  ALTER TABLE web_sites ADD COLUMN kind TEXT NOT NULL DEFAULT 'own';
+  `,
 ];
 
 function applyMigrations(db) {

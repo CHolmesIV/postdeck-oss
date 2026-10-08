@@ -175,6 +175,34 @@ async function settingsBrandsTab(body) {
         },
       }, b.name));
     }
+    chipsHost.appendChild(el('button', {
+      class: 'st-chip st-chip-add',
+      type: 'button',
+      onclick: settingsAddBrand,
+    }, '+ Add brand'));
+  }
+
+  async function settingsAddBrand() {
+    const name = await promptDialog({
+      title: 'Add a brand',
+      body: 'It gets its own voice, accounts and queue. You can connect accounts after it exists.',
+      label: 'Brand name',
+      placeholder: 'For example, Client Four',
+      confirmLabel: 'Add brand',
+    });
+    if (!name) return;
+    try {
+      const created = await api('/api/brands', { method: 'POST', body: { name } });
+      state.brands = await api('/api/brands');
+      brandId = String(created.id);
+      setStickyBrand(brandId);
+      paintChips();
+      panelHost.innerHTML = '';
+      loadPanel();
+      toast(`${created.name} added.`);
+    } catch (err) {
+      toast(`Could not add the brand: ${err.message}`, 'error');
+    }
   }
 
   let panelToken = 0;

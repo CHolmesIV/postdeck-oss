@@ -315,33 +315,44 @@ async function renderBlog(view, params = []) {
   const drafts = posts.filter((p) => p.status === 'draft' && !p.needs_review).sort(byDate);
   const published = posts.filter((p) => p.status === 'published').sort((a, b) => String(b.publish_date || '').localeCompare(String(a.publish_date || '')));
 
-  function section(title, hint, list, { collapsed = false } = {}) {
-    if (!list.length && collapsed) return null;
-    const head = [el('h2', { class: 'bl-h2' }, title), el('span', { class: 'bl-count' }, String(list.length))];
+  // Each section is a collapsible <details>. Open state is remembered per site.
+  // Published collapses by default once it has more than 10 posts.
+  function section(title, hint, list, { hideIfEmpty = false, defaultOpen = true } = {}) {
+    if (!list.length && hideIfEmpty) return null;
+    const storeKey = `pd_blog_open:${site.id}:${title}`;
+    const saved = blogSafeGet(storeKey);
+    const isOpen = saved === 'open' ? true : saved === 'closed' ? false : defaultOpen;
+    const head = [
+      el('h2', { class: 'bl-h2' }, title),
+      el('span', { class: 'bl-count', 'aria-label': `${list.length} posts` }, String(list.length)),
+      el('span', { class: 'bl-caret', 'aria-hidden': 'true' }),
+    ];
     const body = el('div', { class: 'bl-list' }, list.length ? list.map((p) => blogRow(site, p, open)) : [el('p', { class: 'bl-empty' }, hint)]);
-    if (collapsed) {
-      return el('details', { class: 'bl-section' }, [el('summary', { class: 'bl-section-head' }, head), body]);
-    }
-    return el('section', { class: 'bl-section' }, [el('div', { class: 'bl-section-head' }, head), body]);
+    const d = el('details', { class: 'bl-section' }, [el('summary', { class: 'bl-section-head' }, head), body]);
+    if (isOpen) d.setAttribute('open', 'open');
+    d.addEventListener('toggle', () => blogSafeSet(storeKey, d.open ? 'open' : 'closed'));
+    return d;
   }
   view.appendChild(section('Needs your review', 'Nothing waiting on you.', needsReview));
   view.appendChild(section('Scheduled', 'No approved posts are scheduled. Approve a post and give it a date.', scheduled));
   view.appendChild(section('Drafts', 'No approved drafts without a date.', drafts));
-  const pub = section('Published', '', published, { collapsed: true });
+  const pub = section('Published', '', published, { hideIfEmpty: true, defaultOpen: published.length <= 10 });
   if (pub) view.appendChild(pub);
   if (typeof webBlogStats === 'function') webBlogStats(site, view); // WEB HOOK: 28-day views on published rows (80-web.js)
 }
 
 function blogRow(site, post, onOpen) {
-  const row = el('div', { class: 'bl-row', role: 'button', tabindex: '0', 'data-slug': post.slug, 'aria-label': `${post.title || post.slug}, ${blogPostWhen(site, post)}` }, [
+  const f = post.fields || {};
+  const meta = [el('span', {}, blogPostWhen(site, post))];
+  if (f.cluster) meta.push(el('span', {}, blogLabel(String(f.cluster).replace(/-/g, ' '))));
+  meta.push(el('span', {}, blogWordLabel(post.word_count)));
+  if (post.status !== 'published') meta.push(el('span', { class: post.needs_review ? 'bl-meta-review' : '' }, post.needs_review ? 'Needs your review' : 'Approved'));
+  const row = el('div', { class: 'bl-row', role: 'button', tabindex: '0', 'data-slug': post.slug, 'aria-label': `${post.title || post.slug}, ${blogPostWhen(site, post)}${post.status !== 'published' ? (post.needs_review ? ', needs your review' : ', approved') : ''}` }, [
     el('div', { class: 'bl-row-main' }, [
       el('div', { class: 'bl-row-title' }, post.title || post.slug),
-      el('div', { class: 'bl-row-meta' }, [
-        el('span', {}, blogPostWhen(site, post)),
-        el('span', {}, blogWordLabel(post.word_count)),
-      ]),
+      el('div', { class: 'bl-row-meta' }, meta),
     ]),
-    el('div', { class: 'bl-row-pills' }, [blogStatusPill(post), blogReviewPill(post)]),
+    el('div', { class: 'bl-row-pills' }, [blogStatusPill(post), el('span', { class: 'bl-row-go', 'aria-hidden': 'true' }, '›')]),
   ]);
   row.addEventListener('click', () => onOpen(post));
   row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(post); } });
@@ -615,6 +626,7 @@ async function openBlogEditor(siteId, slug, { onChange, prefill } = {}) {
         ctx.body = post.body_md || '';
         ctx.mtime = post.mtime;
         ctx.isNew = false;
+        if (ctx.reading === undefined) ctx.reading = post.status === 'published' && !prefill; // published posts open read-first
       } else if (prefill && typeof prefill === 'object') {
         ctx.fields = { ...prefill, ...ctx.fields }; // WEB HOOK: keyword from Analytics
       }
@@ -641,7 +653,7 @@ async function openBlogEditor(siteId, slug, { onChange, prefill } = {}) {
   }
 
   // ---- render ----
-  let headHost; let tabsHost; let editPane; let previewPane; let schedHost; let footHost; let wordCount; let headTitleEl;
+  let headHost; let tabsHost; let readPane; let editPane; let previewPane; let schedHost; let footHost; let wordCount; let headTitleEl;
   const approved = () => !!ctx.post && ctx.post.needs_review === false;
   const published = () => !!ctx.post && ctx.post.status === 'published';
 
@@ -654,7 +666,8 @@ async function openBlogEditor(siteId, slug, { onChange, prefill } = {}) {
     previewPane = el('div', { class: 'pd-body bl-pane', hidden: 'hidden' });
     schedHost = el('section', { class: 'pd-section bl-sched' });
     footHost = el('footer', { class: 'bl-foot' });
-    content.append(headHost, tabsHost, editPane, previewPane, footHost);
+    readPane = el('div', { class: 'pd-body bl-pane bl-read' });
+    content.append(headHost, tabsHost, readPane, editPane, previewPane, footHost);
 
     buildEditPane();
     renderHead();
@@ -662,6 +675,8 @@ async function openBlogEditor(siteId, slug, { onChange, prefill } = {}) {
     renderSchedule();
     renderFooter();
     showTab(ctx.tab);
+    if (ctx.reading && published() && !ctx.isNew) buildReadPane();
+    applyReading();
     if (!ctx.firstRender) {
       ctx.firstRender = true;
       const titleInput = ctx.inputs.title;
@@ -674,19 +689,70 @@ async function openBlogEditor(siteId, slug, { onChange, prefill } = {}) {
     headHost.innerHTML = '';
     const title = String(ctx.fields.title || '').trim() || (ctx.isNew ? 'New blog post' : ctx.slug);
     headTitleEl = el('strong', { class: 'bl-head-title' }, title);
-    const meta = [el('span', { class: 'pd-muted' }, ctx.site ? ctx.site.name : '')];
+    const kicker = [el('span', { class: 'pd-type-badge' }, [blogDocIcon(14), el('span', {}, 'Blog post')])];
+    const meta = [];
+    const brandId = ctx.site ? ctx.site.brand_id : null;
+    meta.push(el('span', { class: 'pd-brand-line' }, [
+      el('span', { class: 'pd-dot', style: `background:${typeof plannerBrandColor === 'function' ? plannerBrandColor(brandId) : brandColor(brandId)}` }),
+      ctx.site ? ctx.site.name : '',
+    ]));
     if (ctx.post && !ctx.isNew) {
-      meta.push(blogStatusPill(ctx.post));
+      kicker.push(blogStatusPill(ctx.post));
       const rp = blogReviewPill(ctx.post);
-      if (rp) meta.push(rp);
+      if (rp) kicker.push(rp);
       meta.push(el('span', { class: 'pd-muted' }, blogPostWhen(ctx.site, ctx.post)));
+      if (ctx.post.live_url && published()) meta.push(el('a', { class: 'pd-live-link', href: ctx.post.live_url, target: '_blank', rel: 'noopener noreferrer' }, 'View live'));
     } else {
-      meta.push(el('span', { class: 'status-pill status-pill--neutral' }, 'Not saved yet'));
+      kicker.push(el('span', { class: 'status-pill status-pill--neutral' }, 'Not saved yet'));
     }
     headHost.append(
-      el('div', { class: 'pd-head-main' }, [el('div', { class: 'pd-head-title' }, headTitleEl), el('div', { class: 'pd-head-meta bl-head-meta' }, meta)]),
+      el('div', { class: 'pd-head-main' }, [
+        el('div', { class: 'pd-head-kicker' }, kicker),
+        el('div', { class: 'pd-head-title' }, headTitleEl),
+        el('div', { class: 'pd-head-meta bl-head-meta' }, meta),
+      ]),
       el('button', { class: 'button ghost sm pd-close', type: 'button', 'aria-label': 'Close blog post', onclick: () => requestClose() }, 'Close')
     );
+  }
+
+  // Published posts open on a readable summary; Edit reveals the form.
+  function applyReading() {
+    const reading = !!ctx.reading && published() && !ctx.isNew;
+    if (readPane) readPane.hidden = !reading;
+    if (tabsHost) tabsHost.hidden = reading;
+    if (editPane) editPane.hidden = reading || ctx.tab !== 'edit';
+    if (previewPane) previewPane.hidden = reading || ctx.tab !== 'preview';
+  }
+
+  function buildReadPane() {
+    readPane.innerHTML = '';
+    const f = ctx.fields;
+    const post = ctx.post;
+    const facts = [];
+    const add = (label, node) => { if (node != null && node !== '') facts.push(el('div', { class: 'bl-fact' }, [el('dt', {}, label), el('dd', {}, node)])); };
+    add('Published', blogWhen(post.publish_date));
+    add('Keyword', f.primary_keyword || '');
+    add('Cluster', f.cluster ? blogLabel(String(f.cluster).replace(/-/g, ' ')) : '');
+    add('Length', blogWordLabel(post.word_count != null ? post.word_count : blogWords(ctx.body)));
+    if (post.live_url) add('Live link', el('a', { class: 'bl-link', href: post.live_url, target: '_blank', rel: 'noopener noreferrer' }, post.live_url.replace(/^https?:\/\//, '')));
+    const statHost = el('dd', {}, 'Loading...');
+    const statRow = el('div', { class: 'bl-fact', hidden: 'hidden' }, [el('dt', {}, 'Last 28 days'), statHost]);
+    readPane.append(
+      f.description ? el('p', { class: 'bl-read-desc' }, f.description) : el('p', { class: 'bl-read-desc bl-muted' }, 'No description yet.'),
+      el('dl', { class: 'bl-facts' }, [...facts, statRow])
+    );
+    if (ctx.lastRun) readPane.appendChild(blogRunLog(ctx.lastRun));
+    if (typeof webApi === 'function') {
+      const qs = `?blog_site_id=${blogEnc(siteId)}&range=28`;
+      webApi(`/api/web/blog-stats${qs}`).then((res) => {
+        const st = res && res.posts && res.posts[ctx.slug];
+        if (!st || !statRow.isConnected) return;
+        const parts = [`${Number(st.views || 0).toLocaleString()} view${Number(st.views) === 1 ? '' : 's'}`, `${Number(st.search_clicks || 0).toLocaleString()} search click${Number(st.search_clicks) === 1 ? '' : 's'}`];
+        if (st.position != null) parts.push(`Google position ${Number(st.position).toFixed(1)}`);
+        statHost.textContent = parts.join(', ');
+        statRow.hidden = false;
+      }).catch(() => {});
+    }
   }
 
   function renderTabs() {
@@ -706,8 +772,8 @@ async function openBlogEditor(siteId, slug, { onChange, prefill } = {}) {
       return;
     }
     ctx.tab = key;
-    editPane.hidden = key !== 'edit';
-    previewPane.hidden = key !== 'preview';
+    editPane.hidden = key !== 'edit' || (!!ctx.reading && published());
+    previewPane.hidden = key !== 'preview' || (!!ctx.reading && published());
     renderTabs();
     if (key === 'preview' && (ctx.previewStale || !ctx.preview)) runPreview();
   }
@@ -1077,6 +1143,14 @@ async function openBlogEditor(siteId, slug, { onChange, prefill } = {}) {
     footHost.innerHTML = '';
     const left = el('div', { class: 'bl-foot-left' });
     const right = el('div', { class: 'bl-foot-right' });
+    if (ctx.reading && published() && !ctx.isNew) {
+      const edit = el('button', { class: 'button primary md', type: 'button' }, 'Edit');
+      edit.onclick = () => { ctx.reading = false; ctx.firstRender = true; render(); const t = ctx.inputs.title; if (t) t.focus({ preventScroll: true }); };
+      left.appendChild(edit);
+      if (ctx.post.live_url) right.appendChild(el('a', { class: 'button secondary md', href: ctx.post.live_url, target: '_blank', rel: 'noopener noreferrer' }, 'View live'));
+      footHost.append(left, right);
+      return;
+    }
     const save = el('button', { class: `button ${ctx.isNew ? 'primary' : 'secondary'} md`, type: 'button' }, ctx.isNew ? 'Save draft' : 'Save');
     save.onclick = () => blogBusy(save, async () => {
       if (ctx.isNew) { await createPost(); return; }
@@ -1194,18 +1268,41 @@ function blogPlannerStatusMatch(post, status) {
   return false;
 }
 
-function blogPlannerChips(dayKey, { brandId, status, compact, onChange, redraw } = {}) {
+function blogPlannerFiltered(dayKey, { brandId, status } = {}) {
   if (!blogPlannerEnabled()) return [];
-  const todo = blogPlannerBrandItems(brandId)
-    .filter((it) => it.post.publish_date === dayKey && blogPlannerStatusMatch(it.post, status))
-    .sort((a, b) => String(a.post.publish_time || '').localeCompare(String(b.post.publish_time || '')));
-  if (!todo.length) return [];
-  const limit = compact ? 2 : todo.length;
-  const out = todo.slice(0, limit).map((it) => blogPlannerChip(it, { compact, onChange, redraw }));
-  if (todo.length > limit) {
-    out.push(el('a', { class: 'pl-more', href: `#/blog/${blogEnc(todo[0].site.id)}` }, `+${todo.length - limit} more blog`));
-  }
-  return out;
+  return blogPlannerBrandItems(brandId).filter((it) => it.post.publish_date === dayKey && blogPlannerStatusMatch(it.post, status));
+}
+
+// Days (YYYY-MM-DD) that have at least one visible blog item. Used by the List view.
+function blogPlannerDays(brandId, status) {
+  if (!blogPlannerEnabled()) return [];
+  return [...new Set(blogPlannerBrandItems(brandId)
+    .filter((it) => it.post.publish_date && blogPlannerStatusMatch(it.post, status))
+    .map((it) => it.post.publish_date))];
+}
+
+// Entries for the Planner's fold logic (30-planner.js, plannerFold).
+function blogPlannerEntries(dayKey, { brandId, status, onChange, redraw } = {}) {
+  return blogPlannerFiltered(dayKey, { brandId, status }).map((item) => {
+    const { site, post } = item;
+    const published = post.status === 'published';
+    const hhmm = post.publish_time || blogSiteDefaultTime(site);
+    const [h, m] = String(hhmm).split(':').map(Number);
+    const open = () => openBlogEditor(site.id, post.slug, { onChange: () => { if (onChange) onChange(); } });
+    return {
+      kind: 'blog', groupKey: `blog:${site.id}:${published ? 'pub' : 'open'}`, id: 0,
+      foldAlways: published,
+      brandId: site.brand_id, brandLabel: site.name,
+      sort: (h || 0) * 60 + (m || 0),
+      timeLabel: published ? 'Published' : blogTimeShort(hhmm),
+      title: post.title || post.slug, typeLabel: 'Blog post',
+      summaryLabel: (n) => `${n} ${site.name} blog post${n === 1 ? '' : 's'}`,
+      icon: (size) => blogDocIcon(size),
+      statusNode: () => blogReviewPill(post) || blogStatusPill(post),
+      open,
+      chip: (compact) => blogPlannerChip(item, { compact, onChange, redraw }),
+    };
+  });
 }
 
 function blogPlannerChip(item, { compact, onChange, redraw }) {
@@ -1213,19 +1310,20 @@ function blogPlannerChip(item, { compact, onChange, redraw }) {
   const canDrag = post.status !== 'published';
   const time = post.status === 'published' ? '' : blogTimeShort(post.publish_time || blogSiteDefaultTime(site));
   const key = post.status === 'published' ? 'posted' : post.status;
-  const kids = [
-    el('span', { class: 'pl-chip-time' }, time),
-    el('span', { class: 'pl-chip-icon' }, blogDocIcon(13)),
-  ];
-  if (!compact) kids.push(el('span', { class: 'bl-chip-site' }, site.name));
-  kids.push(el('span', { class: 'pl-chip-copy' }, post.title || post.slug));
-  if (post.status !== 'published' && post.needs_review) kids.push(el('span', { class: 'pl-chip-flag pl-chip-flag--info', title: 'Needs your review' }));
-  const node = el('div', {
-    class: `pl-chip bl-chip pl-chip--${key}${compact ? ' is-compact' : ''}${canDrag ? ' is-draggable' : ''}`,
-    role: 'button', tabindex: '0', draggable: canDrag ? 'true' : undefined,
-    title: `Blog post, ${site.name}: ${post.title || post.slug}\n${blogPostWhen(site, post)}${post.needs_review && post.status !== 'published' ? '\nNeeds your review' : ''}`,
-    'aria-label': `Blog post for ${site.name}: ${post.title || post.slug}, ${post.status}`,
-  }, kids);
+  const needs = post.status !== 'published' && post.needs_review;
+  const node = plannerBuildChip({
+    icon: blogDocIcon(14),
+    brandId: site.brand_id, brandLabel: site.name,
+    time,
+    title: post.title || post.slug,
+    pill: needs ? blogReviewPill(post) : (post.status === 'draft' ? blogStatusPill(post) : null),
+    flag: needs ? { tone: 'info', label: 'Needs your review' } : null,
+    compact,
+    cls: `bl-chip pl-chip--${key}${canDrag ? ' is-draggable' : ''}`,
+    tip: `Blog post, ${site.name}: ${post.title || post.slug}\n${blogPostWhen(site, post)}${needs ? '\nNeeds your review' : ''}`,
+    aria: `Blog post for ${site.name}: ${post.title || post.slug}, ${post.status}`,
+  });
+  if (canDrag) node.setAttribute('draggable', 'true');
   const open = () => openBlogEditor(site.id, post.slug, { onChange: () => { if (onChange) onChange(); } });
   node.addEventListener('click', open);
   node.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });

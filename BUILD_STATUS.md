@@ -6,7 +6,7 @@ _Last updated: 2026-10-07. One-page state of the build. Full design: `SPEC.md`. 
 ## Where it stands
 
 Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:4520`
-(`npm start`). **479 passing.** Current audit + plan: `docs/AUDIT_2026-10-07.md`; UI contract:
+(`npm start`). **491 passing.** Current audit + plan: `docs/AUDIT_2026-10-07.md`; UI contract:
 `docs/DESIGN_WAVE_SPEC.md`.
 
 > ⚠️ **`BLOTATO_DRY_RUN=0` in `../config/.env` - posting is LIVE.** Dry-run is the *code*
@@ -52,6 +52,7 @@ Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:45
 | B24 | Oct audit fixes: voice seeding path, scheduling time bugs, double-post guard + `needs_check`, failed/failed_verify recovery + `/recheck`, 24h verify + `publicUrl`, UTC `publish_at` (migration v12), short-notice handoff, tighter origin guard, one approve gate, per-brand voice docs | ✅ |
 | D4 | Blog add-on: Blog view over the Website Projects HTML blog programs (write/paste/AI draft, real-template preview + QA, approve, schedule with time, Release now, scheduled release while open, release log), Planner/Home/Settings integration, migration v13 | ✅ |
 | W1 | Website analytics: Analytics > Websites (server logs now, GA4 + Search Console when the key is added), own-traffic filter, Home/Blog/drawer/Planner hooks, Settings > Websites, UTM `pd-<id>`, migration v14. Spec `docs/WEB_ANALYTICS_SPEC.md` | ✅ |
+| D5 | Ease pass from CB's feedback: closable/compact Home alerts, Planner busy-day folding, readable drawers (type, brand, read-first blog), collapsible Blog lists, client sites + add site/brand, visual spacing/contrast pass, no-cache app files, migration v15. Spec `docs/D5_EASE_PASS_SPEC.md` | ✅ |
 | D3.1 | Paste-your-own brand voice in Settings (writes the brand voice doc), long-dash normalization on every voice source | ✅ |
 | D3 | Redesign: 4-item nav + Labs, Planner (week/month/list, filters, drafts tray, drag), one post drawer with recovery panels, New post sheet (idempotent, autosaved), Home, Settings tabs, in-place refresh, in-app dialogs, flat dark+gold tokens, `public/js/` split | ✅ |
 
@@ -157,7 +158,7 @@ Local-first multi-brand social scheduler + content studio. Runs on `127.0.0.1:45
   UI/UX direction for PrimeWright website/app passes.
 - **launchd**: installer ships but is not auto-run - start it when ready
   (`scripts/install-launchd.sh`).
-- **Repo: GitHub main fast-forwarded to working 2026-09-02.** Repo is private; no squash needed Public snapshot `CHolmesIV/postdeck-oss` refreshed to `2a3e756` (scrubbed: no VPS host/key, no SOCIAL_STATUS, no Codex task brief).
+- **Repo:** private `CHolmesIV/postdeck`, `main` fast-forwarded to `working` (2026-10-07, CI green). Public snapshot `CHolmesIV/postdeck-oss` refreshed 2026-10-07 from private `4748944` (scrubbed: no VPS host or ssh alias, no key names, no personal paths or IPs, no SOCIAL_STATUS, no Codex task brief; remote tree and full history re-checked clean). Refresh it by hand after future work, same scrub.
   for that reason alone.
 - **Per-brand timezone** - queue slots and best-times are machine-local. The Mac reported
   America/Chicago on 2026-10-07; Tampa is Eastern, so after the move every local slot shifts one

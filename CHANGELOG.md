@@ -3,6 +3,32 @@
 Rolling changelog. Newest first. See `SPEC.md` for full design and `BUILD_STATUS.md` for
 current state / what's pending.
 
+## 2026-10-07 - D5 ease pass: closable alerts, busy days fold, readable popouts, client sites
+
+Spec: `docs/D5_EASE_PASS_SPEC.md` (CB's feedback after using the redesign). Suite **491 passing**
+(was 479). Migration **v15** (`web_sites.name`, `web_sites.kind`).
+
+- **Home "Needs you":** one line per item; every item has a close button (Hide for a day / Hide
+  until it changes) with Undo; top 4 shown, the rest behind "Show N more"; 3+ of the same kind
+  group into one expandable row; "N hidden. Show" restores; the section collapses.
+- **Planner:** a busy day folds into one chip per brand and kind ("40 Di-Hy blog posts"), count
+  first, words under it; clicking opens a readable list. Chips show type icon, brand color and
+  title. The attention strip is one line with a close button (comes back when the set changes).
+  List view now includes blog posts.
+- **Popouts:** social and blog drawers open with a header that says what it is ("Blog post",
+  "LinkedIn post"), the brand in its color, status, date and View live. Published blog posts
+  open on a readable summary (description, keyword, length, live link, 28-day views) with Edit.
+- **Blog view:** Needs your review, Scheduled, Drafts and Published are collapsible (remembered
+  per site); rows are larger and easier to scan.
+- **Analytics:** client sites added (Client One, Client Two, Client Three, Client Four; server logs
+  today). Picker: All sites, Your brands, Clients, each brand, each client. Settings > Websites
+  can add or remove any site; Settings > Brands has "Add brand" (`POST /api/brands`). Home
+  numbers and alerts count your own sites only. A batch blog release is one read line per site.
+- **Visual pass:** 15px body text, nothing under 13px, three clear surface levels, stronger row
+  separators, 32/16 spacing rhythm, visible focus rings, every text color 4.5:1 or better.
+- App files are served with `Cache-Control: no-cache` so a restarted PostDeck never runs old
+  scripts (test added).
+
 ## 2026-10-07 - Website analytics: traffic, leads and search next to the work
 
 Spec: `docs/WEB_ANALYTICS_SPEC.md` (build contract at the end). Suite **479 passing** (was 419).

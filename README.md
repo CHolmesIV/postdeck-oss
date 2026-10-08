@@ -255,6 +255,7 @@ Voice:
 Website analytics (`docs/WEB_ANALYTICS_SPEC.md`):
 - `GET /api/web/{status,sites,overview,channels,pages,search,social,health,realtime,home,blog-stats,daily}`,
   `GET /api/web/post/:id` (query: `brand_id`, `site_id`, `range` = 7|28|90|365)
+- `POST /api/web/sites`, `DELETE /api/web/sites/:id`, `group=own|client` filter on read endpoints; `POST /api/brands` `{ name, slug?, color? }`
 - `PATCH /api/web/sites/:id`, `POST /api/web/sync` `{ site_id?, source? }`, `POST /api/web/digest` (AI summary)
 - `POST|DELETE /api/web/google-key` (service account key; stored 0600 outside the repo, never echoed)
 - Env: `POSTDECK_WEB_SYNC=0` (no background sync), `POSTDECK_GOOGLE_SA` (key path),

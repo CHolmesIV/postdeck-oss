@@ -396,17 +396,21 @@ function openPostDrawer(postId, { onChange, onClose } = {}) {
     content.innerHTML = '';
     panel.setAttribute('aria-label', `${brandName(post.brand_id)} ${humanizePlatformName(post.platform)} post`);
 
-    // header
+    // header: type badge, brand, status, time, live link
+    const liveUrl = post.public_url || null;
     content.appendChild(el('header', { class: 'pd-head' }, [
       el('div', { class: 'pd-head-main' }, [
+        el('div', { class: 'pd-head-kicker' }, [
+          el('span', { class: 'pd-type-badge' }, [platformIcon(post.platform, { size: 14 }), el('span', {}, `${humanizePlatformName(post.platform)} post`)]),
+          statusPill(post),
+        ]),
         el('div', { class: 'pd-head-title' }, [
-          el('span', { class: 'pd-dot', style: `background:${brandColor(post.brand_id)}` }),
+          el('span', { class: 'pd-dot', style: `background:${typeof plannerBrandColor === 'function' ? plannerBrandColor(post.brand_id) : brandColor(post.brand_id)}` }),
           el('strong', {}, brandName(post.brand_id)),
-          el('span', { class: 'pd-muted' }, [platformIcon(post.platform, { size: 14 }), ` ${humanizePlatformName(post.platform)}`]),
         ]),
         el('div', { class: 'pd-head-meta' }, [
-          statusPill(post),
           el('span', { class: 'pd-muted' }, post.publish_at ? fmtDate(post.publish_at) : 'No time set'),
+          liveUrl ? el('a', { class: 'pd-live-link', href: liveUrl, target: '_blank', rel: 'noopener noreferrer' }, 'View live') : null,
         ]),
       ]),
       el('button', { class: 'button ghost sm pd-close', type: 'button', 'aria-label': 'Close post', onclick: () => requestClose() }, 'Close'),

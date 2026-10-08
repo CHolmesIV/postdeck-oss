@@ -41,7 +41,7 @@ Also in place:
   links on approve, but it is **off by default per brand**. Social Analytics (`13-analytics.js`,
   `metrics` table) is manual entry and only covers the social side.
 
-Client sites (Akats, Five Oaks, Maricured, Amadou and so on) are out of scope. CB's brands only.
+Client sites (Client One, Client Two, Client Three, Client Four and so on) are out of scope. CB's brands only.
 
 ## Data sources, in build order
 
@@ -163,7 +163,7 @@ These decide whether the dashboard can be trusted. Do them first; each is small.
 4. **Mark `generate_lead` as a Key event** in each GA4 property so it counts as a conversion.
 5. **IVision:** create a GA4 property and add the tag (open since the cutover).
 6. **Search Console:** confirm each domain is verified as a Domain property (`sc-domain:`).
-7. **Akats:** two GA4 tags were found on it before and Di-Hy's was removed. Keep Di-Hy's numbers
+7. **Client One:** two GA4 tags were found on it before and Di-Hy's was removed. Keep Di-Hy's numbers
    clean of client traffic.
 8. Exclude CB's own visits: a GA4 internal-traffic rule for his home IP, or he can accept the noise.
 

@@ -7,17 +7,23 @@
 
 :root {
   /* Neutrals: one dark ramp, faintly warm toward the gold. Flat, no gradients. */
-  --ink: #0f0f0d;
-  --bg: #121210;
-  --surface: #181816;
-  --surface-2: #1f1e1b;
-  --surface-hi: #282723;
-  --border: #2e2d28;
-  --border-hi: #44423a;
-  --white: #f2f0ea;
-  --text: #e9e7e0;
-  --muted: #a6a39a;      /* 7.4:1 on --surface */
-  --faint: #8a877e;      /* 5.0:1 on --surface: hints, timestamps */
+  /* Three surface levels, each ~1.1:1 apart so the step is felt, not shouted:
+       --bg        page
+       --surface   section / card surface
+       --surface-2 raised row, hover, input
+       --surface-hi selected, pressed, pill fill
+     --border is the one 1px row separator (1.38:1 on --surface). */
+  --ink: #0d0d0b;
+  --bg: #11110f;
+  --surface: #1b1b18;
+  --surface-2: #242320;
+  --surface-hi: #2e2d29;
+  --border: #35342e;
+  --border-hi: #4b4940;
+  --white: #f4f2ec;
+  --text: #ece9e2;
+  --muted: #b3b0a7;      /* 7.96:1 on --surface, 6.36:1 on --surface-hi */
+  --faint: #a09d93;      /* 6.36:1 on --surface, 5.08:1 on --surface-hi */
 
   /* The one accent. Primary action, selection, focus. Nothing decorative. */
   --gold: #c8902a;
@@ -48,17 +54,27 @@
 
   /* Type: one system family, fixed product scale. */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, Helvetica, Arial, sans-serif;
-  --text-xs: 12px;
+  /* Floor is 13px. Body is 15px / 1.5. Headings step 15 / 18 / 22 / 26. */
+  --text-xs: 13px;
   --text-sm: 13px;
-  --text-md: 14px;
+  --text-md: 15px;
   --text-copy: 15px;
-  --text-lg: 17px;
-  --text-xl: 20px;
-  --text-2xl: 24px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 26px;
+  --lh-body: 1.5;
+  --measure: 68ch;       /* max line length for prose */
 
   /* Space: 4px grid. */
   --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
   --s-5: 20px; --s-6: 24px; --s-7: 28px; --s-8: 32px;
+
+  /* Rhythm: sections 32, inside a section 16, rows 13 top and bottom. */
+  --space-section: 32px;
+  --space-block: 16px;
+  --row-py: 13px;
+  --row-border: 1px solid var(--border);
+  --focus-ring: 0 0 0 2px var(--bg), 0 0 0 4px var(--gold-2);
 
   --r-sm: 6px;
   --r-md: 8px;
@@ -83,26 +99,38 @@ body {
   color: var(--text);
   font-family: var(--font);
   font-size: var(--text-md);
-  line-height: 1.45;
+  line-height: var(--lh-body);
 }
 
 h1, h2, h3 { text-wrap: balance; }
+p, li, dd { text-wrap: pretty; }
+main#view p, main#view li { max-width: var(--measure); }
 
 h1 {
   font-size: var(--text-2xl);
   font-weight: 700;
   letter-spacing: -0.01em;
+  line-height: 1.25;
+  margin: 0 0 var(--space-block);
   color: var(--white);
 }
 
 /* Panel/section headings: sentence case, no tracked caps. */
 h2 {
-  font-size: var(--text-copy);
+  font-size: var(--text-lg);
   font-weight: 600;
+  line-height: 1.3;
   letter-spacing: 0;
   text-transform: none;
   color: var(--white);
   margin: 0 0 var(--s-3);
+}
+h3 {
+  font-size: var(--text-copy);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--white);
+  margin: 0 0 var(--s-2);
 }
 
 .form-section-label,
@@ -126,7 +154,7 @@ nav#sidebar {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: var(--s-5) 0 var(--s-4);
+  padding: var(--s-6) 0 var(--s-4);
 }
 
 nav#sidebar .brand {
@@ -143,8 +171,8 @@ nav#sidebar .brand {
 
 nav#sidebar a {
   border-left: none;
-  margin: 1px var(--s-2);
-  padding: 8px var(--s-3);
+  margin: 2px var(--s-2);
+  padding: 9px var(--s-3);
   font-size: var(--text-md);
   color: var(--muted);
 }
@@ -183,7 +211,7 @@ nav#sidebar a.active .nav-icon { color: var(--gold-2); }
 }
 
 main#view {
-  padding: var(--s-7) var(--s-8) 96px;
+  padding: var(--space-section) var(--s-8) 96px;
   animation: none;
 }
 /* Only a real navigation gets the entrance; refreshes render in place. */
@@ -201,16 +229,68 @@ main#view.view-enter { animation: viewIn var(--t-med); }
   border-radius: var(--r-lg);
   box-shadow: none;
   padding: var(--s-5);
+  margin-bottom: var(--space-block);
 }
 .card::before { display: none; }
+.card h2:first-child, .card h3:first-child { margin-top: 0; }
+
+/* ---------- Rhythm and separation (shared) ---------- */
+/* Section blocks stack 32px apart; the 1px rule is the separator, never a nested card. */
+.page-header, .page-header + * { margin-top: 0; }
+.page-header { margin-bottom: var(--space-block); }
+.toolbar { gap: var(--s-3); margin-bottom: var(--space-block); }
+.field-row { margin-bottom: var(--space-block); }
+.field-row label, .form-section-hint, .settings-hint { font-size: var(--text-sm); }
+.form-section { margin-bottom: var(--space-section); }
+.form-section-hint { color: var(--muted); }
+
+/* Native lists and tables: 1px rules, no zebra, 13px vertical padding. */
+table { border-collapse: collapse; width: 100%; font-size: var(--text-md); }
+th {
+  text-align: left; font-size: var(--text-sm); font-weight: 600; color: var(--muted);
+  text-transform: none; letter-spacing: 0;
+  padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--border-hi);
+}
+td { padding: var(--row-py) var(--s-3); border-bottom: var(--row-border); vertical-align: middle; }
+tbody tr:hover > td { background: var(--surface-2); }
+tbody tr:last-child > td { border-bottom: 0; }
+hr { border: 0; border-top: var(--row-border); margin: var(--space-block) 0; }
+details > summary { cursor: pointer; padding: var(--s-2) 0; }
+details > summary:hover { color: var(--white); }
+a { text-underline-offset: 3px; }
+
+/* Inputs sit on the raised level so they read as fields on any surface. */
+select, input, textarea {
+  background: var(--surface-2);
+  border: 1px solid var(--border-hi);
+  font-size: var(--text-md);
+  line-height: 1.4;
+  color: var(--text);
+}
+input::placeholder, textarea::placeholder { color: var(--faint); }
+select:hover, input:hover, textarea:hover { border-color: var(--muted); }
+select:focus, input:focus, textarea:focus {
+  border-color: var(--gold-2);
+  box-shadow: 0 0 0 3px var(--gold-tint);
+}
+input[type="checkbox"], input[type="radio"] { accent-color: var(--gold); }
+
+/* Visible focus on everything a keyboard can reach. Rings sit outside the box. */
+a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible,
+textarea:focus-visible, summary:focus-visible, [tabindex]:focus-visible, [role="button"]:focus-visible {
+  outline: 2px solid var(--gold-2);
+  outline-offset: 2px;
+  box-shadow: none;
+}
 
 /* ---------- Buttons ---------- */
 button {
   background: var(--surface-2);
+  border-color: var(--border-hi);
   box-shadow: none;
   font-size: var(--text-sm);
 }
-button:hover { transform: none; box-shadow: none; border-color: var(--border-hi); }
+button:hover { transform: none; box-shadow: none; background: var(--surface-hi); border-color: var(--muted); }
 
 button.primary, .button.primary {
   background: var(--gold);
@@ -244,7 +324,7 @@ button.is-pending, .button.is-pending { pointer-events: none; }
   letter-spacing: 0;
   font-size: var(--text-xs);
   font-weight: 600;
-  padding: 2px 9px;
+  padding: 2px 10px;
   box-shadow: none;
 }
 .status-pill {
@@ -325,7 +405,7 @@ dialog.pd-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 dialog.pd-dialog[open] { animation: dialogIn var(--t-med); }
 .pd-dialog-body { padding: var(--s-5) var(--s-5) var(--s-4); }
 .pd-dialog-body h2 { font-size: var(--text-lg); margin: 0 0 var(--s-2); }
-.pd-dialog-body p { margin: 0 0 var(--s-2); color: var(--muted); line-height: 1.5; }
+.pd-dialog-body p { margin: 0 0 var(--s-2); color: var(--muted); line-height: var(--lh-body); }
 .pd-dialog-body input { width: 100%; margin-top: var(--s-2); }
 .pd-dialog-actions {
   display: flex;
@@ -352,23 +432,147 @@ dialog.pd-dialog[open] { animation: dialogIn var(--t-med); }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
 /* ---------- Labs index ---------- */
-.labs-list { display: grid; gap: var(--s-2); max-width: 720px; }
+.labs-list { display: grid; gap: 0; max-width: 720px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
 .labs-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--s-4);
-  padding: var(--s-3) var(--s-4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  padding: var(--row-py) var(--s-4);
+  border-top: var(--row-border);
   color: var(--text);
   text-decoration: none;
 }
-.labs-item:hover { border-color: var(--border-hi); background: var(--surface-2); }
+.labs-item:first-child { border-top: 0; }
+.labs-item:hover { background: var(--surface-2); }
 .labs-item-title { font-weight: 600; }
 .labs-item-desc { color: var(--muted); font-size: var(--text-sm); margin-top: 2px; }
 .labs-note { color: var(--muted); margin: 0 0 var(--s-5); max-width: 640px; }
+
+/* ---------- 13px floor for legacy components (styles.css still declares 10 to 12.5px) ---------- */
+.worker-status-line,
+.cal-day .day-label,
+.chip,
+.idea-card .meta,
+.idea-card select,
+.media-card .meta,
+.field-row label,
+.char-count,
+.fold-count,
+.feed-preview-platform,
+.feed-preview-fold-line,
+.history-list,
+.ops-tile-label,
+.usage-row,
+.usage-row.usage-head,
+.image-prompt-note,
+.image-prompt-note button,
+.home-panel-link,
+.attention-row,
+.attention-dismiss-all,
+.week-strip-empty,
+.week-chip,
+.week-chip-platform,
+.week-chip-copy,
+.week-chip-date,
+.platform-chips-empty,
+.platform-chip,
+.mini-analytics-label,
+.chip-btn,
+.provider-switch button,
+.compare-draft-text,
+.manual-toggle-label,
+.example-chip,
+.chat-action-chip,
+.settings-hint,
+.settings-prompt-card textarea,
+.settings-toggle-state,
+.tone-preview,
+.action-center-stat-label,
+.action-center-links a,
+.profile-card-meta,
+.profile-copy-btn,
+.resize-platform-check,
+.brand-color-swatch,
+.analytics-stat-label,
+.metrics-due-hint,
+.metrics-due-table,
+.metrics-due-table th,
+.metrics-due-date,
+.metrics-due-row-msg,
+.cal-weekday,
+.cal-coverage-pill,
+.metrics-import-table,
+.metrics-import-table th,
+.ai-pill,
+.account-remove,
+.modal-sub,
+.best-time-hint,
+.best-time-chip,
+.redraft-btn,
+.switch-state,
+.form-section-hint,
+.qc-copy-toolbar label,
+.field-label-actions .button,
+.account-choice-copy strong,
+.account-choice-copy span,
+.review-progress,
+.review-key-hint,
+.chip-popover-date,
+.chip-popover-copy,
+.review-drawer-eyebrow,
+.review-drawer-label,
+.account-summary,
+.review-drawer-date,
+.link-placement-insight,
+button.delivery-choice strong,
+button.delivery-choice span,
+.review-drawer-advanced summary,
+.agenda-group-title,
+.agenda-row-time,
+.agenda-bulk-count,
+.qc-variant-label,
+.char-count .qc-count-chip,
+.history-details > summary,
+.nav-shortcuts-hint,
+.nav-shortcuts-hint-key,
+.shortcut-key,
+.shortcut-desc,
+.palette-item-kind,
+.palette-hint,
+.setup-matrix-wrap,
+.setup-matrix-head,
+.setup-dot,
+.cv3-acct-chip,
+.cv3-acct-chip .manual-tag,
+.cv3-manage-link,
+.cv3-copy-tabs button,
+.cv3-copy-counts,
+.cv3-media-tile.add-tile,
+.cv3-media-tile.request-tile,
+.cv3-media-tile.pending-tile,
+.cv3-media-tile .cv3-media-x,
+.cv3-media-library-pop button,
+.cv3-detail-field label,
+.cv3-actionbar .cv3-summary,
+.day-popover-row,
+.day-popover-row .dp-time,
+.day-popover-empty,
+.send-now-sub,
+.sync-status-pill,
+.sync-status-row,
+.cv3-first-comment-label,
+.feed-preview-first-comment,
+.feed-preview-first-comment-label {
+  font-size: var(--text-sm);
+}
+button.sm, .button.sm { font-size: var(--text-sm); }
+.week-chip-platform, .metrics-due-table th, .metrics-import-table th, .ops-tile-label, .analytics-stat-label,
+.mini-analytics-label, .usage-row.usage-head { text-transform: none; letter-spacing: 0; }
+
+@media (max-width: 640px) {
+  main#view { padding: var(--s-6) var(--s-4) 96px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

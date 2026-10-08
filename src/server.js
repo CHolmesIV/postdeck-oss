@@ -212,10 +212,14 @@ function buildServer() {
   });
 
   // Serve the dashboard SPA (vanilla JS, no build step) at /
+  // no-cache = the browser revalidates every file on load (ETag, cheap on localhost), so a
+  // restarted PostDeck never runs yesterday's scripts against today's API.
   app.register(fastifyStatic, {
     root: PUBLIC_DIR,
     prefix: '/',
     decorateReply: true,
+    cacheControl: false,
+    setHeaders: (reply) => reply.header('Cache-Control', 'no-cache'),
   });
 
   function parseJsonColumns(row, columns) {
@@ -250,6 +254,60 @@ function buildServer() {
   app.get('/api/brands', async () => {
     const rows = db.prepare('SELECT * FROM brands ORDER BY id').all();
     return rows.map((r) => withUtmSettings(parseJsonColumns(r, ['colors'])));
+  });
+
+  // Create a brand from Settings > Brands: unique slug from the name, plus the three tone
+  // profiles every brand carries (same shape seed.js writes).
+  app.post('/api/brands', async (req, reply) => {
+    const b = req.body || {};
+    const name = typeof b.name === 'string' ? b.name.trim().slice(0, 80) : '';
+    if (!name) {
+      reply.code(400);
+      return { error: 'bad_request', message: 'Give the brand a name.' };
+    }
+    const slugify = (v) =>
+      String(v)
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40);
+    const base = slugify(b.slug && String(b.slug).trim() ? b.slug : name) || 'brand';
+    let slug = base;
+    for (let i = 2; db.prepare('SELECT 1 FROM brands WHERE slug = ?').get(slug); i++) slug = `${base}-${i}`;
+    let colors = {};
+    if (b.color !== undefined && b.color !== null && b.color !== '') {
+      if (!/^#[0-9a-fA-F]{6}$/.test(String(b.color))) {
+        reply.code(400);
+        return { error: 'bad_request', message: 'Color looks like #1a2b3c.' };
+      }
+      colors = { primary: String(b.color) };
+    }
+    const now = nowIso();
+    const id = db.transaction(() => {
+      const info = db
+        .prepare(
+          `INSERT INTO brands (name, slug, colors, active, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`
+        )
+        .run(name, slug, JSON.stringify(colors), now, now);
+      const tone = db.prepare(
+        `INSERT INTO tone_profiles (brand_id, name, voice_rules, hard_rules, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const t of ['business', 'personal', 'casual']) {
+        tone.run(
+          info.lastInsertRowid,
+          t,
+          `Voice reference for ${name} (${t} tone): not set yet. Add the brand voice in Settings > Brands.`,
+          JSON.stringify({ no_em_dash: true }),
+          now,
+          now
+        );
+      }
+      return info.lastInsertRowid;
+    })();
+    const row = db.prepare('SELECT * FROM brands WHERE id = ?').get(id);
+    reply.code(201);
+    return withUtmSettings(parseJsonColumns(row, ['colors']));
   });
 
   // ---------- B14: branding (logo/colors/voice-doc) in Settings ----------

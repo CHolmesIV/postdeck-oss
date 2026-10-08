@@ -49,6 +49,18 @@ async function webApi(path, opts = {}) {
   return api(path, opts);
 }
 
+// The Analytics picker value is one string: '' (all), 'group:own', 'group:client',
+// 'brand:<id>' or 'site:<id>'. An old saved plain number means a brand.
+function webScopeParams(scope) {
+  const v = String(scope || '');
+  if (v.startsWith('group:')) return { group: v.slice(6) };
+  if (v.startsWith('site:')) return { site_id: v.slice(5) };
+  if (v.startsWith('brand:')) return { brand_id: v.slice(6) };
+  if (/^\d+$/.test(v)) return { brand_id: v };
+  return {};
+}
+function webSiteLabel(s) { return (s && (s.name || s.domain)) || ''; }
+
 function webQS(params) {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
@@ -248,16 +260,23 @@ async function webRenderWebsites(panel) {
     return;
   }
 
-  // Brand picker: only brands that own a site.
+  // Picker: All sites, Your brands, Clients, then each brand, then each client site.
+  const activeSites = ws.sites.filter((s) => s.active !== false);
+  const ownSites = activeSites.filter((s) => s.kind !== 'client');
+  const clientSites = activeSites.filter((s) => s.kind === 'client');
   const brands = [];
-  for (const s of ws.sites) if (s.brand_id != null && !brands.some((b) => String(b.id) === String(s.brand_id))) brands.push({ id: s.brand_id, name: s.brand_name || brandName(s.brand_id) });
-  if (ws.brand && !brands.some((b) => String(b.id) === String(ws.brand))) ws.brand = '';
+  for (const s of ownSites) if (s.brand_id != null && !brands.some((b) => String(b.id) === String(s.brand_id))) brands.push({ id: s.brand_id, name: s.brand_name || brandName(s.brand_id) });
+  const scopeValues = new Set(['', 'group:own', 'group:client', ...brands.map((b) => `brand:${b.id}`), ...clientSites.map((s) => `site:${s.id}`)]);
+  if (/^\d+$/.test(ws.brand)) ws.brand = `brand:${ws.brand}`;
+  if (!scopeValues.has(ws.brand)) ws.brand = '';
 
   // ---- controls ----
-  const brandSelect = el('select', { class: 'sm', 'aria-label': 'Brand' }, [
-    el('option', { value: '' }, 'All brands'),
-    ...brands.map((b) => el('option', { value: String(b.id) }, b.name)),
-  ]);
+  const pickerOpts = [el('option', { value: '' }, 'All sites')];
+  if (ownSites.length) pickerOpts.push(el('option', { value: 'group:own' }, 'Your brands'));
+  if (clientSites.length) pickerOpts.push(el('option', { value: 'group:client' }, 'Clients'));
+  if (brands.length) pickerOpts.push(el('optgroup', { label: 'Brands' }, brands.map((b) => el('option', { value: `brand:${b.id}` }, b.name))));
+  if (clientSites.length) pickerOpts.push(el('optgroup', { label: 'Client sites' }, clientSites.map((s) => el('option', { value: `site:${s.id}` }, webSiteLabel(s)))));
+  const brandSelect = el('select', { class: 'sm', 'aria-label': 'Which sites' }, pickerOpts);
   brandSelect.value = ws.brand;
   const seg = el('div', { class: 'web-seg', role: 'group', 'aria-label': 'Time range' });
   const segBtns = {};
@@ -326,7 +345,7 @@ async function webRenderWebsites(panel) {
   }
 
   function loadAll() {
-    const q = webQS({ brand_id: ws.brand, range: ws.range });
+    const q = webQS({ ...webScopeParams(ws.brand), range: ws.range });
     fill(secRead, `/api/web/overview${q}`, (data) => {
       ws.overview = data;
       paintStamp();
@@ -340,7 +359,7 @@ async function webRenderWebsites(panel) {
       if (!ws.overview) { for (const s of [secNums, secTrend]) { s.body.innerHTML = ''; s.body.appendChild(webEmpty('Needs the numbers above to load first.')); } }
     });
     fill(secChan, `/api/web/channels${q}`, (d, s) => webPaintChannels(s, d));
-    fill(secPages, `/api/web/pages${webQS({ brand_id: ws.brand, range: ws.range, limit: 50 })}`, (d, s) => webPaintPages(s, d, ws));
+    fill(secPages, `/api/web/pages${webQS({ ...webScopeParams(ws.brand), range: ws.range, limit: 50 })}`, (d, s) => webPaintPages(s, d, ws));
     fill(secSearch, `/api/web/search${q}`, (d, s) => webPaintSearch(s, d, ws));
     fill(secSocial, `/api/web/social${q}`, (d, s) => webPaintSocial(s, d));
     fill(secHealth, `/api/web/health${q}`, (d, s) => webPaintHealth(s, d));
@@ -393,7 +412,7 @@ async function webRenderWebsites(panel) {
     if (!panel.isConnected) { clearTimers(); return; }
     if (document.visibilityState !== 'visible') return;
     let res;
-    try { res = await webApi(`/api/web/realtime${webQS({ brand_id: ws.brand })}`); } catch { return; }
+    try { res = await webApi(`/api/web/realtime${webQS(webScopeParams(ws.brand))}`); } catch { return; }
     const map = new Map(((res && res.sites) || []).map((r) => [String(r.site_id), r]));
     panel.querySelectorAll('[data-live-site]').forEach((node) => {
       const r = map.get(node.getAttribute('data-live-site'));
@@ -436,7 +455,7 @@ function webPaintRead(sec, data) {
 function webPaintNumbers(sec, data, ws) {
   const sites = data.sites || [];
   sec.body.innerHTML = '';
-  if (!sites.length) { sec.body.appendChild(webEmpty('No sites to show for this brand.')); return; }
+  if (!sites.length) { sec.body.appendChild(webEmpty('No sites to show for this choice.')); return; }
   const head = el('tr', {}, [
     el('th', { scope: 'col' }, 'Site'),
     el('th', { scope: 'col', class: 'num' }, 'Visitors'),
@@ -449,7 +468,8 @@ function webPaintNumbers(sec, data, ws) {
   const rows = sites.map((s) => {
     const siteCell = el('th', { scope: 'row', class: 'web-site-cell' }, [
       el('a', { class: 'web-site-name', href: `https://${s.domain}`, target: '_blank', rel: 'noopener noreferrer' }, s.domain),
-      el('span', { class: 'web-sub' }, `${s.brand_name || ''}${s.brand_name ? ', ' : ''}${webSourceLabel(s.source)}`),
+      s.name && s.name !== s.domain ? el('span', { class: 'web-sub' }, s.name) : null,
+      el('span', { class: 'web-sub' }, `${s.kind === 'client' ? 'Client' : (s.brand_name || '')}${s.kind === 'client' || s.brand_name ? ', ' : ''}${webSourceLabel(s.source)}`),
       s.error ? el('span', { class: 'web-sub web-sub--bad' }, `Last sync failed: ${s.error}`) : null,
     ]);
     if (s.source === 'none') {
@@ -1103,7 +1123,8 @@ async function webSettingsTab(body) {
 
   // ---- sites ----
   const siteBlocks = sites.map((s) => webSiteSettingsBlock(s, brands, reload));
-  body.appendChild(stSection('Sites', 'One row per website. Fill in the Google ids once and the checklist ticks itself off.', siteBlocks.length ? siteBlocks : [webEmpty('No sites found.')]));
+  body.appendChild(stSection('Sites', 'One row per website. Fill in the Google ids once and the checklist ticks itself off. Client sites are counted separately and never added to your own numbers on Home.',
+    webAddSiteForm(brands, reload), siteBlocks.length ? siteBlocks : [webEmpty('No sites found.')]));
 
   // ---- link tagging per brand ----
   const brandIds = [...new Set(sites.map((s) => s.brand_id).filter((v) => v != null))];
@@ -1171,6 +1192,43 @@ async function webSyncNow(btn, body, onDone) {
   }
 }
 
+// "Add a site": a plain domain, an optional name, and whether it is yours or a client's.
+function webAddSiteForm(brands, reload) {
+  const domain = el('input', { type: 'text', placeholder: 'example.com', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Domain' });
+  const name = el('input', { type: 'text', placeholder: 'Optional, for example Client Two', 'aria-label': 'Site name' });
+  const kind = el('select', { 'aria-label': 'Whose site is it' }, [
+    el('option', { value: 'own' }, 'Your brand'),
+    el('option', { value: 'client' }, 'Client'),
+  ]);
+  const brandSel = el('select', { 'aria-label': 'Brand for the new site' }, [
+    el('option', { value: '' }, 'No brand'),
+    ...(brands || []).map((b) => el('option', { value: String(b.id) }, b.name)),
+  ]);
+  const brandField = stField('Brand', brandSel);
+  kind.addEventListener('change', () => { brandField.hidden = kind.value === 'client'; });
+  const add = el('button', { class: 'button primary md', type: 'button' }, 'Add site');
+  add.onclick = async () => {
+    if (!domain.value.trim()) { toast('Enter the domain first.', 'error'); domain.focus(); return; }
+    const body = { domain: domain.value.trim(), name: name.value.trim() || undefined, kind: kind.value };
+    if (kind.value === 'own' && brandSel.value) body.brand_id = Number(brandSel.value);
+    const ok = await stSave(add, async () => {
+      await webApi('/api/web/sites', { method: 'POST', body });
+      WEB_STATE.sites = null;
+    }, 'Site added. Press Sync now to pull its numbers.');
+    if (ok) reload();
+  };
+  return el('div', { class: 'web-add-site' }, [
+    el('h3', { class: 'st-h3' }, 'Add a site'),
+    el('div', { class: 'web-site-grid' }, [
+      stField('Domain', domain, 'Just the address. https:// and www. are removed for you.'),
+      stField('Name', name),
+      stField('Whose site is it', kind),
+      brandField,
+    ]),
+    el('div', { class: 'st-actions' }, [add]),
+  ]);
+}
+
 function webSiteSettingsBlock(site, brands, reload) {
   const patch = (btn, body, msg) => stSave(btn, async () => {
     const updated = await webApi(`/api/web/sites/${site.id}`, { method: 'PATCH', body });
@@ -1178,6 +1236,7 @@ function webSiteSettingsBlock(site, brands, reload) {
     WEB_STATE.sites = null;
   }, msg);
 
+  const isClient = site.kind === 'client';
   const brandSel = el('select', { 'aria-label': `Brand for ${site.domain}` }, [
     el('option', { value: '' }, 'No brand'),
     ...(brands || []).map((b) => el('option', { value: String(b.id) }, b.name)),
@@ -1200,6 +1259,26 @@ function webSiteSettingsBlock(site, brands, reload) {
 
   const sync = el('button', { class: 'button ghost sm', type: 'button' }, 'Sync now');
   sync.onclick = () => webSyncNow(sync, { site_id: site.id }, reload);
+  const remove = el('button', { class: 'button destructive sm', type: 'button' }, 'Remove site');
+  remove.onclick = async () => {
+    const ok = await confirmDialog({
+      title: `Remove ${site.domain}?`,
+      body: 'PostDeck deletes its stored numbers for this site. Nothing changes on the site itself. You can add it again later.',
+      confirmLabel: 'Remove site',
+      tone: 'destructive',
+    });
+    if (!ok) return;
+    remove.disabled = true;
+    try {
+      await webApi(`/api/web/sites/${site.id}`, { method: 'DELETE' });
+      WEB_STATE.sites = null;
+      toast(`${site.domain} removed.`);
+      reload();
+    } catch (err) {
+      toast(`Could not remove: ${err.message}`, 'error');
+      remove.disabled = false;
+    }
+  };
 
   const checklist = (site.checklist || []).map((c) => el('li', { class: `web-check${c.done ? ' is-done' : ''}` }, [
     el('span', { class: 'web-check-mark', 'aria-hidden': 'true' }, c.done ? webIcon('check', 14) : webIcon('dot', 14)),
@@ -1209,18 +1288,18 @@ function webSiteSettingsBlock(site, brands, reload) {
 
   return el('div', { class: 'web-site-set' }, [
     el('div', { class: 'web-site-head' }, [
-      el('h3', { class: 'st-h3' }, site.domain),
+      el('h3', { class: 'st-h3' }, site.name && site.name !== site.domain ? `${site.name} (${site.domain})` : site.domain),
       el('span', { class: 'web-muted' }, site.ga4_measurement_id ? `Tag ${site.ga4_measurement_id}` : 'No Google tag on the site'),
     ]),
     el('div', { class: 'web-site-grid' }, [
-      stField('Brand', brandSel),
+      isClient ? stField('Brand', el('div', { class: 'web-client-tag' }, 'Client')) : stField('Brand', brandSel),
       stField('Google Analytics property', el('div', { class: 'st-inline' }, [ga4, ga4Save]), 'The numeric property id, not the G- tag.'),
       stField('Search Console property', el('div', { class: 'st-inline' }, [gsc, gscSave])),
       el('div', {}, [active.row]),
     ]),
     site.last_sync_error ? inlineBanner(`The last sync failed: ${site.last_sync_error}`, 'warn') : null,
     checklist.length ? el('ul', { class: 'web-checklist', 'aria-label': `Setup steps for ${site.domain}` }, checklist) : null,
-    el('div', { class: 'web-site-foot' }, [el('span', { class: 'web-muted' }, synced), sync]),
+    el('div', { class: 'web-site-foot' }, [el('span', { class: 'web-muted' }, synced), el('span', { class: 'web-site-actions' }, [sync, remove])]),
   ]);
 }
 

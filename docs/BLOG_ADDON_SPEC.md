@@ -33,7 +33,7 @@ Every site blog follows the shared `Website Projects/BLOG-PROGRAM-PROMPT.md` tem
   the site's `CHANGELOG.md`. Release is by DATE, not time.
 - Each site folder is its own git repo. Sites today: CHolmesIV (35 scheduled, all awaiting
   review, twice weekly from 2026-11-03), Di-Hy (46 published), Lunula Supply (38 published),
-  Akats (being set up in another session).
+  Client One (being set up in another session).
 
 PostDeck never edits these scripts and never calls `--allow-unreviewed`.
 
@@ -137,7 +137,7 @@ PostDeck never edits these scripts and never calls `--allow-unreviewed`.
 
 Site discovery root: `POSTDECK_WEBSITES_ROOT` (default `~/Desktop/AI/Projects/Website Projects`);
 a site = a direct child folder with `blog/tools/release.py` and `blog/content/`. Site id = folder
-name slugified (`cholmesiv`, `di-hy`, `lunula-supply`, `akats`). Python: `python3` on PATH
+name slugified (`cholmesiv`, `di-hy`, `lunula-supply`, `client-one`). Python: `python3` on PATH
 (`POSTDECK_PYTHON` override). Subprocesses use `execFile` (no shell), cwd = site root, timeouts
 (preview 60s, release 10 min).
 

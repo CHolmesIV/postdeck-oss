@@ -118,36 +118,43 @@ function homeAttentionReason(post) {
   return 'Its time passed while PostDeck was closed. Send it now or pick a new time.';
 }
 
+function homeTrunc(text, max) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1).trimEnd()}...` : t;
+}
+
+// One line per row: pill, short reason (full text in title), brand + platform, one action.
+// Closing is added to every row (own and hook rows) by homeNeedsEnhance below.
 function homeNeedsRow(post) {
   const h = humanStatus(post);
-  return el('div', { class: 'home-row home-row--attention' }, [
+  const full = homeAttentionReason(post);
+  const rank = h.tone === 'bad' ? '0' : '1';
+  return el('div', {
+    class: 'home-row home-row--attention',
+    'data-home-key': `post:${post.id}`,
+    'data-home-sig': `${post.status}|${post.updated_at || ''}`,
+    'data-home-rank': rank,
+    title: `${h.label}: ${full}\n${homeFirstLine(post)}`,
+  }, [
     el('div', { class: 'home-row-main' }, [
       el('div', { class: 'home-row-reason' }, [
         el('span', { class: `status-pill status-pill--${h.tone}` }, h.label),
-        el('span', {}, homeAttentionReason(post)),
+        el('span', {}, homeTrunc(full, 70)),
       ]),
       el('div', { class: 'home-row-meta' }, [
         platformIcon(post.platform, { size: 13 }),
         el('span', {}, `${brandName(post.brand_id)} on ${humanizePlatformName(post.platform)}`),
-        post.publish_at ? el('span', {}, `Planned ${fmtDate(post.publish_at)}`) : null,
       ]),
-      el('div', { class: 'home-row-copy' }, homeFirstLine(post)),
     ]),
     el('button', { class: 'button primary sm', type: 'button', onclick: () => openPostById(post.id) }, 'Review'),
   ]);
 }
 
-function homeLinkRow(text, href, { dismissKey, onDismiss } = {}) {
-  const row = el('div', { class: 'home-row home-row--quiet' }, [
-    el('a', { class: 'home-row-link', href }, text),
-  ]);
-  if (dismissKey) {
-    row.appendChild(el('button', {
-      class: 'button ghost sm', type: 'button', 'aria-label': `Dismiss: ${text}`,
-      onclick: () => { homeDismiss(dismissKey); row.remove(); if (onDismiss) onDismiss(); },
-    }, 'Dismiss'));
-  }
-  return row;
+function homeLinkRow(text, href, { key, sig, rank } = {}) {
+  const attrs = { class: 'home-row home-row--quiet' };
+  if (key) { attrs['data-home-key'] = key; attrs['data-home-sig'] = sig || text; }
+  if (rank !== undefined) attrs['data-home-rank'] = String(rank);
+  return el('div', attrs, [el('a', { class: 'home-row-link', href }, text)]);
 }
 
 function buildHomeNeedsYou(host, posts, analytics, workerStatus, brandId) {
@@ -162,31 +169,349 @@ function buildHomeNeedsYou(host, posts, analytics, workerStatus, brandId) {
 
   const drafts = posts.filter((p) => p.status === 'draft');
   if (drafts.length) {
-    list.appendChild(homeLinkRow(`${drafts.length} draft${drafts.length === 1 ? '' : 's'} waiting`, '#/planner?status=drafts'));
+    list.appendChild(homeLinkRow(`${drafts.length} draft${drafts.length === 1 ? '' : 's'} waiting`, '#/planner?status=drafts',
+      { key: 'drafts-waiting', sig: String(drafts.length), rank: 2 }));
   }
 
   const metricsDue = (analytics?.metrics_due || []).filter((p) => !brandId || String(p.brand_id) === String(brandId));
-  const dismissed = homeDismissedSet();
-  const metricsKey = `metrics-due:${metricsDue.map((p) => p.id).sort().join('|')}`;
-  if (metricsDue.length && !dismissed.has(metricsKey)) {
+  if (metricsDue.length) {
     list.appendChild(homeLinkRow(
       `${metricsDue.length} post${metricsDue.length === 1 ? ' is' : 's are'} ready for metrics`,
       '#/analytics',
-      { dismissKey: metricsKey, onDismiss: () => { if (!list.children.length) host.innerHTML = ''; } }
+      { key: 'metrics-due', sig: metricsDue.map((p) => p.id).sort().join('|'), rank: 2 }
     ));
   }
 
   const hasScheduled = posts.some((p) => HOME_GOING_OUT.includes(p.status));
   if (workerStatus && workerStatus.enabled === false && hasScheduled) {
-    list.insertBefore(el('div', { class: 'home-row home-row--quiet' }, [
-      el('a', { class: 'home-row-link', href: '#/settings/system' }, 'The posting worker is off, so scheduled posts will not send. See System settings.'),
-    ]), list.firstChild);
+    const wr = homeLinkRow('The posting worker is off, so scheduled posts will not send. See System settings.', '#/settings/system',
+      { key: 'worker-off', rank: 0 });
+    list.insertBefore(wr, list.firstChild);
   }
 
   if (!list.children.length) return;
   section.appendChild(el('h2', { class: 'home-h2' }, 'Needs you'));
   section.appendChild(list);
   host.appendChild(section);
+}
+
+// ---------------- Needs you: hide, group, collapse (docs/D5_EASE_PASS_SPEC.md B) ----------------
+// Runs over EVERY row in the Needs you host, because the blog (70-blog.js) and website (80-web.js)
+// hooks append their rows after buildHomeNeedsYou, asynchronously. A MutationObserver on the host
+// re-runs it whenever rows arrive.
+//
+// Row keys (stored in localStorage `pd_home_hidden` as { [key]: { until: ISO|null, sig } }):
+//  - Own rows carry data-home-key: `post:<id>` (sig = status|updated_at), `drafts-waiting`,
+//    `metrics-due`, `worker-off`.
+//  - Hook rows have no key; one is derived from the DOM: `x:<pill label>|<reason text with digits
+//    replaced by #>|<first link href>`; the sig is the full reason text + the description line, so a
+//    changed count, title or error brings the row back after "Hide until it changes".
+const HOME_HIDDEN_KEY = 'pd_home_hidden';
+const HOME_COLLAPSED_KEY = 'pd_home_needs_collapsed';
+const HOME_TOP_N = 4;
+const HOME_GROUP_MIN = 3;
+const homeNeedsUi = { showAll: false, expanded: new Set() };
+
+function homeHiddenLoad() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HOME_HIDDEN_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
+function homeHiddenSave(map) {
+  try {
+    const entries = Object.entries(map).slice(-300);
+    localStorage.setItem(HOME_HIDDEN_KEY, JSON.stringify(Object.fromEntries(entries)));
+  } catch { /* storage unavailable: hiding just lasts until reload */ }
+}
+function homeIsHidden(map, key, sig) {
+  const e = map[key];
+  if (!e || e.sig !== sig) return false;
+  if (e.until == null) return true;
+  return Date.parse(e.until) > Date.now();
+}
+function homeCollapsedGet() {
+  try { return localStorage.getItem(HOME_COLLAPSED_KEY) === '1'; } catch { return false; }
+}
+function homeCollapsedSet(v) {
+  try { localStorage.setItem(HOME_COLLAPSED_KEY, v ? '1' : '0'); } catch { /* ignore */ }
+}
+
+const HOME_GROUP_NOUNS = {
+  'Failed': 'posts failed to send',
+  'Not confirmed': 'posts not confirmed by Blotato',
+  'Check before resending': 'posts to check before resending',
+  'Missed time': 'posts missed their time',
+  'Website': 'website alerts',
+  'Release blocked': 'blog releases blocked',
+  'Release failed': 'blog releases failed',
+  'Due': 'blog releases due',
+};
+
+// Give a raw row its key/sig/title and a close button (once).
+function homeNeedsPrepare(row) {
+  if (row.dataset.homeEnh) return;
+  row.dataset.homeEnh = '1';
+  const reasonEl = row.querySelector('.home-row-reason') || row.querySelector('.home-row-link');
+  const pillEl = row.querySelector('.status-pill, [class*="pill"]');
+  let reason = (reasonEl ? reasonEl.textContent : row.textContent || '').replace(/\s+/g, ' ').trim();
+  const pillText = pillEl ? pillEl.textContent.replace(/\s+/g, ' ').trim() : '';
+  if (pillText && reasonEl && reasonEl.contains(pillEl) && reason.startsWith(pillText)) reason = reason.slice(pillText.length).trim();
+  const copyEl = row.querySelector('.home-row-copy');
+  const copy = copyEl ? copyEl.textContent.trim() : '';
+  const linkEl = row.querySelector('a[href]');
+  const href = linkEl ? linkEl.getAttribute('href') : '';
+  if (!row.dataset.homeKey) {
+    row.dataset.homeKey = `x:${pillEl ? pillEl.textContent.trim() : ''}|${reason.replace(/\d+/g, '#')}|${href}`;
+    row.dataset.homeSig = `${reason}|${copy}`;
+  }
+  if (!row.dataset.homeRank) {
+    row.dataset.homeRank = pillEl ? (/bad|warn/.test(pillEl.className) ? '0' : '1') : '2';
+  }
+  if (!row.title) row.title = copy ? `${reason}\n${copy}` : reason;
+  row.dataset.homeLabel = homeTrunc(reason, 48);
+  const kindPill = pillEl && row.querySelector('.home-row-reason') ? pillEl.textContent.trim() : '';
+  row.dataset.homeKind = kindPill;
+  row.appendChild(homeCloseControl(() => [row]));
+}
+
+// The close (x) button and its two-choice menu. getRows returns the rows (or group members) it hides.
+function homeCloseControl(getRows, groupLabel) {
+  const wrap = el('div', { class: 'home-x', 'data-home-x': '1' });
+  const btn = el('button', {
+    class: 'home-x-btn', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    'aria-label': 'Hide this item',
+  }, '×');
+  let menu = null;
+  function close(focusBtn) {
+    if (!menu) return;
+    menu.remove(); menu = null;
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('click', onDoc, true);
+    if (focusBtn) btn.focus();
+  }
+  function onDoc(e) { if (!wrap.contains(e.target)) close(false); }
+  function choose(mode) {
+    const rows = getRows();
+    const label = groupLabel ? groupLabel() : (rows[0] && rows[0].dataset.homeLabel) || 'Item';
+    close(false);
+    homeHide(rows, mode, label, wrap.closest('[data-home-host]'));
+  }
+  function open() {
+    menu = el('div', { class: 'home-x-menu', role: 'menu' }, [
+      el('button', { class: 'home-x-item', type: 'button', role: 'menuitem', onclick: () => choose('day') }, 'Hide for a day'),
+      el('button', { class: 'home-x-item', type: 'button', role: 'menuitem', onclick: () => choose('change') }, 'Hide until it changes'),
+    ]);
+    menu.addEventListener('keydown', (e) => {
+      const items = [...menu.querySelectorAll('.home-x-item')];
+      const i = items.indexOf(document.activeElement);
+      if (e.key === 'Escape') { e.preventDefault(); close(true); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
+      else if (e.key === 'Tab') close(false);
+    });
+    wrap.appendChild(menu);
+    btn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('click', onDoc, true);
+    menu.querySelector('.home-x-item').focus();
+  }
+  btn.onclick = () => (menu ? close(true) : open());
+  btn.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown' && !menu) { e.preventDefault(); open(); } });
+  wrap.appendChild(btn);
+  return wrap;
+}
+
+function homeHide(rows, mode, label, host) {
+  const map = homeHiddenLoad();
+  const before = {};
+  const until = mode === 'day' ? new Date(Date.now() + 24 * 3600 * 1000).toISOString() : null;
+  for (const r of rows) {
+    const k = r.dataset.homeKey;
+    before[k] = map[k];
+    map[k] = { until, sig: r.dataset.homeSig || '' };
+  }
+  homeHiddenSave(map);
+  if (host) homeNeedsEnhance(host);
+  const headBtn = host && host.querySelector('.home-needs-toggle');
+  if (headBtn) headBtn.focus();
+  toast(rows.length > 1 ? `Hid ${rows.length} items.` : `Hid "${label}".`, {
+    action: {
+      label: 'Undo',
+      onClick: () => {
+        const cur = homeHiddenLoad();
+        for (const k of Object.keys(before)) { if (before[k]) cur[k] = before[k]; else delete cur[k]; }
+        homeHiddenSave(cur);
+        if (host && host.isConnected) homeNeedsEnhance(host);
+      },
+    },
+  });
+}
+
+function homeNeedsEnhance(host) {
+  const obs = host._homeObs;
+  if (obs) obs.disconnect();
+  try { homeNeedsEnhanceInner(host); } catch (err) { console.warn('[home needs]', err); }
+  if (obs) obs.observe(host, { childList: true, subtree: true });
+}
+
+function homeNeedsEnhanceInner(host) {
+  const section = host.querySelector(':scope > .home-section');
+  if (!section) return;
+  const list = section.querySelector('.home-list');
+  if (!list) return;
+  list.classList.add('home-needs-list');
+  host.dataset.homeHost = '1';
+
+  // Head: collapse toggle + "N hidden. Show".
+  let head = section.querySelector(':scope > .home-needs-head');
+  if (!head) {
+    const oldH2 = section.querySelector(':scope > h2');
+    if (oldH2) oldH2.remove();
+    const toggle = el('button', { class: 'home-needs-toggle', type: 'button', 'aria-expanded': 'true' }, [
+      el('span', { class: 'home-needs-caret', 'aria-hidden': 'true' }),
+      el('h2', { class: 'home-h2' }, 'Needs you'),
+    ]);
+    toggle.onclick = () => {
+      homeCollapsedSet(!homeCollapsedGet());
+      homeNeedsEnhance(host);
+      const t = host.querySelector('.home-needs-toggle');
+      if (t) t.focus();
+    };
+    head = el('div', { class: 'home-needs-head' }, [toggle, el('span', { class: 'home-needs-note' })]);
+    section.insertBefore(head, section.firstChild);
+  }
+
+  // Reset generated nodes and per-run state.
+  list.querySelectorAll('[data-home-ui]').forEach((n) => n.remove());
+  const rows = [...list.children].filter((n) => n.classList.contains('home-row'));
+  rows.forEach((r) => {
+    homeNeedsPrepare(r);
+    r.hidden = false;
+    r.classList.remove('home-row--member');
+  });
+
+  const map = homeHiddenLoad();
+  const hiddenRows = rows.filter((r) => homeIsHidden(map, r.dataset.homeKey, r.dataset.homeSig || ''));
+  hiddenRows.forEach((r) => { r.hidden = true; });
+  const visible = rows.filter((r) => !r.hidden)
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => (Number(a.r.dataset.homeRank) - Number(b.r.dataset.homeRank)) || (a.i - b.i))
+    .map((o) => o.r);
+
+  // Group rows of the same kind when there are 3 or more.
+  const byKind = new Map();
+  visible.forEach((r) => {
+    const k = r.dataset.homeKind;
+    if (!k) return;
+    if (!byKind.has(k)) byKind.set(k, []);
+    byKind.get(k).push(r);
+  });
+  const items = [];
+  const seen = new Set();
+  for (const r of visible) {
+    const k = r.dataset.homeKind;
+    const members = k ? byKind.get(k) : null;
+    if (members && members.length >= HOME_GROUP_MIN) {
+      if (seen.has(k)) continue;
+      seen.add(k);
+      items.push({ kind: k, members });
+    } else {
+      items.push({ row: r });
+    }
+  }
+
+  const collapsed = homeCollapsedGet();
+  section.classList.toggle('is-collapsed', collapsed);
+  head.querySelector('.home-needs-toggle').setAttribute('aria-expanded', String(!collapsed));
+  head.querySelector('.home-needs-caret').dataset.open = collapsed ? '0' : '1';
+  list.hidden = collapsed;
+
+  const frag = [];
+  const shown = homeNeedsUi.showAll ? items : items.slice(0, HOME_TOP_N);
+  const extra = items.length - shown.length;
+  items.forEach((item, idx) => {
+    const show = idx < shown.length;
+    if (item.row) {
+      item.row.hidden = !show;
+      frag.push(item.row);
+      return;
+    }
+    const open = homeNeedsUi.expanded.has(item.kind);
+    const noun = HOME_GROUP_NOUNS[item.kind] || `${item.kind.toLowerCase()} items`;
+    const text = `${item.members.length} ${noun}`;
+    const toggle = el('button', {
+      class: 'home-group-toggle', type: 'button', 'aria-expanded': String(open),
+      onclick: () => {
+        if (homeNeedsUi.expanded.has(item.kind)) homeNeedsUi.expanded.delete(item.kind);
+        else homeNeedsUi.expanded.add(item.kind);
+        homeNeedsEnhance(host);
+        const again = [...host.querySelectorAll('.home-group-toggle')].find((b) => b.dataset.kind === item.kind);
+        if (again) again.focus();
+      },
+    }, [el('span', { class: 'home-needs-caret', 'aria-hidden': 'true', 'data-open': open ? '1' : '0' }), el('span', { class: 'home-group-text' }, text)]);
+    toggle.dataset.kind = item.kind;
+    const tone = item.members[0].querySelector('.status-pill, [class*="pill"]');
+    const header = el('div', { class: 'home-row home-row--group', 'data-home-ui': '1', title: text }, [
+      el('span', { class: tone ? tone.className : 'status-pill' }, item.kind),
+      toggle,
+      homeCloseControl(() => item.members, () => text),
+    ]);
+    header.hidden = !show;
+    frag.push(header);
+    item.members.forEach((m) => {
+      m.classList.add('home-row--member');
+      m.hidden = !(show && open);
+      frag.push(m);
+    });
+  });
+  if (!homeNeedsUi.showAll && extra > 0) {
+    frag.push(el('div', { class: 'home-row home-row--more', 'data-home-ui': '1' }, [
+      el('button', { class: 'home-more-btn', type: 'button', onclick: () => { homeNeedsUi.showAll = true; homeNeedsEnhance(host); } },
+        `Show ${extra} more`),
+    ]));
+  } else if (homeNeedsUi.showAll && items.length > HOME_TOP_N) {
+    frag.push(el('div', { class: 'home-row home-row--more', 'data-home-ui': '1' }, [
+      el('button', { class: 'home-more-btn', type: 'button', onclick: () => { homeNeedsUi.showAll = false; homeNeedsEnhance(host); } }, 'Show fewer'),
+    ]));
+  }
+  if (!items.length && hiddenRows.length) {
+    frag.push(el('div', { class: 'home-row home-row--quiet', 'data-home-ui': '1' }, [el('span', { class: 'home-row-link' }, 'Nothing needs you right now.')]));
+  }
+  frag.forEach((n) => list.appendChild(n));
+
+  // Head note: hidden count + restore, or a count when collapsed.
+  const note = head.querySelector('.home-needs-note');
+  note.innerHTML = '';
+  if (collapsed && items.length) {
+    note.appendChild(el('span', {}, `${items.length} item${items.length === 1 ? '' : 's'}. `));
+  }
+  if (hiddenRows.length) {
+    note.appendChild(el('span', {}, `${hiddenRows.length} hidden. `));
+    note.appendChild(el('button', {
+      class: 'home-link home-restore', type: 'button',
+      onclick: () => {
+        const cur = homeHiddenLoad();
+        hiddenRows.forEach((r) => { delete cur[r.dataset.homeKey]; });
+        homeHiddenSave(cur);
+        homeNeedsEnhance(host);
+      },
+    }, 'Show'));
+  }
+}
+
+// Attach once per Needs you host; hook rows arrive later and re-trigger the pass.
+function homeNeedsAttach(host) {
+  if (!host._homeObs) {
+    let queued = false;
+    host._homeObs = new MutationObserver((records) => {
+      // Opening/closing the close menu mutates a .home-x wrapper; that must not rebuild the rows.
+      if (records.every((r) => r.target.nodeType === 1 && r.target.closest('.home-x'))) return;
+      if (queued) return;
+      queued = true;
+      Promise.resolve().then(() => { queued = false; if (host.isConnected) homeNeedsEnhance(host); });
+    });
+  }
+  homeNeedsEnhance(host);
 }
 
 function homeDayLabel(dayKey) {
@@ -324,6 +649,7 @@ async function renderHome(view) {
     buildHomeAnalyticsLine(analyticsHost, data.analytics, brandId);
     if (typeof blogHomeRows === 'function') blogHomeRows(needsHost, upHost, brandId); // BLOG HOOK: blog rows (70-blog.js)
     if (typeof webHomeRows === 'function') webHomeRows(needsHost, analyticsHost); // WEB HOOK: traffic line + alerts (80-web.js)
+    homeNeedsAttach(needsHost);
   }
 
   filter.onchange = () => {

@@ -78,11 +78,11 @@ function search(site, offset, path, query, clicks, impressions, position) {
   ).run(site, dayOff(offset), path, query, clicks, impressions, position);
 }
 
-test('seeding: four sites, brands resolved by slug, idempotent', () => {
+test('seeding: own and client sites, brands resolved by slug, idempotent', () => {
   web.ensureSites(db);
   web.ensureSites(db);
   const rows = db.prepare('SELECT s.domain, s.ga4_measurement_id, s.blog_site_id, b.slug FROM web_sites s LEFT JOIN brands b ON b.id = s.brand_id ORDER BY s.id').all();
-  assert.equal(rows.length, 4);
+  assert.equal(rows.length, 8);
   const m = Object.fromEntries(rows.map((r) => [r.domain, r]));
   assert.equal(m['di-hy.com'].slug, 'dihy');
   assert.equal(m['di-hy.com'].blog_site_id, 'di-hy');
@@ -418,6 +418,25 @@ test('markers: published blog posts and social posts that link the site', async 
   assert.match(line.text, /got 169 visitors so far|got 169 visitors in its first 3 days/);
 });
 
+test('the read: a batch release folds into one line per site, not one per post', async () => {
+  reset();
+  db.prepare("UPDATE web_sites SET blog_site_id = 'fake-site' WHERE domain = 'di-hy.com'").run();
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const brandId = db.prepare("SELECT id FROM brands WHERE slug='dihy'").get().id;
+  for (const [slug, title, views] of [['batch-a', 'Batch A', 3], ['batch-b', 'Batch B', 9], ['batch-c', 'Batch C', 1]]) {
+    fs.writeFileSync(path.join(fake.content, `${slug}.md`), POST({ slug, title, status: 'published', needs_cb_review: 'false', publish_date: dayOff(-3) }));
+    page(DIHY, 'ga4', -3, `/blog/${slug}/`, views);
+  }
+  daily(DIHY, 'ga4', -10, -1, 4);
+  const ov = await get(`/api/web/overview?range=28&brand_id=${brandId}`);
+  const batch = ov.read.filter((r) => /Batch|new blog posts/.test(r.text));
+  assert.equal(batch.length, 1, JSON.stringify(ov.read));
+  assert.match(batch[0].text, /new blog posts brought \d+ visitors? in their first days\. Best so far: "Batch B"/);
+  assert.equal(batch[0].href, '#/blog?site=fake-site&post=batch-b');
+  for (const slug of ['batch-a', 'batch-b', 'batch-c']) fs.rmSync(path.join(fake.content, `${slug}.md`));
+});
+
 test('blog-stats: slug matching by trailing segment', async () => {
   reset();
   db.prepare("UPDATE web_sites SET blog_site_id = 'fake-site' WHERE domain = 'di-hy.com'").run();
@@ -472,7 +491,7 @@ test('google-key: never echoes the key, status and sites expose client email onl
   assert.equal(st.ssh.ok, true);
   assert.ok(!JSON.stringify(st).includes('PRIVATE'));
   const sites = await get('/api/web/sites');
-  assert.equal(sites.sites.length, 4);
+  assert.equal(sites.sites.length, 8);
   assert.ok(sites.sites[0].checklist.length >= 3);
   assert.ok(sites.sites.find((s) => s.domain === 'di-hy.com').checklist.some((c) => c.text.includes('pd@proj.iam.gserviceaccount.com')));
   assert.equal(sites.self.optout_links[0].on_url.endsWith('/?pd_internal=on'), true);
@@ -613,4 +632,138 @@ test('digest: uses the AI layer and strips long dashes', async () => {
 
 test('UTM default template tags links with utm_content=pd-<id>', () => {
   assert.ok(DEFAULT_TEMPLATE.includes('utm_content=pd-{post_id}'));
+});
+
+// ---------- client sites (migration v15) ----------
+
+const send = (method, url, payload) => app.inject({ method, url, payload });
+
+test('migration v15: web_sites has name and kind, own by default', () => {
+  const cols = db.prepare('PRAGMA table_info(web_sites)').all();
+  const name = cols.find((c) => c.name === 'name');
+  const kind = cols.find((c) => c.name === 'kind');
+  assert.ok(name && !name.notnull);
+  assert.ok(kind && kind.notnull);
+  assert.equal(String(kind.dflt_value).replace(/'/g, ''), 'own');
+  assert.ok(db.pragma('user_version', { simple: true }) >= 15);
+});
+
+test('client seeding: four client sites, idempotent, GA4 ids, own sites stay own', () => {
+  web.ensureSites(db);
+  web.ensureSites(db);
+  const clients = db.prepare("SELECT domain, name, kind, brand_id, ga4_measurement_id FROM web_sites WHERE kind = 'client' ORDER BY domain").all();
+  assert.deepEqual(clients.map((c) => c.domain).sort(), ['client-four.example', 'client-one.example', 'client-three.example', 'client-two.example']);
+  assert.ok(clients.every((c) => c.brand_id === null && c.name));
+  const m = Object.fromEntries(clients.map((c) => [c.domain, c]));
+  assert.equal(m['client-two.example'].ga4_measurement_id, 'G-CLIENT0002');
+  assert.notEqual(m['client-one.example'].ga4_measurement_id, 'G-957QEJY8VC');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM web_sites WHERE kind = 'own'").get().n, 4);
+});
+
+test('POST /api/web/sites: strips scheme, path and www, validates, rejects duplicates', async () => {
+  let r = await send('POST', '/api/web/sites', { domain: 'https://WWW.Example-Test.com/path?x=1', name: ' Example ', kind: 'client' });
+  assert.equal(r.statusCode, 201, r.body);
+  const site = r.json();
+  assert.equal(site.domain, 'example-test.com');
+  assert.equal(site.name, 'Example');
+  assert.equal(site.kind, 'client');
+  assert.equal(site.brand_id, null);
+  assert.equal((await send('POST', '/api/web/sites', { domain: 'www.example-test.com' })).statusCode, 409);
+  for (const bad of ['', 'nodot', 'bad domain.com', 'a..com', 42, undefined]) {
+    assert.equal((await send('POST', '/api/web/sites', { domain: bad })).statusCode, 400, String(bad));
+  }
+  assert.equal((await send('POST', '/api/web/sites', { domain: 'x-kind.com', kind: 'friend' })).statusCode, 400);
+  assert.equal((await send('POST', '/api/web/sites', { domain: 'x-brand.com', brand_id: 99999 })).statusCode, 400);
+  assert.equal((await send('POST', '/api/web/sites', { domain: 'x-ga.com', ga4_measurement_id: 'nope' })).statusCode, 400);
+  const brandId = db.prepare("SELECT id FROM brands WHERE slug = 'dihy'").get().id;
+  r = await send('POST', '/api/web/sites', { domain: 'own-new.com', brand_id: brandId, ga4_measurement_id: 'g-abcd1234' });
+  assert.equal(r.statusCode, 201);
+  assert.equal(r.json().kind, 'own');
+  assert.equal(r.json().brand_id, brandId);
+  assert.equal(r.json().ga4_measurement_id, 'G-ABCD1234');
+  // a client site never takes a brand
+  r = await send('POST', '/api/web/sites', { domain: 'client-brandless.com', kind: 'client', brand_id: brandId });
+  assert.equal(r.json().brand_id, null);
+  const list = await get('/api/web/sites');
+  assert.ok(list.sites.every((s) => 'name' in s && (s.kind === 'own' || s.kind === 'client')));
+});
+
+test('PATCH site: name and kind', async () => {
+  const id = siteId('example-test.com');
+  let r = await send('PATCH', `/api/web/sites/${id}`, { name: 'Renamed', kind: 'own' });
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.json().name, 'Renamed');
+  assert.equal(r.json().kind, 'own');
+  assert.equal((await send('PATCH', `/api/web/sites/${id}`, { kind: 'nope' })).statusCode, 400);
+  r = await send('PATCH', `/api/web/sites/${id}`, { kind: 'client', name: '' });
+  assert.equal(r.json().kind, 'client');
+  assert.equal(r.json().name, null);
+});
+
+test('DELETE site: removes it and its rows, 404 afterwards, seeding does not bring it back', async () => {
+  const id = siteId('example-test.com');
+  daily(id, 'logs', -3, -1, 4);
+  db.prepare("INSERT INTO web_sync_runs (site_id, source, started_at, finished_at, ok, rows) VALUES (?, 'logs', ?, ?, 1, 1)").run(id, nowIso(), nowIso());
+  assert.equal((await send('DELETE', `/api/web/sites/${id}`)).statusCode, 200);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM web_daily WHERE site_id = ?').get(id).n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM web_sync_runs WHERE site_id = ?').get(id).n, 0);
+  assert.equal((await send('DELETE', `/api/web/sites/${id}`)).statusCode, 404);
+  // removing a seeded client site sticks across ensureSites
+  const ak = siteId('client-one.example');
+  assert.equal((await send('DELETE', `/api/web/sites/${ak}`)).statusCode, 200);
+  web.ensureSites(db);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM web_sites WHERE domain = 'client-one.example'").get().n, 0);
+  // adding it back works and clears the removal
+  assert.equal((await send('POST', '/api/web/sites', { domain: 'client-one.example', kind: 'client' })).statusCode, 201);
+  web.ensureSites(db);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM web_sites WHERE domain = 'client-one.example'").get().n, 1);
+});
+
+test('group filter and site_id: own, client, one site, across endpoints', async () => {
+  reset();
+  const FIVE = siteId('client-two.example');
+  const MARI = siteId('client-three.example');
+  daily(DIHY, 'logs', -6, 0, 10); // 70
+  daily(FIVE, 'logs', -6, 0, 20); // 140
+  daily(MARI, 'logs', -6, 0, 5); // 35
+  chan(FIVE, 'logs', -1, 'search', 'google', 7);
+  chan(DIHY, 'logs', -1, 'direct', '(direct)', 3);
+  page(FIVE, 'logs', -1, '/services', 9);
+  page(DIHY, 'logs', -1, '/blog', 4);
+  const all = await get('/api/web/overview?range=7');
+  const own = await get('/api/web/overview?range=7&group=own');
+  const client = await get('/api/web/overview?range=7&group=client');
+  assert.equal(all.totals.visitors, 70 + 140 + 35);
+  assert.equal(own.totals.visitors, 70);
+  assert.ok(own.sites.every((s) => s.kind === 'own'));
+  assert.equal(client.totals.visitors, 175);
+  assert.ok(client.sites.every((s) => s.kind === 'client'));
+  const one = await get(`/api/web/overview?range=7&site_id=${FIVE}`);
+  assert.equal(one.sites.length, 1);
+  assert.equal(one.totals.visitors, 140);
+  assert.equal(one.sites[0].name, 'Client Two');
+  const ch = await get('/api/web/channels?range=7&group=client');
+  assert.ok(ch.rows.some((c) => c.channel === 'search'));
+  assert.ok(!ch.rows.some((c) => c.channel === 'direct'));
+  const pg = await get(`/api/web/pages?range=7&site_id=${FIVE}`);
+  assert.ok(pg.rows.every((p) => p.site_id === FIVE));
+  assert.equal(pg.rows.length, 1);
+  for (const ep of ['search', 'social', 'health', 'realtime']) await get(`/api/web/${ep}?group=client`);
+  const dl = await get(`/api/web/daily?group=client&start=${dayOff(-6)}&end=${dayOff(0)}`);
+  assert.ok(JSON.stringify(dl).length > 2);
+});
+
+test('home counts own sites only: client traffic and client alerts stay out', async () => {
+  reset();
+  const FIVE = siteId('client-two.example');
+  daily(CHOL, 'ga4', -7, -1, 10); // 70 own
+  daily(CHOL, 'ga4', -14, -8, 10);
+  daily(FIVE, 'ga4', -7, -1, 5); // 35 client, big drop against before
+  daily(FIVE, 'ga4', -14, -8, 100);
+  db.prepare('UPDATE web_sites SET last_sync_error = ?, last_sync_at = ? WHERE id = ?').run('client boom', new Date(Date.now() - 30 * 3600e3).toISOString(), FIVE);
+  const h = await get('/api/web/home');
+  assert.equal(h.week.visitors, 70);
+  assert.equal(h.line, 'This week: 70 visitors across your sites, 0 leads.');
+  assert.ok(!h.alerts.some((a) => /client-two/.test(a.text)), JSON.stringify(h.alerts));
+  reset();
 });

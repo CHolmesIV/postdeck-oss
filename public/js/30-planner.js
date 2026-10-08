@@ -78,6 +78,166 @@ function plannerDayLabel(date, todayStart) {
   return base;
 }
 
+// ---------------- D5: entries, folding, popover ----------------
+// Every Planner item (social post or blog post) is described by one "entry" so a
+// busy day can fold same-kind items into a single summary chip. Entry shape:
+// { kind, groupKey, brandId, brandLabel, sort (minutes of day), timeLabel, title,
+//   typeLabel, summaryLabel(n), icon(size), statusNode(), open(), chip(compact),
+//   foldAlways }. 70-blog.js builds the blog ones (blogPlannerEntries).
+
+// "Di-Hy AI Consulting" -> "Di-Hy". First word unless it is tiny.
+function plannerBrandShort(name) {
+  const first = String(name || '').trim().split(/\s+/)[0] || '';
+  return first.length > 2 ? first : String(name || '').trim();
+}
+
+// Brand color tag: dot + short name. Color comes from brands.colors.primary when set.
+function plannerBrandColor(brandId) {
+  const b = (state.brands || []).find((x) => x.id === brandId);
+  const c = b && b.colors && typeof b.colors === 'object' ? b.colors.primary : null;
+  if (typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c)) {
+    const lum = (parseInt(c.slice(1, 3), 16) * 299 + parseInt(c.slice(3, 5), 16) * 587 + parseInt(c.slice(5, 7), 16) * 114) / 1000;
+    if (lum > 70) return c; // near-black brand colors vanish on the dark surface
+  }
+  return brandColor(brandId);
+}
+function plannerBrandTag(brandId, label) {
+  const full = label || brandName(brandId);
+  return el('span', { class: 'pl-tag', title: full }, [
+    el('span', { class: 'pl-dot', style: `background:${plannerBrandColor(brandId)}` }),
+    el('span', { class: 'pl-tag-text' }, plannerBrandShort(full)),
+  ]);
+}
+
+// One chip. Week/full: two lines (icon + brand tag + time, then the title).
+// Compact (month): one line.
+function plannerBuildChip({ icon, brandId, brandLabel, time, title, pill, flag, compact, cls, tip, aria }) {
+  const kids = [];
+  if (compact) {
+    kids.push(el('span', { class: 'pl-chip-icon' }, icon), el('span', { class: 'pl-dot', style: `background:${plannerBrandColor(brandId)}`, title: brandLabel }));
+    kids.push(el('span', { class: 'pl-chip-copy' }, title));
+    if (flag) kids.push(el('span', { class: `pl-chip-flag pl-chip-flag--${flag.tone}`, title: flag.label }));
+  } else {
+    kids.push(el('span', { class: 'pl-chip-top' }, plannerBrandTag(brandId, brandLabel)));
+    kids.push(el('span', { class: 'pl-chip-copy' }, title));
+    kids.push(el('span', { class: 'pl-chip-foot' }, [el('span', { class: 'pl-chip-icon' }, icon), time ? el('span', { class: 'pl-chip-time' }, time) : null, pill]));
+  }
+  return el('div', {
+    class: `pl-chip${compact ? ' is-compact' : ' is-full'} ${cls || ''}`.trim(),
+    role: 'button', tabindex: '0', title: tip, 'aria-label': aria,
+  }, kids);
+}
+
+// Decide what a day shows. Returns [{entry}] and [{group, mixed?}] in time order.
+function plannerFold(entries, limit) {
+  const groups = new Map();
+  for (const e of entries) {
+    if (!groups.has(e.groupKey)) groups.set(e.groupKey, []);
+    groups.get(e.groupKey).push(e);
+  }
+  const foldKeys = new Set();
+  for (const [k, list] of groups) if (list[0].foldAlways && list.length > 2) foldKeys.add(k);
+  const build = () => {
+    const out = [];
+    const placed = new Set();
+    for (const e of entries) {
+      if (foldKeys.has(e.groupKey)) {
+        if (!placed.has(e.groupKey)) { placed.add(e.groupKey); out.push({ group: groups.get(e.groupKey) }); }
+      } else out.push({ entry: e });
+    }
+    return out;
+  };
+  let out = build();
+  if (out.length > limit) {
+    for (const [k, list] of groups) if (list.length > 1) foldKeys.add(k);
+    out = build();
+  }
+  if (out.length > limit) {
+    const keep = out.slice(0, limit - 1);
+    const rest = out.slice(limit - 1).flatMap((d) => d.group || [d.entry]);
+    out = [...keep, { group: rest, mixed: true }];
+  }
+  return out;
+}
+
+function plannerGroupLabel(d) {
+  const n = d.group.length;
+  return d.mixed ? `${n} more posts` : d.group[0].summaryLabel(n);
+}
+function plannerGroupDayTitle(date) {
+  return date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+}
+
+// Popover: native <dialog> with every item of a folded group on its own row.
+function plannerOpenPopover({ title, sub, entries, opener }) {
+  const dlg = el('dialog', { class: 'pl-pop', 'aria-label': title });
+  let done = false;
+  let unregister = () => {};
+  function close() {
+    if (done) return;
+    done = true;
+    unregister();
+    if (dlg.open) dlg.close();
+    dlg.remove();
+    if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();
+  }
+  const rows = [...entries].sort((a, b) => a.sort - b.sort).map((e) => {
+    const row = el('button', { class: 'pl-pop-row', type: 'button', 'aria-label': `${e.typeLabel}, ${e.brandLabel}: ${e.title}` }, [
+      el('span', { class: 'pl-pop-time' }, e.timeLabel || ''),
+      el('span', { class: 'pl-pop-type' }, [e.icon(14), el('span', {}, e.typeLabel)]),
+      plannerBrandTag(e.brandId, e.brandLabel),
+      el('span', { class: 'pl-pop-title' }, e.title),
+      e.statusNode(),
+    ]);
+    row.addEventListener('click', () => { close(); e.open(); });
+    return row;
+  });
+  dlg.append(
+    el('header', { class: 'pl-pop-head' }, [
+      el('div', {}, [el('h2', { class: 'pl-pop-title-h' }, title), el('p', { class: 'pl-pop-sub' }, sub || '')]),
+      el('button', { class: 'button ghost sm', type: 'button', 'aria-label': 'Close list', onclick: close }, 'Close'),
+    ]),
+    el('div', { class: 'pl-pop-list' }, rows)
+  );
+  dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); close(); });
+  dlg.addEventListener('mousedown', (ev) => { if (ev.target === dlg) close(); });
+  document.body.appendChild(dlg);
+  dlg.showModal();
+  unregister = registerOverlay(close);
+  return dlg;
+}
+
+// The folded-group chip. Opens the popover.
+function plannerSummaryChip(d, { compact, date, cls = '' } = {}) {
+  const first = d.group[0];
+  const label = plannerGroupLabel(d);
+  const brandId = d.mixed ? null : first.brandId;
+  const sameBrand = !d.mixed && d.group.every((e) => e.brandId === first.brandId);
+  const node = el('button', {
+    class: `pl-chip pl-summary${compact ? ' is-compact' : ' is-full'} ${cls}`.trim(), type: 'button',
+    title: `${label}. Click to see each one.`,
+    'aria-haspopup': 'dialog', 'aria-label': `${label}. Open the list.`,
+  }, compact ? [
+    d.mixed ? null : el('span', { class: 'pl-chip-icon' }, first.icon(13)),
+    sameBrand ? el('span', { class: 'pl-dot', style: `background:${plannerBrandColor(brandId)}` }) : null,
+    el('span', { class: 'pl-chip-copy' }, label),
+  ] : [
+    // Week/list: the count reads first and large, the words sit under it at full width,
+    // so a narrow day column never wraps one word per line.
+    el('span', { class: 'pl-summary-head' }, [
+      d.mixed ? null : el('span', { class: 'pl-chip-icon' }, first.icon(13)),
+      sameBrand ? el('span', { class: 'pl-dot', style: `background:${plannerBrandColor(brandId)}` }) : null,
+      el('strong', { class: 'pl-summary-count' }, String(d.group.length)),
+      el('span', { class: 'pl-summary-go', 'aria-hidden': 'true' }, '›'),
+    ]),
+    el('span', { class: 'pl-chip-copy' }, label.replace(/^\d+\s+/, '')),
+  ]);
+  node.addEventListener('click', () => plannerOpenPopover({
+    title: label, sub: date ? plannerGroupDayTitle(date) : '', entries: d.group, opener: node,
+  }));
+  return node;
+}
+
 async function renderPlanner(view) {
   view.innerHTML = '';
   view.classList.add('view-flush');
@@ -192,27 +352,49 @@ async function renderPlanner(view) {
   function chip(post, { compact = false } = {}) {
     const h = humanStatus(post);
     const canDrag = plannerReschedulable(post);
-    const kids = [
-      el('span', { class: 'pl-chip-time' }, post.publish_at ? plannerTimeShort(post.publish_at) : ''),
-      el('span', { class: 'pl-chip-icon' }, platformIcon(post.platform, { size: 13 })),
-    ];
-    if (!brandId) kids.push(el('span', { class: 'pl-dot', style: `background:${brandColor(post.brand_id)}`, title: brandName(post.brand_id) }));
-    kids.push(el('span', { class: 'pl-chip-copy' }, plannerCopyLine(post)));
-    if (!(h.key === 'scheduled' && h.label === 'Scheduled') && !compact) kids.push(statusPill(post));
-    else if (h.key !== 'scheduled' && compact) kids.push(el('span', { class: `pl-chip-flag pl-chip-flag--${h.tone}`, title: h.label }));
-    const node = el('div', {
-      class: `pl-chip pl-chip--${h.key}${compact ? ' is-compact' : ''}${canDrag ? ' is-draggable' : ''}`,
-      role: 'button', tabindex: '0',
-      draggable: canDrag ? 'true' : undefined,
-      title: `${brandName(post.brand_id)}, ${humanizePlatformName(post.platform)}, ${h.label}${post.publish_at ? `, ${fmtDate(post.publish_at)}` : ''}\n${post.copy || ''}`.trim(),
-      'aria-label': `${humanizePlatformName(post.platform)} post for ${brandName(post.brand_id)}, ${h.label}. ${plannerCopyLine(post)}`,
-    }, kids);
+    const plain = h.key === 'scheduled' && h.label === 'Scheduled';
+    const pn = humanizePlatformName(post.platform);
+    const node = plannerBuildChip({
+      icon: platformIcon(post.platform, { size: 14 }),
+      brandId: post.brand_id, brandLabel: brandName(post.brand_id),
+      time: post.publish_at ? plannerTimeShort(post.publish_at) : '',
+      title: plannerCopyLine(post),
+      pill: !plain ? statusPill(post) : null,
+      flag: h.key !== 'scheduled' ? { tone: h.tone, label: h.label } : null,
+      compact,
+      cls: `pl-chip--${h.key}${canDrag ? ' is-draggable' : ''}`,
+      tip: `${brandName(post.brand_id)}, ${pn}, ${h.label}${post.publish_at ? `, ${fmtDate(post.publish_at)}` : ''}\n${post.copy || ''}`.trim(),
+      aria: `${pn} post for ${brandName(post.brand_id)}, ${h.label}. ${plannerCopyLine(post)}`,
+    });
+    if (canDrag) node.setAttribute('draggable', 'true');
     node.addEventListener('click', () => openPost(post.id));
     node.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPost(post.id); }
     });
     if (canDrag) wireDrag(node, post.id);
     return node;
+  }
+
+  function socialEntry(p) {
+    const pn = humanizePlatformName(p.platform);
+    const d = p.publish_at ? new Date(p.publish_at) : null;
+    return {
+      kind: 'social', groupKey: `social:${p.platform}:${p.brand_id}`, id: p.id,
+      brandId: p.brand_id, brandLabel: brandName(p.brand_id),
+      sort: d ? d.getHours() * 60 + d.getMinutes() : 0,
+      timeLabel: d ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '',
+      title: plannerCopyLine(p), typeLabel: `${pn} post`,
+      summaryLabel: (n) => `${n} ${pn} post${n === 1 ? '' : 's'}`,
+      icon: (size) => platformIcon(p.platform, { size }),
+      statusNode: () => statusPill(p),
+      open: () => openPost(p.id),
+      chip: (compact) => chip(p, { compact }),
+    };
+  }
+  const entrySort = (a, b) => a.sort - b.sort || (a.id || 0) - (b.id || 0);
+  function dayEntries(key, dayPosts) {
+    const blogs = typeof blogPlannerEntries === 'function' ? blogPlannerEntries(key, { brandId, status, onChange: reload, redraw: draw }) : []; // BLOG HOOK
+    return [...dayPosts.map(socialEntry), ...blogs].sort(entrySort);
   }
 
   function wireDrag(node, id) {
@@ -317,18 +499,9 @@ async function renderPlanner(view) {
     cell.appendChild(el('div', { class: 'pl-day-head' }, headText));
     if (typeof webPlannerTint === 'function') webPlannerTint(cell, key, brandId, compact); // WEB HOOK: traffic tint (80-web.js)
     const list = el('div', { class: 'pl-day-list' });
-    const sorted = [...dayPosts].sort(byTime);
-    const limit = compact && !PLANNER_STATE.expanded.has(key) ? 3 : sorted.length;
-    sorted.slice(0, limit).forEach((p) => list.appendChild(chip(p, { compact })));
-    if (sorted.length > limit) {
-      list.appendChild(el('button', {
-        class: 'pl-more', type: 'button',
-        onclick: () => { PLANNER_STATE.expanded.add(key); draw(); },
-      }, `+${sorted.length - limit} more`));
-    } else if (compact && PLANNER_STATE.expanded.has(key) && sorted.length > 3) {
-      list.appendChild(el('button', { class: 'pl-more', type: 'button', onclick: () => { PLANNER_STATE.expanded.delete(key); draw(); } }, 'Show less'));
-    }
-    if (typeof blogPlannerChips === 'function') blogPlannerChips(key, { brandId, status, compact, onChange: reload, redraw: draw }).forEach((n) => list.appendChild(n)); // BLOG HOOK
+    plannerFold(dayEntries(key, dayPosts), compact ? 2 : 3).forEach((d) => {
+      list.appendChild(d.entry ? d.entry.chip(compact) : plannerSummaryChip(d, { compact, date }));
+    });
     cell.appendChild(list);
     if (!isPast) {
       cell.appendChild(el('button', {
@@ -397,26 +570,35 @@ async function renderPlanner(view) {
     rangeLabel.textContent = `${start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} to ${plannerAddDays(end, -1).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
     const inRange = list.filter((p) => p.publish_at && new Date(p.publish_at) >= start && new Date(p.publish_at) < end).sort(byTime);
     const wrap = el('div', { class: 'pl-list' });
-    if (!inRange.length) {
+    const map = groupByDay(inRange);
+    const startKey = dateKeyLocal(start);
+    const endKey = dateKeyLocal(end);
+    const blogDays = typeof blogPlannerDays === 'function' ? blogPlannerDays(brandId, status) : []; // BLOG HOOK
+    const keys = [...new Set([...map.keys(), ...blogDays.filter((k) => k >= startKey && k < endKey)])].sort();
+    if (!keys.length) {
       wrap.appendChild(emptyState('Nothing in this stretch.', 'New post', () => newPost()));
       return wrap;
     }
-    const map = groupByDay(inRange);
-    for (const [key, items] of map) {
+    for (const key of keys) {
       const [y, m, d] = key.split('-').map(Number);
       const date = new Date(y, m - 1, d);
       const group = el('section', { class: 'pl-group' });
       group.appendChild(el('h2', { class: 'pl-group-title' }, plannerDayLabel(date, todayStart)));
-      for (const p of items) {
-        const row = el('div', { class: 'pl-row', role: 'button', tabindex: '0', onclick: () => openPost(p.id) }, [
-          el('span', { class: 'pl-row-time' }, new Date(p.publish_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })),
-          el('span', { class: 'pl-row-brand' }, [el('span', { class: 'pl-dot', style: `background:${brandColor(p.brand_id)}` }), brandName(p.brand_id)]),
-          el('span', { class: 'pl-row-platform' }, [platformIcon(p.platform, { size: 14 }), ` ${humanizePlatformName(p.platform)}`]),
-          el('span', { class: 'pl-row-copy' }, plannerCopyLine(p)),
-          statusPill(p),
-        ]);
-        row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPost(p.id); } });
-        group.appendChild(row);
+      for (const f of plannerFold(dayEntries(key, map.get(key) || []), 4)) {
+        if (f.entry) {
+          const e = f.entry;
+          const row = el('div', { class: 'pl-row', role: 'button', tabindex: '0', onclick: () => e.open() }, [
+            el('span', { class: 'pl-row-time' }, e.timeLabel),
+            plannerBrandTag(e.brandId, e.brandLabel),
+            el('span', { class: 'pl-row-platform' }, [e.icon(14), el('span', {}, e.typeLabel)]),
+            el('span', { class: 'pl-row-copy' }, e.title),
+            e.statusNode(),
+          ]);
+          row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); e.open(); } });
+          group.appendChild(row);
+        } else {
+          group.appendChild(plannerSummaryChip(f, { date, cls: 'pl-summary--row' }));
+        }
       }
       wrap.appendChild(group);
     }
@@ -445,20 +627,24 @@ async function renderPlanner(view) {
   function drawAttention() {
     attnHost.innerHTML = '';
     const items = inBrand().filter((p) => plannerFilterKey(p) === 'attention').sort((a, b) => new Date(a.publish_at || 0) - new Date(b.publish_at || 0));
-    if (!items.length) return;
-    const strip = el('div', { class: 'pl-attn', role: 'region', 'aria-label': 'Posts needing attention' });
-    strip.appendChild(el('strong', { class: 'pl-attn-title' }, items.length === 1 ? '1 post needs attention' : `${items.length} posts need attention`));
-    const list = el('div', { class: 'pl-attn-list' });
-    items.slice(0, 3).forEach((p) => {
-      list.appendChild(el('div', { class: 'pl-attn-item' }, [
-        el('span', { class: 'pl-attn-text' }, `${brandName(p.brand_id)}, ${humanizePlatformName(p.platform)}${p.publish_at ? `, ${fmtDate(p.publish_at)}` : ''}: ${humanStatus(p).label}`),
-        el('button', { class: 'button secondary sm', type: 'button', onclick: () => openPost(p.id) }, 'Review'),
-      ]));
-    });
-    strip.appendChild(list);
-    if (items.length > 3 && status !== 'attention') {
-      strip.appendChild(el('button', { class: 'button ghost sm', type: 'button', onclick: () => setStatus('attention') }, `See all ${items.length}`));
-    }
+    if (!items.length || status === 'attention') return;
+    // One quiet line, closable. It comes back only when the set of posts changes.
+    const sig = items.map((p) => `${p.id}:${p.status}`).join(',');
+    let hiddenSig = null;
+    try { hiddenSig = localStorage.getItem('pd_planner_attn_hidden'); } catch (_) {}
+    if (hiddenSig === sig) return;
+    const strip = el('div', { class: 'pl-attn', role: 'region', 'aria-label': 'Posts needing attention' }, [
+      el('span', { class: 'pl-attn-title' }, items.length === 1 ? '1 post needs attention.' : `${items.length} posts need attention.`),
+      el('button', { class: 'button secondary sm', type: 'button', onclick: () => (items.length === 1 ? openPost(items[0].id) : setStatus('attention')) }, items.length === 1 ? 'Review' : 'Show them'),
+      el('button', {
+        class: 'pl-attn-close', type: 'button', 'aria-label': 'Hide until something changes', title: 'Hide until something changes',
+        onclick: () => {
+          try { localStorage.setItem('pd_planner_attn_hidden', sig); } catch (_) {}
+          drawAttention();
+          if (typeof toast === 'function') toast('Hidden until something changes. Home and the Needs attention filter still list them.');
+        },
+      }, '×'),
+    ]);
     attnHost.appendChild(strip);
   }
 

@@ -91,34 +91,63 @@ function windowFor(days, endsYesterday, today = localDate()) {
 
 // ---------- sites ----------
 
+// kind 'own' = CB's own brand sites; 'client' = client sites hosted on the same VPS.
+// Client GA4 ids come from the tags in each site's dist/ html (Client One G-CLIENT0001, not Di-Hy's
+// G-957QEJY8VC; Client Two G-CLIENT0002; Client Three and Client Four only carry a GT- Google tag id).
 const SEED_SITES = [
   { domain: 'cholmesiv.com', brand: 'cholmesiv', blog: 'cholmesiv', ga4: 'G-97XJH8721S' },
   { domain: 'di-hy.com', brand: 'dihy', blog: 'di-hy', ga4: 'G-957QEJY8VC' },
   { domain: 'lunulasupply.com', brand: 'lunula', blog: 'lunula-supply', ga4: 'G-5GVQC5FMF0' },
   { domain: 'ivisionbuild.com', brand: 'ivision', blog: null, ga4: null },
+  { domain: 'client-one.example', name: 'Client One', kind: 'client', ga4: 'G-CLIENT0001' },
+  { domain: 'client-two.example', name: 'Client Two', kind: 'client', ga4: 'G-CLIENT0002' },
+  { domain: 'client-three.example', name: 'Client Three', kind: 'client', ga4: 'GT-CLIENT0003' },
+  { domain: 'client-four.example', name: 'Client Four', kind: 'client', ga4: 'GT-CLIENT0004' },
 ];
+
+// Domains CB removed on purpose, so seeding never brings them back.
+const REMOVED_KEY = 'web_sites_removed';
+function removedDomains(db) {
+  try {
+    const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(REMOVED_KEY);
+    const v = r ? JSON.parse(r.value) : [];
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+function saveRemovedDomains(db, list) {
+  db.prepare(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  ).run(REMOVED_KEY, JSON.stringify([...new Set(list)]));
+}
 
 function ensureSites(db) {
   const has = db.prepare('SELECT 1 FROM web_sites WHERE domain = ?');
   const brand = db.prepare('SELECT id FROM brands WHERE slug = ?');
   const ins = db.prepare(
-    `INSERT INTO web_sites (domain, brand_id, ga4_measurement_id, blog_site_id, active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 1, ?, ?)`
+    `INSERT INTO web_sites (domain, name, kind, brand_id, ga4_measurement_id, blog_site_id, active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`
   );
   const now = nowIso();
+  const removed = removedDomains(db);
   for (const s of SEED_SITES) {
-    if (has.get(s.domain)) continue;
-    const b = brand.get(s.brand);
-    ins.run(s.domain, b ? b.id : null, s.ga4, s.blog, now, now);
+    if (has.get(s.domain) || removed.includes(s.domain)) continue;
+    const b = s.brand ? brand.get(s.brand) : null;
+    ins.run(s.domain, s.name || null, s.kind || 'own', b ? b.id : null, s.ga4, s.blog || null, now, now);
   }
 }
 
 const SITE_SELECT = `SELECT s.*, b.name AS brand_name, b.slug AS brand_slug
   FROM web_sites s LEFT JOIN brands b ON b.id = s.brand_id`;
 
-function selectSites(db, { site_id, brand_id, includeInactive = false } = {}) {
+function selectSites(db, { site_id, brand_id, group, includeInactive = false } = {}) {
   const where = [];
   const args = [];
+  if (group === 'own' || group === 'client') {
+    where.push('s.kind = ?');
+    args.push(group);
+  }
   if (!includeInactive) where.push('s.active = 1');
   if (site_id !== undefined && site_id !== null && site_id !== '') {
     where.push('s.id = ?');
@@ -147,6 +176,14 @@ function siteWindow(db, siteId, days, today = localDate()) {
     .prepare(`SELECT COUNT(*) n FROM web_daily WHERE site_id = ? AND source = 'logs' AND date BETWEEN ? AND ?`)
     .get(siteId, l.start, l.end).n;
   return { source: lCount > 0 ? 'logs' : 'none', ...l };
+}
+
+/** "https://www.Example.com/path" -> "example.com", or null when it is not a plain domain. */
+function normalizeDomain(v) {
+  if (typeof v !== 'string') return null;
+  let d = v.trim().toLowerCase();
+  d = d.replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '').replace(/^www\./, '');
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(d) && !d.startsWith('.') && !d.includes('..') ? d : null;
 }
 
 // ---------- aggregates ----------
@@ -349,6 +386,8 @@ function siteNumbers(db, site, days, today) {
     entry: {
       id: site.id,
       domain: site.domain,
+      name: site.name || null,
+      kind: site.kind || 'own',
       brand_id: site.brand_id,
       brand_name: site.brand_name || null,
       source: w.source,
@@ -451,9 +490,23 @@ function firstDaysLines(db, site, ctx, w, today) {
       text: `Your blog post "${p.title}" got ${fmt(visitors)} ${visitors === 1 ? 'visitor' : 'visitors'} ${done ? 'in its first 3 days' : 'so far'}.`,
       site_id: site.id,
       href: blogHref(site.blog_site_id, p.slug),
+      _visitors: visitors,
+      _title: p.title,
     });
   }
-  return lines;
+  // A batch release (40 posts in a day) must not become 40 lines: past 2 posts, one
+  // line per site with the total and the best performer.
+  if (lines.length > 2) {
+    const total = lines.reduce((a, l) => a + l._visitors, 0);
+    const best = lines.reduce((a, l) => (l._visitors > a._visitors ? l : a), lines[0]);
+    return [{
+      level: 'info',
+      text: `${site.domain}: ${lines.length} new blog posts brought ${plural(total, 'visitor', 'visitors')} in their first days. Best so far: "${best._title}" (${fmt(best._visitors)}).`,
+      site_id: site.id,
+      href: best.href,
+    }];
+  }
+  return lines.map(({ _visitors, _title, ...l }) => l);
 }
 
 async function googleStatusSafe() {
@@ -470,11 +523,11 @@ async function googleStatusSafe() {
   };
 }
 
-async function buildOverview(db, { brand_id, range }) {
+async function buildOverview(db, { brand_id, site_id, group, range }) {
   ensureSites(db);
   const days = parseRange(range);
   const today = localDate();
-  const sites = selectSites(db, { brand_id });
+  const sites = selectSites(db, { brand_id, site_id, group });
   const nums = sites.map((s) => ({ site: s, ...siteNumbers(db, s, days, today) }));
   const anyGa4 = nums.some((n) => n.w.source === 'ga4');
   const top = windowFor(days, anyGa4, today);
@@ -594,10 +647,10 @@ function cleanText(s) {
 
 // ---------- channels ----------
 
-function buildChannels(db, { site_id, brand_id, range }) {
+function buildChannels(db, { site_id, brand_id, group, range }) {
   ensureSites(db);
   const days = parseRange(range);
-  const sites = selectSites(db, { site_id, brand_id });
+  const sites = selectSites(db, { site_id, brand_id, group });
   const agg = new Map();
   const sources = new Set();
   let prevOk = true;
@@ -711,11 +764,11 @@ function pageData(db, site, w, ctx) {
   return rows;
 }
 
-function buildPages(db, { site_id, brand_id, range, limit }) {
+function buildPages(db, { site_id, brand_id, group, range, limit }) {
   ensureSites(db);
   const days = parseRange(range);
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 500);
-  const sites = selectSites(db, { site_id, brand_id });
+  const sites = selectSites(db, { site_id, brand_id, group });
   const out = [];
   const sources = new Set();
   for (const s of sites) {
@@ -730,11 +783,11 @@ function buildPages(db, { site_id, brand_id, range, limit }) {
 
 // ---------- search ----------
 
-async function buildSearch(db, { site_id, brand_id, range }) {
+async function buildSearch(db, { site_id, brand_id, group, range }) {
   ensureSites(db);
   const days = parseRange(range);
   const scale = days / 28;
-  const sites = selectSites(db, { site_id, brand_id });
+  const sites = selectSites(db, { site_id, brand_id, group });
   const queries = [];
   const striking = [];
   let any = false;
@@ -792,10 +845,10 @@ async function buildSearch(db, { site_id, brand_id, range }) {
 
 // ---------- social ----------
 
-function buildSocial(db, { brand_id, range }) {
+function buildSocial(db, { brand_id, site_id, group, range }) {
   ensureSites(db);
   const days = parseRange(range);
-  const sites = selectSites(db, { brand_id });
+  const sites = selectSites(db, { brand_id, site_id, group });
   const brandIds = [...new Set(sites.map((s) => s.brand_id).filter(Boolean))];
   const utm = brandIds.map((id) => {
     const b = db.prepare('SELECT id, name FROM brands WHERE id = ?').get(id);
@@ -861,10 +914,10 @@ function redirectLine(path) {
   return `location = ${p} { return 301 /; }`;
 }
 
-function buildHealth(db, { site_id, brand_id, range }) {
+function buildHealth(db, { site_id, brand_id, group, range }) {
   ensureSites(db);
   const days = parseRange(range);
-  const sites = selectSites(db, { site_id, brand_id });
+  const sites = selectSites(db, { site_id, brand_id, group });
   const not_found = [];
   const bots = [];
   const forms = [];
@@ -915,10 +968,10 @@ function buildHealth(db, { site_id, brand_id, range }) {
 const rtCache = new Map();
 const RT_TTL = { ga4: 60_000, logs: 120_000 };
 
-async function buildRealtime(db, { brand_id }) {
+async function buildRealtime(db, { brand_id, site_id, group }) {
   ensureSites(db);
   const p = await getProviders();
-  const sites = selectSites(db, { brand_id });
+  const sites = selectSites(db, { brand_id, site_id, group });
   const out = [];
   const needLogs = [];
   const results = new Map();
@@ -964,7 +1017,8 @@ async function buildRealtime(db, { brand_id }) {
 function buildHome(db) {
   ensureSites(db);
   const today = localDate();
-  const sites = selectSites(db, {});
+  // Own sites only: client traffic must not inflate CB's own alerts, weekly line or numbers.
+  const sites = selectSites(db, { group: 'own' });
   const alerts = [];
   let visitors = 0;
   let visitorsPrev = 0;
@@ -1084,12 +1138,12 @@ function buildPost(db, id) {
   return { sessions: num(pick.sessions), leads: num(pick.leads), source: pick.source };
 }
 
-function buildDaily(db, { brand_id, start, end }) {
+function buildDaily(db, { brand_id, site_id, group, start, end }) {
   ensureSites(db);
   const e = DATE_RE.test(String(end || '')) ? end : localDate();
   const st = DATE_RE.test(String(start || '')) ? start : addDays(e, -30);
   const map = new Map(dateList(st, e).map((d) => [d, 0]));
-  for (const s of selectSites(db, { brand_id })) {
+  for (const s of selectSites(db, { brand_id, site_id, group })) {
     const hasGa4 = db.prepare(`SELECT 1 FROM web_daily WHERE site_id = ? AND source = 'ga4' AND date BETWEEN ? AND ? LIMIT 1`).get(s.id, st, e);
     const source = hasGa4 ? 'ga4' : 'logs';
     for (const r of dailySeries(db, s.id, source, st, e)) map.set(r.date, (map.get(r.date) || 0) + r.visitors);
@@ -1125,6 +1179,8 @@ function siteShape(site, g, ssh) {
   return {
     id: site.id,
     domain: site.domain,
+    name: site.name || null,
+    kind: site.kind || 'own',
     brand_id: site.brand_id,
     brand_name: site.brand_name || null,
     brand_slug: site.brand_slug || null,
@@ -1293,7 +1349,8 @@ function _resetWebState() {
 // ---------- digest ----------
 
 async function buildDigest(db, { brand_id }) {
-  const ov = await buildOverview(db, { brand_id, range: 28 });
+  // The digest is CB's own summary: own sites unless a brand is asked for explicitly.
+  const ov = await buildOverview(db, { brand_id, group: brand_id ? undefined : 'own', range: 28 });
   const lines = [
     `Window: ${ov.range.start} to ${ov.range.end} (28 days), compared with ${ov.range.prev_start} to ${ov.range.prev_end}.`,
     `Totals: visitors ${ov.totals.visitors} (before ${ov.totals.visitors_prev}), leads ${ov.totals.leads} (before ${ov.totals.leads_prev}), search clicks ${ov.totals.search_clicks} (before ${ov.totals.search_clicks_prev}).`,
@@ -1344,6 +1401,72 @@ function registerWebRoutes(app, db) {
     return { sites, self: { ips, optout_links } };
   });
 
+  app.post('/api/web/sites', async (req, reply) => {
+    ensureSites(db);
+    const b = req.body || {};
+    const domain = normalizeDomain(b.domain);
+    if (!domain) {
+      reply.code(400);
+      return { error: 'bad_request', message: 'Enter a domain like example.com.' };
+    }
+    const kind = b.kind === undefined || b.kind === null || b.kind === '' ? 'own' : b.kind;
+    if (kind !== 'own' && kind !== 'client') {
+      reply.code(400);
+      return { error: 'bad_request', message: 'Kind is own or client.' };
+    }
+    let brandId = null;
+    if (kind === 'own' && b.brand_id !== undefined && b.brand_id !== null && b.brand_id !== '') {
+      brandId = Number(b.brand_id);
+      if (!db.prepare('SELECT 1 FROM brands WHERE id = ?').get(brandId)) {
+        reply.code(400);
+        return { error: 'bad_request', message: 'Unknown brand.' };
+      }
+    }
+    let ga4 = null;
+    if (b.ga4_measurement_id !== undefined && b.ga4_measurement_id !== null && b.ga4_measurement_id !== '') {
+      ga4 = String(b.ga4_measurement_id).trim().toUpperCase();
+      if (!/^(G|GT)-[A-Z0-9]{4,14}$/.test(ga4)) {
+        reply.code(400);
+        return { error: 'bad_request', message: 'The measurement id looks like G-XXXXXXXXXX.' };
+      }
+    }
+    if (db.prepare('SELECT 1 FROM web_sites WHERE domain = ?').get(domain)) {
+      reply.code(409);
+      return { error: 'conflict', message: `${domain} is already added.` };
+    }
+    const name = b.name ? String(b.name).trim().slice(0, 80) || null : null;
+    const now = nowIso();
+    const info = db
+      .prepare(
+        `INSERT INTO web_sites (domain, name, kind, brand_id, ga4_measurement_id, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
+      )
+      .run(domain, name, kind, brandId, ga4, now, now);
+    // Adding a domain back clears it from the "removed on purpose" list.
+    const removed = removedDomains(db);
+    if (removed.includes(domain)) saveRemovedDomains(db, removed.filter((d) => d !== domain));
+    const g = await googleStatusSafe();
+    const ssh = await sshStatusSafe();
+    reply.code(201);
+    return siteShape(db.prepare(`${SITE_SELECT} WHERE s.id = ?`).get(info.lastInsertRowid), g, ssh);
+  });
+
+  app.delete('/api/web/sites/:id', async (req, reply) => {
+    const id = Number(req.params.id);
+    const row = db.prepare('SELECT * FROM web_sites WHERE id = ?').get(id);
+    if (!row) {
+      reply.code(404);
+      return { error: 'not_found' };
+    }
+    db.transaction(() => {
+      // web_* daily tables cascade; sync runs have no foreign key.
+      db.prepare('DELETE FROM web_sync_runs WHERE site_id = ?').run(id);
+      db.prepare('DELETE FROM web_sites WHERE id = ?').run(id);
+      saveRemovedDomains(db, [...removedDomains(db), row.domain]);
+    })();
+    return { ok: true, id, domain: row.domain };
+  });
+
   app.patch('/api/web/sites/:id', async (req, reply) => {
     ensureSites(db);
     const id = Number(req.params.id);
@@ -1379,6 +1502,29 @@ function registerWebRoutes(app, db) {
         return { error: 'bad_request', message: 'Use sc-domain:example.com or a full https URL.' };
       }
       sets.push('gsc_property = ?');
+      args.push(v);
+    }
+    if (b.name !== undefined) {
+      const v = b.name === null ? '' : String(b.name).trim().slice(0, 80);
+      sets.push('name = ?');
+      args.push(v || null);
+    }
+    if (b.kind !== undefined) {
+      if (b.kind !== 'own' && b.kind !== 'client') {
+        reply.code(400);
+        return { error: 'bad_request', message: 'Kind is own or client.' };
+      }
+      sets.push('kind = ?');
+      args.push(b.kind);
+      if (b.kind === 'client' && b.brand_id === undefined) sets.push('brand_id = NULL');
+    }
+    if (b.ga4_measurement_id !== undefined) {
+      const v = b.ga4_measurement_id === null || b.ga4_measurement_id === '' ? null : String(b.ga4_measurement_id).trim().toUpperCase();
+      if (v !== null && !/^(G|GT)-[A-Z0-9]{4,14}$/.test(v)) {
+        reply.code(400);
+        return { error: 'bad_request', message: 'The measurement id looks like G-XXXXXXXXXX.' };
+      }
+      sets.push('ga4_measurement_id = ?');
       args.push(v);
     }
     if (b.active !== undefined) {

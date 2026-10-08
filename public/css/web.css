@@ -46,7 +46,7 @@
 .web-note { margin: var(--s-2) 0 var(--s-4); color: var(--muted); font-size: var(--text-sm); }
 
 /* Sections */
-.web-sec { padding: var(--s-5) 0; border-top: 1px solid var(--border); }
+.web-sec { padding: var(--space-section, 32px) 0; border-top: 1px solid var(--border); }
 .web-sec:first-of-type { border-top: 0; padding-top: var(--s-3); }
 .web-h2 { margin: 0 0 var(--s-1); font-size: var(--text-lg); font-weight: 600; color: var(--text); }
 .web-h3 { margin: var(--s-4) 0 var(--s-2); font-size: var(--text-md); font-weight: 600; color: var(--text); }
@@ -122,7 +122,7 @@ a.web-page-title:hover { text-decoration: underline; }
 .web-svg { display: block; width: 100%; height: auto; overflow: visible; }
 .web-grid { stroke: var(--border); stroke-width: 1; }
 .web-axis { stroke: var(--border-hi); stroke-width: 1; }
-.web-tick { fill: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; font-family: var(--font); }
+.web-tick { fill: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; font-family: var(--font); }
 .web-line { stroke: var(--info); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 .web-lead-dot { fill: var(--ok); stroke: var(--bg); stroke-width: 2; }
 .web-cross { stroke: var(--border-hi); stroke-width: 1; stroke-dasharray: 3 3; }
@@ -141,7 +141,7 @@ a.web-page-title:hover { text-decoration: underline; }
 .web-marker-tick { position: relative; display: block; width: 3px; height: 14px; border-radius: 2px; background: var(--text); }
 .web-marker-count {
   position: absolute; left: 6px; top: -4px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px;
-  background: var(--surface-hi); color: var(--text); font-size: 10px; line-height: 14px; text-align: center; font-variant-numeric: tabular-nums;
+  background: var(--surface-hi); color: var(--text); font-size: 11px; line-height: 15px; text-align: center; font-variant-numeric: tabular-nums;
 }
 .web-tip, .web-card {
   position: absolute; z-index: var(--z-tooltip); background: var(--surface-hi); border: 1px solid var(--border-hi);
@@ -280,3 +280,13 @@ button.web-ch-row:focus-visible { outline: 2px solid var(--gold); outline-offset
 
 .web-steps { margin: var(--space-2, 8px) 0 var(--space-2, 8px) 1.25rem; padding: 0; display: grid; gap: 6px; max-width: 70ch; }
 .web-steps li { line-height: 1.45; }
+
+/* Add a site, remove a site, client tag */
+.web-add-site { padding: 0 0 var(--s-4); margin-bottom: var(--s-4); border-bottom: 1px solid var(--border); }
+.web-add-site .st-h3 { margin-bottom: var(--s-3); }
+.web-add-site [hidden] { display: none; }
+.web-site-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.web-client-tag { display: inline-block; padding: 6px 0; font-size: var(--text-sm); color: var(--text); }
+@media (max-width: 720px) {
+  .web-site-foot { flex-direction: column; align-items: flex-start; }
+}

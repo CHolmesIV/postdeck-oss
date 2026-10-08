@@ -3,7 +3,7 @@
 .home-view .page-header-actions { gap: var(--s-2); }
 .home-brand-filter { min-width: 150px; }
 
-.home-section { padding: var(--s-5) 0; border-top: 1px solid var(--border); }
+.home-section { padding: var(--space-section, 32px) 0; border-top: 1px solid var(--border); }
 .home-section:first-of-type { border-top: 0; }
 .home-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); }
 .home-h2 { font-size: var(--text-lg); font-weight: 600; margin: 0 0 var(--s-3); color: var(--text); }
@@ -41,7 +41,7 @@
   padding: var(--s-2) var(--s-2); margin: 0; background: transparent; border: 0;
   border-top: 1px solid var(--border); border-radius: 0; color: var(--text); font: inherit; cursor: pointer;
 }
-.home-post:hover { background: var(--surface); }
+.home-post:hover { background: var(--surface-2); }
 .home-post:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
 .home-post-time { font-size: var(--text-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
 .home-post-platform { display: inline-flex; color: var(--muted); }
@@ -81,3 +81,69 @@
 
 /* Button-based rows center text by default; long copy must clip at the end. */
 .home-recent-copy { text-align: left; overflow: hidden; min-width: 0; }
+
+/* Needs you: one-line rows, close menu, groups, collapse */
+.home-needs-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; margin-bottom: var(--s-3); }
+.home-needs-toggle {
+  display: inline-flex; align-items: center; justify-content: flex-start; gap: var(--s-2); background: transparent; border: 0;
+  padding: 0; margin: 0; color: var(--text); font: inherit; cursor: pointer; border-radius: var(--r-sm);
+}
+.home-needs-toggle:hover { background: transparent; }
+.home-needs-toggle .home-h2 { margin: 0; }
+.home-needs-toggle:focus-visible, .home-x-btn:focus-visible, .home-group-toggle:focus-visible,
+.home-more-btn:focus-visible, .home-restore:focus-visible, .home-x-item:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.home-needs-caret { flex: none; align-self: center; width: 0; height: 0; border-style: solid; border-color: transparent; border-width: 5px 0 5px 7px; border-left-color: var(--muted); }
+.home-needs-caret[data-open="1"] { border-width: 7px 5px 0 5px; border-color: var(--muted) transparent transparent transparent; }
+.home-needs-note { color: var(--muted); font-size: var(--text-sm); }
+.home-restore { background: transparent; border: 0; padding: 0; margin: 0; cursor: pointer; font: inherit; font-size: var(--text-sm); }
+.home-section.is-collapsed .home-needs-head { margin-bottom: 0; }
+
+.home-needs-list .home-row { gap: var(--s-3); min-height: 44px; padding: var(--s-1) 0; }
+.home-needs-list .home-row[hidden] { display: none; }
+.home-needs-list .home-row-main { flex-direction: row; align-items: center; gap: var(--s-3); min-width: 0; }
+.home-needs-list .home-row-reason { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
+.home-needs-list .home-row-reason > .status-pill, .home-needs-list .home-row-reason > [class*="pill"] { flex: none; }
+.home-needs-list .home-row-reason > span:not([class*="pill"]) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-needs-list .home-row-meta { flex: none; flex-wrap: nowrap; white-space: nowrap; }
+.home-needs-list .home-row-copy { display: none; }
+.home-needs-list .home-row > .button, .home-needs-list .home-row > a.button { flex: none; }
+.home-needs-list .home-row-link { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.home-needs-list .home-row--quiet, .home-needs-list .home-row--more { min-height: 40px; }
+.home-needs-list .home-row--member { padding-left: var(--s-5); background: var(--surface); }
+.home-row--group .home-group-toggle {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-start; gap: var(--s-2); text-align: left;
+  background: transparent; border: 0; padding: var(--s-1) 0; margin: 0; color: var(--text); font: inherit; cursor: pointer;
+  font-size: var(--text-md); border-radius: var(--r-sm);
+}
+.home-row--group .home-group-toggle:hover { background: transparent; text-decoration: underline; }
+.home-group-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-more-btn { background: transparent; border: 0; padding: var(--s-1) 0; margin: 0; color: var(--gold-2); font: inherit; font-size: var(--text-sm); cursor: pointer; border-radius: var(--r-sm); }
+.home-more-btn:hover { background: transparent; color: var(--gold-hover); text-decoration: underline; }
+
+.home-x { position: relative; flex: none; }
+.home-x-btn {
+  width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent; border-radius: var(--r-sm); color: var(--muted);
+  font-size: 18px; line-height: 1; cursor: pointer;
+}
+.home-x-btn:hover { background: var(--surface-hi); color: var(--text); }
+.home-x-menu {
+  position: absolute; right: 0; top: calc(100% + var(--s-1)); z-index: var(--z-dropdown); min-width: 190px;
+  display: flex; flex-direction: column; padding: var(--s-1); background: var(--surface-hi);
+  border: 1px solid var(--border-hi); border-radius: var(--r-md); box-shadow: var(--sh-2);
+}
+.home-x-item {
+  text-align: left; background: transparent; border: 0; margin: 0; padding: var(--s-2) var(--s-3);
+  color: var(--text); font: inherit; font-size: var(--text-sm); border-radius: var(--r-sm); cursor: pointer; white-space: nowrap;
+}
+.home-x-item:hover { background: var(--surface-2); }
+
+@media (max-width: 640px) {
+  .home-needs-list .home-row-meta { display: none; }
+  .home-needs-list .home-row { align-items: center; gap: var(--s-2); }
+  .home-needs-list .home-row-main { flex: 1 1 auto; min-width: 0; }
+}
+.home-needs-list .home-row--member .home-row-reason > [class*="pill"] { display: none; }
+
+/* D5 review: the legacy button rule centers flex content, which clipped the start of the text */
+.home-recent-copy { display: block; height: auto; justify-content: flex-start; }
