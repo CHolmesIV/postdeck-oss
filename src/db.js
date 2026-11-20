@@ -1,0 +1,465 @@
+// SQLite init + versioned migrations (plain SQL, tracked via PRAGMA user_version).
+// Single shared connection, WAL mode, foreign keys on.
+
+import Database from 'better-sqlite3';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
+const DB_PATH = process.env.POSTDECK_DB_PATH || path.join(ROOT, 'postdeck.db');
+
+let dbInstance = null;
+
+// Each migration is applied once, in order, when user_version < its index+1.
+const MIGRATIONS = [
+  // v1, initial schema
+  `
+  CREATE TABLE IF NOT EXISTS brands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    colors TEXT,               -- JSON: {primary, accent, ...}
+    voice_doc_path TEXT,       -- path/note pointing at the brand voice doc
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS tone_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,         -- business | personal | casual
+    voice_rules TEXT,           -- free text style guidance for the drafting agent
+    hard_rules TEXT NOT NULL DEFAULT '{}',  -- JSON, mechanically enforced
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(brand_id, name)
+  );
+
+  CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    blotato_account_id TEXT,
+    target_fields TEXT NOT NULL DEFAULT '{}',  -- JSON: pageId etc.
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS ideas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    external_id TEXT,          -- e.g. cluster_id from content_clusters.csv
+    title TEXT,                -- core_idea
+    pillar TEXT,
+    target_icp TEXT,
+    source_material TEXT,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'idea',  -- idea -> clustered -> drafted -> done/killed
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_id TEXT,           -- e.g. post_id from posts.csv
+    idea_id INTEGER REFERENCES ideas(id) ON DELETE SET NULL,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+    platform TEXT NOT NULL,      -- includes 'blog'
+    tone_profile_id INTEGER REFERENCES tone_profiles(id) ON DELETE SET NULL,
+    copy TEXT,
+    media TEXT NOT NULL DEFAULT '[]',           -- JSON: [{path, altText}]
+    platform_fields TEXT NOT NULL DEFAULT '{}', -- JSON: TikTok flags, YT title, hook, cta, etc.
+    publish_at TEXT,
+    status TEXT NOT NULL DEFAULT 'draft',  -- draft -> approved -> scheduled_local -> submitted -> published | failed | canceled
+    blotato_submission_id TEXT,
+    public_url TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    captured_at TEXT NOT NULL,
+    impressions INTEGER,
+    comments INTEGER,
+    shares INTEGER,
+    saves INTEGER,
+    profile_visits INTEGER,
+    follows INTEGER,
+    dms INTEGER,
+    leads INTEGER,
+    call_booked INTEGER,
+    notes TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS lead_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT,
+    person_name TEXT,
+    platform TEXT,
+    company TEXT,
+    role TEXT,
+    signal_type TEXT,
+    pain_mentioned TEXT,
+    post_that_triggered_it TEXT,
+    follow_up_needed TEXT,
+    status TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_posts_brand ON posts(brand_id);
+  CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status);
+  CREATE INDEX IF NOT EXISTS idx_posts_publish_at ON posts(publish_at);
+  CREATE INDEX IF NOT EXISTS idx_ideas_brand ON ideas(brand_id);
+  CREATE INDEX IF NOT EXISTS idx_accounts_brand ON accounts(brand_id);
+  CREATE INDEX IF NOT EXISTS idx_tone_profiles_brand ON tone_profiles(brand_id);
+  `,
+  // v2, B4 Blotato worker: retry/verify bookkeeping columns on posts.
+  // blotato_submission_id, public_url, error_message already exist from v1;
+  // only retry_count and verify_attempts are new.
+  `
+  ALTER TABLE posts ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE posts ADD COLUMN verify_attempts INTEGER NOT NULL DEFAULT 0;
+  `,
+  // v3, B5 idea capture importer: track where an idea came from
+  // (manual dashboard entry vs. capture-inbox files vs. telegram-capture).
+  `
+  ALTER TABLE ideas ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+  `,
+  // v4, B8 Content Studio: content_type on posts + new tables for image
+  // handoff, research/inspiration ingestion, and usage tracking.
+  `
+  ALTER TABLE posts ADD COLUMN content_type TEXT;
+
+  CREATE TABLE IF NOT EXISTS image_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    platforms TEXT NOT NULL DEFAULT '[]',   -- JSON array
+    content_type TEXT,
+    brief TEXT NOT NULL DEFAULT '{}',       -- JSON
+    status TEXT NOT NULL DEFAULT 'requested', -- requested -> generated -> picked | canceled
+    variants TEXT NOT NULL DEFAULT '[]',    -- JSON: [{path, platform, dims, notes}]
+    chosen_path TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS research_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    source TEXT NOT NULL DEFAULT 'manual',  -- google_trends | reddit | best_practice | web | manual
+    title TEXT,
+    url TEXT,
+    body TEXT,
+    tags TEXT NOT NULL DEFAULT '[]',        -- JSON array
+    captured_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS inspiration_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    handle TEXT,
+    platform TEXT,
+    name TEXT,
+    url TEXT,
+    niche TEXT,
+    why_relevant TEXT,
+    tags TEXT NOT NULL DEFAULT '[]',        -- JSON array
+    source TEXT NOT NULL DEFAULT 'manual',  -- manual | ai_suggested
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS usage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,                     -- ai_draft | copy_assist | blotato_submit | image_request | image_generated
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    meta TEXT NOT NULL DEFAULT '{}',        -- JSON
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_usage_events_kind ON usage_events(kind);
+  CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
+  CREATE INDEX IF NOT EXISTS idx_image_requests_status ON image_requests(status);
+  CREATE INDEX IF NOT EXISTS idx_research_brand ON research_notes(brand_id);
+  `,
+  // v5, B11 assisted-manual upgrade + blog redistribution: per-account
+  // "assisted-manual" flag, and an `examples` table (pasted text or a
+  // screenshot's cached extraction) used to ground the copy assistant/agent.
+  `
+  ALTER TABLE accounts ADD COLUMN manual INTEGER NOT NULL DEFAULT 0;
+
+  CREATE TABLE IF NOT EXISTS examples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    platform TEXT,
+    source TEXT NOT NULL DEFAULT 'paste',   -- paste | screenshot
+    text TEXT,
+    image_path TEXT,
+    tags TEXT NOT NULL DEFAULT '[]',        -- JSON array
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_examples_brand_platform ON examples(brand_id, platform);
+  `,
+  // v6, B13 Brand profiles: canonical store of each brand's per-platform
+  // profile fields (heading/bio/etc.), generated in the owner's voice or edited by
+  // hand, with a lightweight draft/current/stale status for staleness
+  // tracking (see src/profiles.js).
+  `
+  CREATE TABLE IF NOT EXISTS profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    fields TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'draft',
+    last_generated_at TEXT,
+    last_reviewed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(brand_id, platform)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_profiles_brand ON profiles(brand_id);
+  `,
+  // v7, B14 branding: brand logo path, used by the Settings Branding
+  // section and folded into the image-request brief so Codex can brand the
+  // generated asset (see src/imagespec.js buildBrief).
+  `
+  ALTER TABLE brands ADD COLUMN logo_path TEXT;
+  `,
+  // v8, B16a queue slots: recurring weekly brand+platform slots ("Add to
+  // queue" drops a post into the next open one instead of hand-picking
+  // publish_at). See src/queue.js.
+  `
+  CREATE TABLE IF NOT EXISTS queue_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    day_of_week INTEGER NOT NULL,  -- 0 (Sunday) - 6 (Saturday)
+    time_local TEXT NOT NULL,      -- 'HH:MM', 24hr, local time
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_queue_slots_brand_platform ON queue_slots(brand_id, platform);
+  `,
+  // v9, B17a tags & campaigns: `tags` (kind 'tag'|'campaign', brand_id
+  // nullable = global) + `post_tags` join. See src/tags.js.
+  `
+  CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'tag',  -- 'tag' | 'campaign'
+    color TEXT,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE CASCADE,  -- NULL = global
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS post_tags (
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    UNIQUE(post_id, tag_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_tags_brand_kind ON tags(brand_id, kind);
+  CREATE INDEX IF NOT EXISTS idx_post_tags_post ON post_tags(post_id);
+  CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag_id);
+  `,
+  // v10, "Link in first comment": per-post optional first-comment text.
+  // LinkedIn/Facebook deprioritize posts with links in the body, so the link
+  // can be moved to a follow-up comment instead. NULL = no first comment
+  // (unchanged single-post behavior). See src/worker.js buildBlotatoPayload
+  // for how this is attached to the Blotato submission.
+  `
+  ALTER TABLE posts ADD COLUMN first_comment TEXT;
+  `,
+  // v11 - audit P3: every analytics/best-time rollup joins metrics on
+  // post_id; without this index each one is a full scan of metrics.
+  `
+  CREATE INDEX IF NOT EXISTS idx_metrics_post_id ON metrics(post_id);
+  `,
+  // v12 - audit T2 + T6. verify_started_at is when the first Blotato status
+  // poll ran (the 24h verify window counts from it); last_remote_state is the
+  // state Blotato last reported. publish_at is rewritten to UTC ISO with
+  // milliseconds and Z: strftime reads 'Z'/offset/space-separated forms (zone-
+  // less ones as UTC) and returns NULL for garbage, which is left untouched.
+  `
+  ALTER TABLE posts ADD COLUMN verify_started_at TEXT;
+  ALTER TABLE posts ADD COLUMN last_remote_state TEXT;
+  UPDATE posts SET publish_at = strftime('%Y-%m-%dT%H:%M:%fZ', publish_at)
+    WHERE publish_at IS NOT NULL AND strftime('%Y-%m-%dT%H:%M:%fZ', publish_at) IS NOT NULL;
+  `,
+  // v13 - Blog add-on (docs/BLOG_ADDON_SPEC.md): one row per release run
+  // (dry or live, manual or scheduled) of a site's blog/tools/release.py.
+  // released = JSON list of slugs; output = last 20 KB of the run's output.
+  `
+  CREATE TABLE IF NOT EXISTS blog_releases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    "trigger" TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    exit_code INTEGER,
+    released TEXT NOT NULL DEFAULT '[]',
+    summary TEXT NOT NULL DEFAULT '',
+    output TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS idx_blog_releases_site ON blog_releases(site_id, id);
+  `,
+  // v14 - Website analytics (docs/WEB_ANALYTICS_SPEC.md). Daily aggregates
+  // only, never visitor-level rows. source = 'ga4' | 'logs' (server logs on
+  // the VPS) so both can sit side by side; the UI prefers ga4 when present.
+  // date = YYYY-MM-DD in the Mac's local time zone (logs) or the GA4
+  // property's zone (ga4). Search Console has its own table.
+  `
+  CREATE TABLE IF NOT EXISTS web_sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT NOT NULL UNIQUE,
+    brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    ga4_measurement_id TEXT,
+    ga4_property_id TEXT,
+    gsc_property TEXT,
+    blog_site_id TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_sync_at TEXT,
+    last_sync_error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS web_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    users INTEGER NOT NULL DEFAULT 0,
+    new_users INTEGER NOT NULL DEFAULT 0,
+    sessions INTEGER NOT NULL DEFAULT 0,
+    engaged_sessions INTEGER NOT NULL DEFAULT 0,
+    pageviews INTEGER NOT NULL DEFAULT 0,
+    avg_engagement_s REAL NOT NULL DEFAULT 0,
+    leads INTEGER NOT NULL DEFAULT 0,
+    search_bot_hits INTEGER NOT NULL DEFAULT 0,
+    ai_bot_hits INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, source)
+  );
+  CREATE TABLE IF NOT EXISTS web_channels_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    src TEXT NOT NULL DEFAULT '',
+    medium TEXT NOT NULL DEFAULT '',
+    campaign TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    sessions INTEGER NOT NULL DEFAULT 0,
+    engaged_sessions INTEGER NOT NULL DEFAULT 0,
+    leads INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, source, channel, src, medium, campaign, content)
+  );
+  CREATE TABLE IF NOT EXISTS web_pages_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    source TEXT NOT NULL,
+    path TEXT NOT NULL,
+    views INTEGER NOT NULL DEFAULT 0,
+    users INTEGER NOT NULL DEFAULT 0,
+    entrances INTEGER NOT NULL DEFAULT 0,
+    leads INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, source, path)
+  );
+  CREATE TABLE IF NOT EXISTS web_search_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    path TEXT NOT NULL,
+    query TEXT NOT NULL,
+    clicks INTEGER NOT NULL DEFAULT 0,
+    impressions INTEGER NOT NULL DEFAULT 0,
+    position REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, path, query)
+  );
+  CREATE TABLE IF NOT EXISTS web_notfound_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    path TEXT NOT NULL,
+    hits INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, path)
+  );
+  CREATE TABLE IF NOT EXISTS web_forms_daily (
+    site_id INTEGER NOT NULL REFERENCES web_sites(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (site_id, date, outcome)
+  );
+  CREATE TABLE IF NOT EXISTS web_sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER,
+    source TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    ok INTEGER,
+    rows INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+  );
+  CREATE TABLE IF NOT EXISTS web_self_ips (
+    ip TEXT PRIMARY KEY,
+    how TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_web_daily_date ON web_daily(date);
+  CREATE INDEX IF NOT EXISTS idx_web_channels_date ON web_channels_daily(site_id, date);
+  CREATE INDEX IF NOT EXISTS idx_web_pages_date ON web_pages_daily(site_id, date);
+  CREATE INDEX IF NOT EXISTS idx_web_search_date ON web_search_daily(site_id, date);
+  CREATE INDEX IF NOT EXISTS idx_web_sync_runs ON web_sync_runs(site_id, source, id);
+  `,
+  // v15 - analytics for client sites: a display name and a kind ('own' | 'client').
+  `
+  ALTER TABLE web_sites ADD COLUMN name TEXT;
+  ALTER TABLE web_sites ADD COLUMN kind TEXT NOT NULL DEFAULT 'own';
+  `,
+];
+
+function applyMigrations(db) {
+  const current = db.pragma('user_version', { simple: true });
+  for (let v = current; v < MIGRATIONS.length; v++) {
+    const migration = MIGRATIONS[v];
+    const run = db.transaction(() => {
+      db.exec(migration);
+      db.pragma(`user_version = ${v + 1}`);
+    });
+    run();
+    console.log(`[db] applied migration v${v + 1}`);
+  }
+}
+
+export function getDb() {
+  if (dbInstance) return dbInstance;
+  const db = new Database(DB_PATH);
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  applyMigrations(db);
+  dbInstance = db;
+  return dbInstance;
+}
+
+export function nowIso() {
+  return new Date().toISOString();
+}
+
+export { DB_PATH, MIGRATIONS, applyMigrations };

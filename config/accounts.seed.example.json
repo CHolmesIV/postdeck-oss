@@ -1,0 +1,22 @@
+{
+  "_comment": "Demo data. `npm run seed` falls back to this file when config/accounts.seed.json is missing. To post for real, copy it to config/accounts.seed.json (gitignored) and put your Blotato account ids from GET /v2/users/me/accounts in it. Never commit real ids.",
+  "brands": [
+    {
+      "name": "Acme Co",
+      "slug": "acme",
+      "accounts": [
+        { "platform": "linkedin", "blotato_account_id": "00000", "target_fields": {} },
+        { "platform": "twitter", "blotato_account_id": "00001", "target_fields": {} },
+        { "platform": "facebook", "blotato_account_id": "00002", "target_fields": { "pageId": "00000000" } }
+      ]
+    },
+    {
+      "name": "Northwind",
+      "slug": "northwind",
+      "accounts": [
+        { "platform": "linkedin", "blotato_account_id": "00003", "target_fields": {} },
+        { "platform": "instagram", "blotato_account_id": "00004", "target_fields": {} }
+      ]
+    }
+  ]
+}

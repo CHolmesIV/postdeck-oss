@@ -1,0 +1,4 @@
+post_id,cluster_id,platform,post_copy,publish_date,publish_time,status,format,hook,cta_type,cta_destination,impressions,comments,shares,saves
+P1,C1,linkedin,"We shipped 14 small releases last month. Here is what changed in how we plan.",2026-12-01,09:00,scheduled,text,Small releases beat big launches,link,https://example.com/blog/small-releases,,,,
+P2,C2,twitter,"Launch week checklist: freeze scope, test the rollback, write the support macro, sleep.",2026-12-02,12:30,draft,text,A calm launch is a boring launch,none,,,,,
+P3,C3,facebook,"You asked, we built it. Three requests that made the roadmap this quarter.",2026-11-20,10:00,published,text,Customer requests,link,https://example.com/roadmap,1200,14,9,5
